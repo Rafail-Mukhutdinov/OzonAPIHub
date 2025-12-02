@@ -24,7 +24,32 @@ MONTH_RECONCILE_INTERVAL_SECONDS = int(os.getenv('MONTH_RECONCILE_INTERVAL_SECON
 MONTH_RECONCILE_MONTHS = int(os.getenv('MONTH_RECONCILE_MONTHS', '3'))  # последние 3 месяца
 
 app = FastAPI()
-logging.basicConfig(level=logging.INFO)
+# Управление уровнем логов: LOG_LEVEL=DEBUG|INFO|WARNING|ERROR|CRITICAL
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+try:
+    _lvl = getattr(logging, LOG_LEVEL, logging.INFO)
+except Exception:
+    _lvl = logging.INFO
+logging.basicConfig(level=_lvl)
+LOG_OZON_REQUESTS = os.getenv('LOG_OZON_REQUESTS', 'false').lower() in ('1', 'true', 'yes')
+ENRICH_RECENT_POSTINGS = os.getenv('ENRICH_RECENT_POSTINGS', 'true').lower() in ('1', 'true', 'yes')
+ENRICH_RECENT_LIMIT = int(os.getenv('ENRICH_RECENT_LIMIT', '100'))
+ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
+ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 'yes')
+ENRICH_ON_FETCH_LIMIT = int(os.getenv('ENRICH_ON_FETCH_LIMIT', '200'))
+ENRICH_ON_STATUS_CHANGE = os.getenv('ENRICH_ON_STATUS_CHANGE', 'true').lower() in ('1', 'true', 'yes')
+ENRICH_STATUS_CHANGE_LIMIT = int(os.getenv('ENRICH_STATUS_CHANGE_LIMIT', '100'))
+
+def _valid_posting_number(pn: str | None) -> bool:
+    """Фильтр валидности постинга: исключаем тестовые и явно некорректные значения."""
+    if not pn:
+        return False
+    if pn.upper().startswith('TEST-POSTING'):
+        return False
+    if '-' not in pn:
+        return False
+    suffix = pn.split('-')[-1]
+    return suffix.isdigit()
 
 class OrderIn(BaseModel):
     order_id: int
@@ -144,7 +169,8 @@ def fetch_and_save_orders(since: str = None,
                     "legal_info": legal_info
                 }
             }
-            logging.info(f"Ozon request body: {body}")
+            if LOG_OZON_REQUESTS:
+                logging.debug(f"Ozon request body: {body}")
             response = requests.post(url, headers=headers, json=body)
             response.raise_for_status()
             data = response.json()
@@ -160,6 +186,25 @@ def fetch_and_save_orders(since: str = None,
                 break
             current_offset += limit
 
+        # После выгрузки — при необходимости обогатим все полученные постинги сразу
+        if ENRICH_ON_FETCH and all_orders:
+            try:
+                posting_numbers = sorted({o.get('posting_number') for o in all_orders if o.get('posting_number')})
+                posting_numbers = posting_numbers[:ENRICH_ON_FETCH_LIMIT]
+                sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+                async def _run_enrich(pn):
+                    async with sem:
+                        await asyncio.to_thread(_enrich_posting_from_ozon, pn, SessionLocal())
+                # Запустим синхронно из текущей синхронной функции через временный цикл
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # если уже в асинхронном контексте, создадим задачу и подождём её завершение
+                    loop.run_until_complete(asyncio.gather(*(_run_enrich(pn) for pn in posting_numbers)))
+                else:
+                    asyncio.run(asyncio.gather(*(_run_enrich(pn) for pn in posting_numbers)))
+                logging.info(f"Обогащение по результатам выгрузки: обработано={len(posting_numbers)}")
+            except Exception as e:
+                logging.debug(f"Ошибка обогащения после выгрузки: {e}")
         return {"saved": total_saved, "fetched": len(all_orders), "orders": all_orders}
     finally:
         if own_session:
@@ -172,6 +217,132 @@ def _normalize_iso(s: str | None) -> str | None:
     dt = _iso_to_dt(s)
     dt = dt.replace(microsecond=0)
     return dt.isoformat() + 'Z'
+
+
+def _to_int(val):
+    try:
+        if val is None:
+            return None
+        if isinstance(val, (int,)):
+            return val
+        if isinstance(val, float):
+            return int(round(val))
+        # strings like "220.00"
+        return int(round(float(str(val).replace(',', '.'))))
+    except Exception:
+        return None
+
+
+def _recalc_order_header(db: Session, order_number: str):
+    products = db.query(OrderProduct).join(OrderPosting, OrderPosting.posting_number == OrderProduct.posting_number) \
+        .filter(OrderPosting.order_number == order_number).all()
+    total_payout = sum((_to_int(p.payout) or 0) for p in products)
+    total_commission = sum((_to_int(p.commission_amount) or 0) for p in products)
+    # dates
+    postings = db.query(OrderPosting).filter(OrderPosting.order_number == order_number).all()
+    first_created = None
+    last_delivery = None
+    for p in postings:
+        if p.created_at:
+            first_created = min(first_created, p.created_at) if first_created else p.created_at
+        if p.fact_delivery_date:
+            last_delivery = max(last_delivery, p.fact_delivery_date) if last_delivery else p.fact_delivery_date
+    hdr = db.query(OrderHeader).filter(OrderHeader.order_number == order_number).first()
+    if not hdr:
+        hdr = OrderHeader(order_number=order_number)
+        db.add(hdr)
+    hdr.first_created_at = first_created
+    hdr.last_delivery_at = last_delivery
+    hdr.total_payout = total_payout
+    hdr.total_commission = total_commission
+    db.commit()
+
+
+def _enrich_posting_from_ozon(posting_number: str, db: Session):
+    client_id = os.getenv("OZON_CLIENT_ID")
+    api_key = os.getenv("OZON_API_KEY")
+    if not client_id or not api_key:
+        raise HTTPException(status_code=500, detail="OZON credentials not configured")
+    url = "https://api-seller.ozon.ru/v2/posting/fbo/get"
+    headers = {
+        "Client-Id": client_id,
+        "Api-Key": api_key,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "posting_number": posting_number,
+        "translit": True,
+        "with": {
+            "analytics_data": True,
+            "financial_data": True,
+            "legal_info": False,
+        },
+    }
+    r = requests.post(url, headers=headers, json=body, timeout=60)
+    r.raise_for_status()
+    data = r.json().get("result")
+    if not data:
+        return {"status": "no_result"}
+
+    order_number = data.get("order_number")
+    # upsert OrderPosting
+    op = db.query(OrderPosting).filter(OrderPosting.posting_number == posting_number).first()
+    if not op:
+        op = OrderPosting(posting_number=posting_number)
+        db.add(op)
+    op.order_number = order_number
+    op.status = data.get("status")
+    op.created_at = data.get("created_at")
+    op.in_process_at = data.get("in_process_at")
+    op.fact_delivery_date = data.get("fact_delivery_date")
+    op.substatus = data.get("substatus")
+    op.analytics_data = data.get("analytics_data")
+    op.financial_data = data.get("financial_data")
+    db.commit()
+
+    # replace products for this posting
+    db.query(OrderProduct).filter(OrderProduct.posting_number == posting_number).delete()
+    products = data.get("products", [])
+    fin = (data.get("financial_data") or {}).get("products") or []
+    fin_by_sku = {}
+    fin_by_offer = {}
+    for f in fin:
+        # на практике в ответе встречаются product_id=SKU, а иногда sku/offer_id
+        pid = f.get("product_id")
+        if pid is not None:
+            fin_by_sku[str(pid)] = f
+        sku_key = f.get("sku")
+        if sku_key is not None:
+            fin_by_sku[str(sku_key)] = f
+        ofr = f.get("offer_id")
+        if ofr:
+            fin_by_offer[str(ofr)] = f
+    for pr in products:
+        sku = pr.get("sku")
+        offer_id_val = pr.get("offer_id")
+        f = fin_by_sku.get(str(sku)) or (fin_by_offer.get(str(offer_id_val)) if offer_id_val is not None else None)
+        obj = OrderProduct(
+            posting_number=posting_number,
+            sku=_to_int(sku),
+            offer_id=str(offer_id_val) if offer_id_val is not None else None,
+            name=pr.get("name"),
+            quantity=_to_int(pr.get("quantity")),
+            price=_to_int(pr.get("price")),
+            currency_code=pr.get("currency_code"),
+            commission_amount=_to_int((f or {}).get("commission_amount")),
+            commission_percent=_to_int((f or {}).get("commission_percent")),
+            payout=_to_int((f or {}).get("payout")),
+            total_discount_value=_to_int((f or {}).get("total_discount_value")),
+            total_discount_percent=_to_int((f or {}).get("total_discount_percent")),
+        )
+        db.add(obj)
+    db.commit()
+
+    # update header aggregates
+    if order_number:
+        _recalc_order_header(db, order_number)
+
+    return {"status": "ok", "order_number": order_number, "posting_number": posting_number, "products": len(products)}
 
 
 @app.get("/orders")
@@ -295,6 +466,121 @@ async def get_order_summary(order_number: str, db: Session = Depends(get_db)):
     }
 
 
+@app.get("/order/{order_number}/postings")
+async def list_order_postings(order_number: str, db: Session = Depends(get_db)):
+    postings = db.query(OrderPosting).filter(OrderPosting.order_number == order_number).order_by(OrderPosting.created_at.asc()).all()
+    if not postings:
+        # fallback: получить постинги из легаси-таблицы orders по префиксу order_number-
+        prefix = order_number + "-"
+        legacy_postings = db.query(Order.posting_number).filter(Order.posting_number.like(f"{prefix}%")).all()
+        # вернём список как объекты с минимумом полей, чтобы интерфейс был единообразным
+        postings = [
+            OrderPosting(order_number=order_number, posting_number=p[0], status=None, created_at=None)
+            for p in legacy_postings
+        ]
+    result = []
+    for p in postings:
+        prods = db.query(OrderProduct).filter(OrderProduct.posting_number == p.posting_number).all()
+        total_payout = sum((pr.payout or 0) for pr in prods)
+        total_commission = sum((pr.commission_amount or 0) for pr in prods)
+        result.append({
+            "posting_number": p.posting_number,
+            "status": p.status,
+            "created_at": p.created_at,
+            "products_count": len(prods),
+            "total_payout": total_payout,
+            "total_commission": total_commission,
+        })
+    return {"order_number": order_number, "count": len(result), "items": result}
+
+
+class EnrichPostingIn(BaseModel):
+    posting_number: str
+
+
+@app.post("/orders/fbo/get")
+async def enrich_posting(item: EnrichPostingIn, db: Session = Depends(get_db)):
+    try:
+        result = await asyncio.to_thread(_enrich_posting_from_ozon, item.posting_number, db)
+        return result
+    except requests.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Ozon error: {e}")
+    except Exception as e:
+        logging.error(f"Ошибка обогащения постинга {item.posting_number}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class EnrichOrderIn(BaseModel):
+    order_number: str
+
+
+@app.post("/orders/fbo/get_for_order")
+async def enrich_order(item: EnrichOrderIn, db: Session = Depends(get_db)):
+    # Собираем постинги из нормализованной таблицы и из легаси orders по префиксу
+    postings_norm = db.query(OrderPosting.posting_number).filter(OrderPosting.order_number == item.order_number).all()
+    postings_norm = [p[0] for p in postings_norm]
+    prefix = item.order_number + "-"
+    legacy = db.query(Order.posting_number).filter(Order.posting_number.like(f"{prefix}%")).all()
+    postings_legacy = [p[0] for p in legacy]
+    postings = sorted(set(postings_norm) | set(postings_legacy))
+    results = []
+    for pn in postings:
+        try:
+            res = await asyncio.to_thread(_enrich_posting_from_ozon, pn, db)
+            results.append(res)
+        except Exception as e:
+            results.append({"posting_number": pn, "error": str(e)})
+    return {"order_number": item.order_number, "count": len(postings), "results": results}
+
+
+@app.post("/orders/fbo/enrich_recent")
+async def enrich_recent(limit: int = 100):
+    since_iso = (datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)).isoformat() + 'Z'
+    session = SessionLocal()
+    try:
+        fresh_orders = session.query(Order.posting_number).filter(Order.created_at >= since_iso).order_by(Order.created_at.desc()).limit(limit).all()
+        fresh_norm = session.query(OrderPosting.posting_number).filter(OrderPosting.created_at >= since_iso).order_by(OrderPosting.created_at.desc()).limit(limit).all()
+        raw_targets = [o[0] for o in fresh_orders] + [n[0] for n in fresh_norm]
+        targets = sorted({pn for pn in raw_targets if _valid_posting_number(pn)})
+    finally:
+        session.close()
+    results = []
+    for pn in targets:
+        try:
+            res = await asyncio.to_thread(_enrich_posting_from_ozon, pn, SessionLocal())
+            results.append(res)
+        except Exception as e:
+            results.append({"posting_number": pn, "error": str(e)})
+    return {"processed": len(targets), "results": results}
+
+
+@app.post("/orders/fbo/enrich_changed_recent")
+async def enrich_changed_recent(limit: int = 100):
+    since_iso = (datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)).isoformat() + 'Z'
+    session = SessionLocal()
+    try:
+        recent_orders = session.query(Order).filter(Order.created_at >= since_iso).order_by(Order.created_at.desc()).limit(500).all()
+        candidates = []
+        for r in recent_orders:
+            pn = r.posting_number
+            if not _valid_posting_number(pn):
+                continue
+            row = session.query(OrderPosting).filter(OrderPosting.posting_number == pn).first()
+            if (row.status if row else None) != r.status:
+                candidates.append(pn)
+        targets = sorted(set(candidates))[:limit]
+    finally:
+        session.close()
+    results = []
+    for pn in targets:
+        try:
+            res = await asyncio.to_thread(_enrich_posting_from_ozon, pn, SessionLocal())
+            results.append(res)
+        except Exception as e:
+            results.append({"posting_number": pn, "error": str(e)})
+    return {"processed": len(targets), "results": results}
+
+
 class CostIn(BaseModel):
     type: str
     amount: int
@@ -403,6 +689,64 @@ async def background_sync_loop(app: FastAPI, interval_seconds: int = 300):
                 app.state.last_sync_recent_fetched = res_recent.get('fetched')
                 app.state.last_sync_interval_seconds = interval_seconds
                 logging.info(f"Сверка недавнего окна ({RECENT_WINDOW_HOURS}ч): добавлено={res_recent.get('saved')} получено={res_recent.get('fetched')}")
+
+                # Переобогащение только изменившихся по статусу постингов
+                if ENRICH_ON_STATUS_CHANGE:
+                    try:
+                        recent_items = res_recent.get('orders') or []
+                        session = SessionLocal()
+                        try:
+                            candidates = []
+                            for it in recent_items:
+                                pn = it.get('posting_number')
+                                if not _valid_posting_number(pn):
+                                    continue
+                                new_status = it.get('status')
+                                row = session.query(OrderPosting).filter(OrderPosting.posting_number == pn).first()
+                                old_status = row.status if row else None
+                                if new_status != old_status:
+                                    candidates.append(pn)
+                            targets = sorted(set(candidates))[:ENRICH_STATUS_CHANGE_LIMIT]
+                        finally:
+                            session.close()
+
+                        sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+                        async def run_one(pn):
+                            async with sem:
+                                await asyncio.to_thread(_enrich_posting_from_ozon, pn, SessionLocal())
+                        if targets:
+                            await asyncio.gather(*(run_one(pn) for pn in targets))
+                            logging.info(f"Переобогащение по изменению статуса: обработано={len(targets)}")
+                    except Exception as e:
+                        logging.debug(f"Ошибка переобогащения по статусам: {e}")
+
+                # Фоновое обогащение свежих постингов
+                if ENRICH_RECENT_POSTINGS:
+                    try:
+                        session = SessionLocal()
+                        try:
+                            since_iso = (datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)).isoformat() + 'Z'
+                            fresh_orders = session.query(Order.posting_number).filter(Order.created_at >= since_iso).order_by(Order.created_at.desc()).limit(ENRICH_RECENT_LIMIT).all()
+                            fresh_norm = session.query(OrderPosting.posting_number).filter(OrderPosting.created_at >= since_iso).order_by(OrderPosting.created_at.desc()).limit(ENRICH_RECENT_LIMIT).all()
+                            targets = sorted(set([o[0] for o in fresh_orders] + [n[0] for n in fresh_norm]))
+                        finally:
+                            session.close()
+
+                        async def worker(pn):
+                            try:
+                                await asyncio.to_thread(_enrich_posting_from_ozon, pn, SessionLocal())
+                            except Exception as e:
+                                logging.debug(f"enrich {pn} error: {e}")
+
+                        sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+                        async def run_with_sem(pn):
+                            async with sem:
+                                await worker(pn)
+
+                        await asyncio.gather(*(run_with_sem(pn) for pn in targets))
+                        logging.info(f"Обогащение свежих постингов: обработано={len(targets)}")
+                    except Exception as e:
+                        logging.debug(f"Ошибка фонового обогащения: {e}")
 
                 # Авто-сверка последних месяцев по расписанию
                 now = datetime.utcnow()
@@ -748,3 +1092,68 @@ async def run_history_sync(start: str, end: str = None):
         raise HTTPException(status_code=400, detail='end < start')
     summary = await history_forward_sync(start_dt, end_dt)
     return {"status": "done", "windows": summary}
+
+
+@app.get("/analytics/sales_today")
+async def analytics_sales_today(db: Session = Depends(get_db)):
+    """Возвращает сводку продаж за сегодня по артикулам (offer_id), SKU и названию.
+    Считаем продажи как товары в постингах со статусом 'delivered' и датой фактической доставки сегодня (UTC).
+    Поля:
+    - offer_id
+    - sku
+    - name
+    - quantity_sold (суммарно)
+    - total_payout (сумма выплат по позициям)
+    """
+    today_prefix = datetime.utcnow().date().isoformat()  # YYYY-MM-DD
+    # Находим постинги со статусом delivered и fact_delivery_date в пределах сегодняшней даты
+    postings = db.query(OrderPosting.posting_number).\
+        filter(OrderPosting.status == 'delivered').\
+        filter(OrderPosting.fact_delivery_date.like(f"{today_prefix}%")).all()
+
+    posting_numbers = [p[0] for p in postings]
+    if not posting_numbers:
+        return {"date": today_prefix, "items": [], "total_items": 0}
+
+    # Собираем продукты по найденным постингам
+    products = db.query(OrderProduct).filter(OrderProduct.posting_number.in_(posting_numbers)).all()
+    # Агрегируем по offer_id (если пусто, используем sku как ключ)
+    agg = {}
+    for pr in products:
+        key = pr.offer_id or (str(pr.sku) if pr.sku is not None else "<no-offer>")
+        if key not in agg:
+            agg[key] = {
+                "offer_id": pr.offer_id,
+                "sku": pr.sku,
+                "name": pr.name,
+                "quantity_sold": 0,
+                "total_payout": 0,
+            }
+        agg[key]["quantity_sold"] += pr.quantity or 0
+        agg[key]["total_payout"] += pr.payout or 0
+
+    items = sorted(agg.values(), key=lambda x: (-x["quantity_sold"], x.get("offer_id") or ""))
+    total_items = sum(i["quantity_sold"] for i in items)
+    return {"date": today_prefix, "items": items, "total_items": total_items}
+
+
+@app.get("/analytics/orders_today")
+async def analytics_orders_today(db: Session = Depends(get_db)):
+    """Количество заказов за сегодня и разрез по статусам.
+    Берём записи из легаси таблицы `Order` по полю created_at в пределах текущей даты (UTC).
+    Возвращает:
+    - total: общее количество
+    - by_status: список {status, count}
+    """
+    start = datetime.utcnow().date().isoformat() + 'T00:00:00Z'
+    end = datetime.utcnow().date().isoformat() + 'T23:59:59Z'
+    q = db.query(Order).filter(Order.created_at >= start).filter(Order.created_at <= end)
+    total = q.count()
+    # Собираем статусы
+    rows = q.all()
+    stats = {}
+    for r in rows:
+        st = r.status or "unknown"
+        stats[st] = stats.get(st, 0) + 1
+    by_status = [{"status": k, "count": v} for k, v in sorted(stats.items(), key=lambda x: (-x[1], x[0]))]
+    return {"date": start[:10], "total": total, "by_status": by_status}
