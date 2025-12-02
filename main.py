@@ -7,7 +7,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
-from db.database import Order, get_db, SessionLocal
+from db.database import Order, OrderHeader, OrderPosting, OrderProduct, Cost, get_db, SessionLocal
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 
@@ -244,6 +244,138 @@ async def get_order_by_posting(posting_number: str, db: Session = Depends(get_db
     if not row:
         raise HTTPException(status_code=404, detail="Order not found")
     return row
+
+
+@app.get("/order/{order_number}")
+async def get_order_summary(order_number: str, db: Session = Depends(get_db)):
+    header = db.query(OrderHeader).filter(OrderHeader.order_number == order_number).first()
+    postings = db.query(OrderPosting).filter(OrderPosting.order_number == order_number).order_by(OrderPosting.created_at.asc()).all()
+    products = db.query(OrderProduct).filter(OrderProduct.posting_number.in_([p.posting_number for p in postings])).all() if postings else []
+    total_payout = sum((p.payout or 0) for p in products)
+    total_commission = sum((p.commission_amount or 0) for p in products)
+    profit = total_payout - total_commission
+    return {
+        "order_number": order_number,
+        "header": {
+            "first_created_at": header.first_created_at if header else None,
+            "last_delivery_at": header.last_delivery_at if header else None,
+            "total_payout": header.total_payout if header and header.total_payout is not None else total_payout,
+            "total_commission": header.total_commission if header and header.total_commission is not None else total_commission,
+            "profit": profit,
+        },
+        "postings": [
+            {
+                "posting_number": p.posting_number,
+                "status": p.status,
+                "created_at": p.created_at,
+                "in_process_at": p.in_process_at,
+                "fact_delivery_date": p.fact_delivery_date,
+                "substatus": p.substatus,
+                "analytics_data": p.analytics_data,
+                "financial_data": p.financial_data,
+                "products": [
+                    {
+                        "sku": pr.sku,
+                        "offer_id": pr.offer_id,
+                        "name": pr.name,
+                        "quantity": pr.quantity,
+                        "price": pr.price,
+                        "currency_code": pr.currency_code,
+                        "commission_amount": pr.commission_amount,
+                        "commission_percent": pr.commission_percent,
+                        "payout": pr.payout,
+                        "total_discount_value": pr.total_discount_value,
+                        "total_discount_percent": pr.total_discount_percent,
+                    }
+                    for pr in products if pr.posting_number == p.posting_number
+                ],
+            }
+            for p in postings
+        ],
+    }
+
+
+class CostIn(BaseModel):
+    type: str
+    amount: int
+    currency: str = "RUB"
+    date: str
+    scope_order_number: str | None = None
+    scope_posting_number: str | None = None
+    scope_sku: int | None = None
+    scope_offer_id: str | None = None
+    notes: str | None = None
+
+
+@app.post("/costs")
+async def add_cost(cost: CostIn, db: Session = Depends(get_db)):
+    obj = Cost(
+        type=cost.type,
+        amount=cost.amount,
+        currency=cost.currency,
+        date=cost.date,
+        scope_order_number=cost.scope_order_number,
+        scope_posting_number=cost.scope_posting_number,
+        scope_sku=cost.scope_sku,
+        scope_offer_id=cost.scope_offer_id,
+        notes=cost.notes or "",
+    )
+    db.add(obj)
+    db.commit()
+    return {"status": "ok", "id": obj.id}
+
+
+@app.get("/costs")
+async def list_costs(
+    type: str | None = None,
+    since: str | None = None,
+    to: str | None = None,
+    order_number: str | None = None,
+    posting_number: str | None = None,
+    sku: int | None = None,
+    offer_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    q = db.query(Cost)
+    if type:
+        q = q.filter(Cost.type == type)
+    try:
+        since_iso = _normalize_iso(since)
+        to_iso = _normalize_iso(to)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Bad date format")
+    if since_iso:
+        q = q.filter(Cost.date >= since_iso)
+    if to_iso:
+        q = q.filter(Cost.date <= to_iso)
+    if order_number:
+        q = q.filter(Cost.scope_order_number == order_number)
+    if posting_number:
+        q = q.filter(Cost.scope_posting_number == posting_number)
+    if sku is not None:
+        q = q.filter(Cost.scope_sku == sku)
+    if offer_id:
+        q = q.filter(Cost.scope_offer_id == offer_id)
+    total = q.count()
+    rows = q.order_by(Cost.date.desc()).offset(offset).limit(min(max(limit, 1), 500)).all()
+    items = [
+        {
+            "id": r.id,
+            "type": r.type,
+            "amount": r.amount,
+            "currency": r.currency,
+            "date": r.date,
+            "scope_order_number": r.scope_order_number,
+            "scope_posting_number": r.scope_posting_number,
+            "scope_sku": r.scope_sku,
+            "scope_offer_id": r.scope_offer_id,
+            "notes": r.notes,
+        }
+        for r in rows
+    ]
+    return {"total": total, "items": items, "limit": limit, "offset": offset}
 
 
 async def background_sync_loop(app: FastAPI, interval_seconds: int = 300):
