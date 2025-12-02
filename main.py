@@ -34,6 +34,18 @@ class OrderIn(BaseModel):
     updated_at: str = None
     data: dict
 
+class OrderOut(BaseModel):
+    id: int
+    order_id: int | None = None
+    posting_number: str
+    status: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    data: dict | None = None
+
+    class Config:
+        from_attributes = True
+
 @app.get("/ping")
 async def ping():
     return {"message": "pong"}
@@ -152,6 +164,86 @@ def fetch_and_save_orders(since: str = None,
     finally:
         if own_session:
             db.close()
+
+
+def _normalize_iso(s: str | None) -> str | None:
+    if not s:
+        return None
+    dt = _iso_to_dt(s)
+    dt = dt.replace(microsecond=0)
+    return dt.isoformat() + 'Z'
+
+
+@app.get("/orders")
+async def list_orders(
+    since: str | None = None,
+    to: str | None = None,
+    status: str | None = None,
+    posting_number: str | None = None,
+    contains: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort: str = "-created_at",
+    db: Session = Depends(get_db),
+):
+    """Чтение заказов из БД (DB-first): фильтры, пагинация, сортировка.
+    - since/to: ISO-строки (нормализуются к '...Z')
+    - status: точное совпадение
+    - posting_number: точное совпадение
+    - contains: подстрока для LIKE по posting_number
+    - sort: 'created_at' или '-created_at'
+    """
+    try:
+        since_iso = _normalize_iso(since)
+        to_iso = _normalize_iso(to)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Bad date format")
+
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    q = db.query(Order)
+    if since_iso:
+        q = q.filter(Order.created_at >= since_iso)
+    if to_iso:
+        q = q.filter(Order.created_at <= to_iso)
+    if status:
+        q = q.filter(Order.status == status)
+    if posting_number:
+        q = q.filter(Order.posting_number == posting_number)
+    if contains:
+        q = q.filter(Order.posting_number.like(f"%{contains}%"))
+
+    total = q.count()
+
+    if sort == "created_at":
+        q = q.order_by(Order.created_at.asc())
+    else:
+        # по умолчанию -created_at
+        q = q.order_by(Order.created_at.desc())
+
+    rows = q.offset(offset).limit(limit).all()
+    items = [
+        {
+            "id": r.id,
+            "order_id": r.order_id,
+            "posting_number": r.posting_number,
+            "status": r.status,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at,
+            "data": r.data,
+        }
+        for r in rows
+    ]
+    return {"total": total, "limit": limit, "offset": offset, "items": items}
+
+
+@app.get("/orders/{posting_number}", response_model=OrderOut)
+async def get_order_by_posting(posting_number: str, db: Session = Depends(get_db)):
+    row = db.query(Order).filter(Order.posting_number == posting_number).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return row
 
 
 async def background_sync_loop(app: FastAPI, interval_seconds: int = 300):
