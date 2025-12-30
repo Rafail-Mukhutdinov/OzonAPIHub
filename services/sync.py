@@ -1,6 +1,7 @@
 import os
 import logging
 logger = logging.getLogger("uvicorn.error")
+from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import requests
 from datetime import datetime, timedelta
@@ -117,21 +118,16 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
         if ENRICH_ON_FETCH and all_orders:
             try:
                 posting_numbers = sorted({o.get('posting_number') for o in all_orders if _valid_posting_number(o.get('posting_number'))})[:ENRICH_ON_FETCH_LIMIT]
-                sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-                async def _run_enrich(pn):
-                    async with sem:
-                        def _work():
-                            s = SessionLocal()
-                            try:
-                                enrich_posting_from_ozon(pn, s)
-                            finally:
-                                s.close()
-                        await asyncio.to_thread(_work)
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.run_until_complete(asyncio.gather(*(_run_enrich(pn) for pn in posting_numbers)))
-                else:
-                    asyncio.run(asyncio.gather(*(_run_enrich(pn) for pn in posting_numbers)))
+                def _work(pn):
+                    session = SessionLocal()
+                    try:
+                        enrich_posting_from_ozon(pn, session)
+                    finally:
+                        session.close()
+                with ThreadPoolExecutor(max_workers=ENRICH_CONCURRENCY) as executor:
+                    futures = [executor.submit(_work, pn) for pn in posting_numbers]
+                    for f in futures:
+                        f.result()
                 logger.info(f"Обогащение по результатам выгрузки: обработано={len(posting_numbers)}")
             except Exception as e:
                 logger.debug(f"Ошибка обогащения после выгрузки: {e}")

@@ -111,6 +111,15 @@ def _normalize_iso(s: str | None) -> str | None:
 from services.enrichment import enrich_posting_from_ozon as _enrich_posting_from_ozon
 
 
+def _enrich_with_new_session(posting_number: str):
+    session = SessionLocal()
+    try:
+        return _enrich_posting_from_ozon(posting_number, session)
+    finally:
+        session.close()
+
+
+
 
 
 
@@ -126,7 +135,7 @@ class EnrichPostingIn(BaseModel):
 @app.post("/orders/fbo/get")
 async def enrich_posting(item: EnrichPostingIn, db: Session = Depends(get_db)):
     try:
-        result = await asyncio.to_thread(_enrich_posting_from_ozon, item.posting_number, db)
+        result = await asyncio.to_thread(_enrich_with_new_session, item.posting_number)
         return result
     except requests.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Ozon error: {e}")
@@ -151,7 +160,7 @@ async def enrich_order(item: EnrichOrderIn, db: Session = Depends(get_db)):
     results = []
     for pn in postings:
         try:
-            res = await asyncio.to_thread(_enrich_posting_from_ozon, pn, db)
+            res = await asyncio.to_thread(_enrich_with_new_session, pn)
             results.append(res)
         except Exception as e:
             results.append({"posting_number": pn, "error": str(e)})
@@ -172,7 +181,7 @@ async def enrich_recent(limit: int = 100):
     results = []
     for pn in targets:
         try:
-            res = await asyncio.to_thread(_enrich_posting_from_ozon, pn, SessionLocal())
+            res = await asyncio.to_thread(_enrich_with_new_session, pn)
             results.append(res)
         except Exception as e:
             results.append({"posting_number": pn, "error": str(e)})
@@ -199,7 +208,7 @@ async def enrich_changed_recent(limit: int = 100):
     results = []
     for pn in targets:
         try:
-            res = await asyncio.to_thread(_enrich_posting_from_ozon, pn, SessionLocal())
+            res = await asyncio.to_thread(_enrich_with_new_session, pn)
             results.append(res)
         except Exception as e:
             results.append({"posting_number": pn, "error": str(e)})

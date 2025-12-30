@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime
-from db.database import get_db, OrderPosting
+from db.database import get_db, OrderPosting, SessionLocal
 from services.sync import fetch_and_save_orders
 from services.enrichment import enrich_posting_from_ozon
 from services.sync import _valid_posting_number
@@ -32,7 +32,13 @@ async def backfill(since: str, to: str, enrich: bool = True, db: Session = Depen
             sem = asyncio.Semaphore(4)
             async def run_one(pn):
                 async with sem:
-                    await asyncio.to_thread(enrich_posting_from_ozon, pn, db)
+                    def _work():
+                        session = SessionLocal()
+                        try:
+                            enrich_posting_from_ozon(pn, session)
+                        finally:
+                            session.close()
+                    await asyncio.to_thread(_work)
             await asyncio.gather(*(run_one(pn) for pn in targets))
             enriched = len(targets)
     return {"saved": res.get('saved'), "fetched": res.get('fetched'), "enriched": enriched}
