@@ -23,7 +23,7 @@ class SalesTable extends StatelessWidget {
         return 'Доставляется';
       case 'delivered':
         return 'Доставлен';
-      case 'canceled':
+      case 'cancelled':
         return 'Отменён';
       default:
         return code;

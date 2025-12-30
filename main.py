@@ -28,7 +28,9 @@ try:
     _lvl = getattr(logging, LOG_LEVEL, logging.INFO)
 except Exception:
     _lvl = logging.INFO
-logging.basicConfig(level=_lvl)
+# Настройка логирования для работы с uvicorn
+# Используем logger uvicorn.error для вывода в консоль
+logger = logging.getLogger("uvicorn.error")
 LOG_OZON_REQUESTS = os.getenv('LOG_OZON_REQUESTS', 'false').lower() in ('1', 'true', 'yes')
 ENRICH_RECENT_POSTINGS = os.getenv('ENRICH_RECENT_POSTINGS', 'true').lower() in ('1', 'true', 'yes')
 ENRICH_RECENT_LIMIT = int(os.getenv('ENRICH_RECENT_LIMIT', '100'))
@@ -81,6 +83,7 @@ class OrderOut(BaseModel):
 
 @app.get("/ping")
 async def ping():
+    logger.info('запрос на ping')
     return {"message": "pong"}
 
 
@@ -128,7 +131,7 @@ async def enrich_posting(item: EnrichPostingIn, db: Session = Depends(get_db)):
     except requests.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Ozon error: {e}")
     except Exception as e:
-        logging.error(f"Ошибка обогащения постинга {item.posting_number}: {e}")
+        logger.error(f"Ошибка обогащения постинга {item.posting_number}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -315,7 +318,7 @@ def get_earliest_order_date():
         else:
             return None
     except Exception as e:
-        logging.error(f"Ошибка получения самой ранней даты: {e}")
+        logger.error(f"Ошибка получения самой ранней даты: {e}")
         return None
 
 def _parse_start_date(raw: Optional[str]) -> Optional[datetime]:
@@ -324,7 +327,7 @@ def _parse_start_date(raw: Optional[str]) -> Optional[datetime]:
     try:
         return _iso_to_dt(raw)
     except Exception:
-        logging.warning('START_DATE не в ISO-формате, игнорируется')
+        logger.warning('START_DATE не в ISO-формате, игнорируется')
         return None
 
 async def history_forward_sync(start_dt: datetime, end_dt: datetime) -> list:
@@ -337,7 +340,7 @@ async def history_forward_sync(start_dt: datetime, end_dt: datetime) -> list:
         window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), end_dt)
         since_iso = window_start.isoformat() + 'Z'
         to_iso = window_end.isoformat() + 'Z'
-        logging.info(f'[history sync] window: {since_iso} -> {to_iso}')
+        logger.info(f'[history sync] window: {since_iso} -> {to_iso}')
         try:
             result = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso)
             summary.append({"since": since_iso, "to": to_iso, "saved": result.get('saved'), "fetched": result.get('fetched')})
@@ -403,7 +406,7 @@ async def get_fbo_orders(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logging.error(f"Ошибка в endpoint /orders/fbo: {e}")
+        logger.error(f"Ошибка в endpoint /orders/fbo: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -446,7 +449,7 @@ async def run_initial_sync_endpoint():
         with open(marker_path, 'w') as f:
             f.write(datetime.utcnow().isoformat() + 'Z')
     except Exception:
-        logging.error('Could not write initial sync marker')
+        logger.error('Could not write initial sync marker')
 
     return {"status": "done", "windows": summary}
 
@@ -492,10 +495,10 @@ async def startup_event():
 
     async def run_initial_if_needed():
         if not ENABLE_INITIAL_SYNC:
-            logging.info('Первичная загрузка отключена настройками')
+            logger.info('Первичная загрузка отключена настройками')
             return
         if os.path.exists(marker_path):
-            logging.info('Первичная загрузка уже выполнена (найден маркер)')
+            logger.info('Первичная загрузка уже выполнена (найден маркер)')
             return
         # Проверяем что база пуста (делаем большой диапазон только один раз при пустой БД)
         session = SessionLocal()
@@ -504,17 +507,17 @@ async def startup_event():
         finally:
             session.close()
         if count_rows > 0:
-            logging.info('База не пустая; пропускаем первичный большой диапазон')
+            logger.info('База не пустая; пропускаем первичный большой диапазон')
             return
         # Один запрос: год назад -> сейчас (будет разбит пагинацией внутри fetch_and_save_orders)
         since_dt = datetime.utcnow() - timedelta(days=365)
         to_dt = datetime.utcnow()
         since_iso = since_dt.isoformat() + 'Z'
         to_iso = to_dt.isoformat() + 'Z'
-        logging.info(f'Первичная единоразовая загрузка: {since_iso} -> {to_iso}')
+        logger.info(f'Первичная единоразовая загрузка: {since_iso} -> {to_iso}')
         try:
             result = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso)
-            logging.info(f'Результат первичной загрузки: добавлено={result.get("saved")} получено={result.get("fetched")}')
+            logger.info(f'Результат первичной загрузки: добавлено={result.get("saved")} получено={result.get("fetched")}')
             # Сразу обогатим постинги из результата initial sync, чтобы аналитика была готова
             try:
                 from services.enrichment import enrich_posting_from_ozon
@@ -529,19 +532,19 @@ async def startup_event():
                             async with sem:
                                 await asyncio.to_thread(enrich_posting_from_ozon, pn, SessionLocal())
                         await asyncio.gather(*(run_one(pn) for pn in targets))
-                        logging.info(f'Обогащение initial sync: обработано постингов={len(targets)}')
+                        logger.info(f'Обогащение initial sync: обработано постингов={len(targets)}')
             except Exception as e:
-                logging.debug(f'Ошибка обогащения во время initial sync: {e}')
+                logger.debug(f'Ошибка обогащения во время initial sync: {e}')
         except Exception as e:
-            logging.error(f'Ошибка во время первичной загрузки: {e}')
+            logger.error(f'Ошибка во время первичной загрузки: {e}')
             return
         # Маркер, чтобы больше не повторять
         try:
             with open(marker_path, 'w') as f:
                 f.write(datetime.utcnow().isoformat() + 'Z')
-            logging.info('Первичная загрузка завершена, создан маркер')
+            logger.info('Первичная загрузка завершена, создан маркер')
         except Exception as e:
-            logging.error(f'Не удалось записать маркер первичной загрузки: {e}')
+            logger.error(f'Не удалось записать маркер первичной загрузки: {e}')
 
     # Запускаем initial sync (если нужно), затем фоновую задачу
     await run_initial_if_needed()

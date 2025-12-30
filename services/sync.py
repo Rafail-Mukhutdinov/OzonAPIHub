@@ -1,5 +1,6 @@
 import os
 import logging
+logger = logging.getLogger("uvicorn.error")
 import asyncio
 import requests
 from datetime import datetime, timedelta
@@ -100,7 +101,7 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
             body = {"dir": "ASC", "filter": filter_dict, "limit": limit, "offset": current_offset, "translit": True,
                     "with": {"analytics_data": analytics_data, "financial_data": financial_data, "legal_info": legal_info}}
             if LOG_OZON_REQUESTS:
-                logging.debug(f"Ozon request body: {body}")
+                logger.debug(f"Ozon request body: {body}")
             data = ozon_fbo_list(filter_dict, limit, current_offset, {"analytics_data": analytics_data, "financial_data": financial_data, "legal_info": legal_info})
             items = data.get('result', []) or []
             if not items:
@@ -131,9 +132,9 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
                     loop.run_until_complete(asyncio.gather(*(_run_enrich(pn) for pn in posting_numbers)))
                 else:
                     asyncio.run(asyncio.gather(*(_run_enrich(pn) for pn in posting_numbers)))
-                logging.info(f"Обогащение по результатам выгрузки: обработано={len(posting_numbers)}")
+                logger.info(f"Обогащение по результатам выгрузки: обработано={len(posting_numbers)}")
             except Exception as e:
-                logging.debug(f"Ошибка обогащения после выгрузки: {e}")
+                logger.debug(f"Ошибка обогащения после выгрузки: {e}")
         return {"saved": total_saved, "fetched": len(all_orders), "orders": all_orders}
     finally:
         if own_session:
@@ -141,7 +142,7 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
 
 
 async def background_sync_loop(app, interval_seconds: int = 300):
-    logging.info("Фоновая синхронизация запущена")
+    logger.info("Фоновая синхронизация запущена")
     try:
         while True:
             try:
@@ -149,7 +150,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                 app.state.last_sync_new = datetime.utcnow().isoformat() + 'Z'
                 app.state.last_sync_new_saved = res_new.get('saved')
                 app.state.last_sync_new_fetched = res_new.get('fetched')
-                logging.info(f"Инкрементальная синхронизация: добавлено={res_new.get('saved')} получено={res_new.get('fetched')}")
+                logger.info(f"Инкрементальная синхронизация: добавлено={res_new.get('saved')} получено={res_new.get('fetched')}")
 
                 recent_since_dt = datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)
                 recent_since = recent_since_dt.isoformat() + 'Z'
@@ -158,7 +159,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                 app.state.last_sync_recent_saved = res_recent.get('saved')
                 app.state.last_sync_recent_fetched = res_recent.get('fetched')
                 app.state.last_sync_interval_seconds = interval_seconds
-                logging.info(f"Сверка недавнего окна ({RECENT_WINDOW_HOURS}ч): добавлено={res_recent.get('saved')} получено={res_recent.get('fetched')}")
+                logger.info(f"Сверка недавнего окна ({RECENT_WINDOW_HOURS}ч): добавлено={res_recent.get('saved')} получено={res_recent.get('fetched')}")
 
                 # Дополнительно: полное обогащение недавнего окна (без лимитов)
                 try:
@@ -183,9 +184,9 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                                             s.close()
                                     await asyncio.to_thread(_work)
                             await asyncio.gather(*(run_one(pn) for pn in targets))
-                            logging.info(f"Полное обогащение недавнего окна: обработано постингов={len(targets)}")
+                            logger.info(f"Полное обогащение недавнего окна: обработано постингов={len(targets)}")
                 except Exception as e:
-                    logging.debug(f"Ошибка полного обогащения недавнего окна: {e}")
+                    logger.debug(f"Ошибка полного обогащения недавнего окна: {e}")
 
                 if ENRICH_ON_STATUS_CHANGE:
                     try:
@@ -217,9 +218,9 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                                 await asyncio.to_thread(_work)
                         if targets:
                             await asyncio.gather(*(run_one(pn) for pn in targets))
-                            logging.info(f"Переобогащение по изменению статуса: обработано={len(targets)}")
+                            logger.info(f"Переобогащение по изменению статуса: обработано={len(targets)}")
                     except Exception as e:
-                        logging.debug(f"Ошибка переобогащения по статусам: {e}")
+                        logger.debug(f"Ошибка переобогащения по статусам: {e}")
 
                 if ENRICH_RECENT_POSTINGS:
                     try:
@@ -243,9 +244,9 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                                         s.close()
                                 await asyncio.to_thread(_work)
                         await asyncio.gather(*(run_with_sem(pn) for pn in targets))
-                        logging.info(f"Обогащение свежих постингов: обработано={len(targets)}")
+                        logger.info(f"Обогащение свежих постингов: обработано={len(targets)}")
                     except Exception as e:
-                        logging.debug(f"Ошибка фонового обогащения: {e}")
+                        logger.debug(f"Ошибка фонового обогащения: {e}")
 
                 now = datetime.utcnow()
                 if not hasattr(app.state, 'last_month_reconcile'):
@@ -255,7 +256,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                     (now - _iso_to_dt(app.state.last_month_reconcile)).total_seconds() >= MONTH_RECONCILE_INTERVAL_SECONDS
                 )
                 if do_reconcile:
-                    logging.info(f"Начинаю месячную сверку последних {MONTH_RECONCILE_MONTHS} месяцев")
+                    logger.info(f"Начинаю месячную сверку последних {MONTH_RECONCILE_MONTHS} месяцев")
                     base = datetime(now.year, now.month, 1)
                     summaries = []
                     for i in range(MONTH_RECONCILE_MONTHS):
@@ -267,7 +268,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                         try:
                             r = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso)
                             summaries.append((ym, r.get('saved'), r.get('fetched')))
-                            logging.info(f"Месячная сверка {ym}: добавлено={r.get('saved')} получено={r.get('fetched')}")
+                            logger.info(f"Месячная сверка {ym}: добавлено={r.get('saved')} получено={r.get('fetched')}")
                             # Дополнительно: обогатить все новые постинги этого окна, которых ещё нет в нормализованной таблице
                             orders_window = r.get('orders') or []
                             posting_numbers = sorted({o.get('posting_number') for o in orders_window if _valid_posting_number(o.get('posting_number'))})
@@ -290,15 +291,15 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                                                     s.close()
                                             await asyncio.to_thread(_work)
                                     await asyncio.gather(*(run_one(pn) for pn in targets))
-                                    logging.info(f"Обогащение месяца {ym}: обработано постингов={len(targets)}")
+                                    logger.info(f"Обогащение месяца {ym}: обработано постингов={len(targets)}")
                         except Exception as e:
-                            logging.error(f"Ошибка месячной сверки для {ym}: {e}")
+                            logger.error(f"Ошибка месячной сверки для {ym}: {e}")
                     app.state.last_month_reconcile = now.isoformat() + 'Z'
-                    logging.info("Месячная сверка завершена")
+                    logger.info("Месячная сверка завершена")
             except Exception as e:
-                logging.error(f"Ошибка фоновой синхронизации: {e}")
+                logger.error(f"Ошибка фоновой синхронизации: {e}")
                 app.state.last_sync_error = str(e)
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
-        logging.info("Фоновая синхронизация остановлена")
+        logger.info("Фоновая синхронизация остановлена")
         raise

@@ -1,5 +1,6 @@
 import os
 import logging
+logger = logging.getLogger("uvicorn.error")
 import requests
 import time
 
@@ -33,7 +34,7 @@ def ozon_fbo_list(filter_dict: dict, limit: int, offset: int, with_flags: dict):
         "with": with_flags or {"analytics_data": True, "financial_data": True, "legal_info": False},
     }
     if LOG_OZON_REQUESTS:
-        logging.debug(f"Ozon list body: {body}")
+        logger.debug(f"Ozon list body: {body}")
     attempt = 0
     while True:
         try:
@@ -61,7 +62,7 @@ def ozon_fbo_get(posting_number: str):
         "with": {"analytics_data": True, "financial_data": True, "legal_info": False},
     }
     if LOG_OZON_REQUESTS:
-        logging.debug(f"Ozon get body: {body}")
+        logger.debug(f"Ozon get body: {body}")
     attempt = 0
     while True:
         try:
