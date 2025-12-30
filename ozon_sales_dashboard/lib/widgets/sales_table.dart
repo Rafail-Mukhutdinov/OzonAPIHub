@@ -65,24 +65,46 @@ class SalesTable extends StatelessWidget {
                 DataColumn(label: Text('orders_count')),
                 DataColumn(label: Text('payout/amount')),
               ],
-              rows: items.map((it) {
-                final quantity = it['quantity'] ?? it['quantity_sold'] ?? 0;
-                final orders = it['orders_count'] ?? 0;
-                final payout = delivered
-                    ? (it['total_payout'] ?? 0)
-                    : (it['amount_raw'] ?? 0);
-                return DataRow(
-                  cells: [
-                    DataCell(Text('${it['offer_id'] ?? ''}')),
-                    DataCell(
-                      SizedBox(width: 360, child: Text('${it['name'] ?? ''}')),
-                    ),
-                    DataCell(Text('$quantity')),
-                    DataCell(Text('$orders')),
-                    DataCell(Text('$payout')),
-                  ],
-                );
-              }).toList(),
+              rows: [
+                ...items.map((it) {
+                  final quantity = it['quantity'] ?? it['quantity_sold'] ?? 0;
+                  final orders = it['orders_count'] ?? 0;
+                  final payout = delivered
+                      ? (it['total_payout'] ?? 0)
+                      : (it['amount_raw'] ?? 0);
+                  return DataRow(
+                    cells: [
+                      DataCell(Text('${it['offer_id'] ?? ''}')),
+                      DataCell(
+                        SizedBox(width: 360, child: Text('${it['name'] ?? ''}')),
+                      ),
+                      DataCell(Text('$quantity')),
+                      DataCell(Text('$orders')),
+                      DataCell(Text('$payout')),
+                    ],
+                  );
+                }),
+                if (items.isNotEmpty)
+                  DataRow(
+                    color: MaterialStateProperty.all(Colors.grey.shade200),
+                    cells: [
+                      const DataCell(Text('ИТОГО', style: TextStyle(fontWeight: FontWeight.bold))),
+                      const DataCell(Text('')),
+                      DataCell(Text(
+                        items.fold<num>(0, (sum, it) => sum + (it['quantity'] ?? it['quantity_sold'] ?? 0)).toInt().toString(),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      )),
+                      DataCell(Text(
+                        items.fold<num>(0, (sum, it) => sum + (it['orders_count'] ?? 0)).toInt().toString(),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      )),
+                      DataCell(Text(
+                        items.fold<num>(0, (sum, it) => sum + (delivered ? (it['total_payout'] ?? 0) : (it['amount_raw'] ?? 0))).toInt().toString(),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      )),
+                    ],
+                  ),
+              ],
             ),
           ),
         ),
