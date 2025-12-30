@@ -34,6 +34,7 @@ class _SalesDashboardState extends State<SalesDashboard> {
   List<Map<String, dynamic>> items = [];
   Map<String, dynamic>? totals;
   String? error;
+  String? selectedStatus;
 
   String _fmt(DateTime dt) =>
       DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(dt.toUtc());
@@ -46,8 +47,8 @@ class _SalesDashboardState extends State<SalesDashboard> {
     try {
       final qs = {'since': _fmt(since), 'to': _fmt(to)};
       final data = delivered
-          ? await api.getSalesRange(since: qs['since']!, to: qs['to']!)
-          : await api.getSalesRaw(since: qs['since']!, to: qs['to']!);
+          ? await api.getSalesRange(since: qs['since']!, to: qs['to']!, status: selectedStatus)
+          : await api.getSalesRaw(since: qs['since']!, to: qs['to']!, status: selectedStatus);
       final list = (data['items'] as List).cast<Map<String, dynamic>>();
       setState(() {
         items = list;
@@ -87,6 +88,25 @@ class _SalesDashboardState extends State<SalesDashboard> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  String _statusRu(String code) {
+    switch (code) {
+      case 'awaiting_assembly':
+        return 'Ожидает сборки';
+      case 'awaiting_packaging':
+        return 'Ожидает упаковки';
+      case 'awaiting_deliver':
+        return 'Ожидает отгрузки';
+      case 'delivering':
+        return 'Доставляется';
+      case 'delivered':
+        return 'Доставлен';
+      case 'cancelled':
+        return 'Отменён';
+      default:
+        return code;
+    }
   }
 
   @override
@@ -131,6 +151,38 @@ class _SalesDashboardState extends State<SalesDashboard> {
               ],
             ),
             const SizedBox(height: 12),
+            if (totals != null && totals!['by_status'] is List)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 4,
+                  runSpacing: 8,
+                  children: [
+                    FilterChip(
+                      label: const Text('Все статусы'),
+                      selected: selectedStatus == null,
+                      onSelected: (_) => setState(() => selectedStatus = null),
+                    ),
+                    ...(totals!['by_status'] as List)
+                        .cast<Map<String, dynamic>>()
+                        .map(
+                          (s) => FilterChip(
+                            label: Text(
+                              '${_statusRu('${s['status']}')}: ${s['count']}',
+                            ),
+                            selected: selectedStatus == '${s['status']}',
+                            onSelected: (isSelected) {
+                              setState(() {
+                                selectedStatus = isSelected ? '${s['status']}' : null;
+                              });
+                              _load();
+                            },
+                          ),
+                        )
+                        .toList(),
+                  ],
+                ),
+              ),
             if (loading) const LinearProgressIndicator(),
             if (error != null)
               Text('Ошибка: $error', style: const TextStyle(color: Colors.red)),

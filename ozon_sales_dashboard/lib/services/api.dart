@@ -11,6 +11,7 @@ class OzonApiClient {
     required String to,
     String includeStatuses =
         'awaiting_assembly,awaiting_packaging,awaiting_deliver,delivering,delivered,canceled',
+    String? status,
   }) async {
     final resp = await dio.get(
       '/analytics/sales_today_raw',
@@ -18,6 +19,7 @@ class OzonApiClient {
         'since': since,
         'to': to,
         'include_statuses': includeStatuses,
+        if (status != null) 'status': status,
       },
     );
     return _toJson(resp);
@@ -26,10 +28,15 @@ class OzonApiClient {
   Future<Map<String, dynamic>> getSalesRange({
     required String since,
     required String to,
+    String? status,
   }) async {
     final resp = await dio.get(
       '/analytics/sales_range',
-      queryParameters: {'since': since, 'to': to},
+      queryParameters: {
+        'since': since,
+        'to': to,
+        if (status != null) 'status': status,
+      },
     );
     return _toJson(resp);
   }

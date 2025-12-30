@@ -13,6 +13,16 @@ def _parse_iso(dt: str) -> datetime:
     return datetime.fromisoformat(dt.replace("Z", ""))
 
 
+def _filter_items_by_status(items: list, postings_q, status_filter: str | None, db: Session) -> list:
+    """Фильтр товаров по статусу постинга. Если status_filter = None, возвращает все."""
+    if not status_filter:
+        posting_numbers = [p[0] for p in postings_q.all()]
+        return posting_numbers
+    # Берём только постинги с указанным статусом
+    filtered = [p[0] for (p, st) in postings_q.all() if st and st.lower() == status_filter.lower()]
+    return filtered
+
+
 def _range_with_tz(since: str | None, to: str | None, tz_offset_hours: int) -> tuple[datetime, datetime]:
     """
     Возвращает границы интервала в UTC с учётом локального смещения (tz_offset_hours).
@@ -73,31 +83,44 @@ async def sales_by_date(date: str, tz_offset_hours: int = 0, db: Session = Depen
     return await sales_today(since=start.isoformat() + "Z", to=end.isoformat() + "Z", tz_offset_hours=0, db=db)
 
 @router.get("/sales_range")
-async def sales_range(since: str, to: str, tz_offset_hours: int = 0, db: Session = Depends(get_db)):
+async def sales_range(since: str, to: str, tz_offset_hours: int = 0, status: str | None = None, db: Session = Depends(get_db)):
     """Агрегаты по delivered за диапазон с учётом tz_offset_hours.
     Если offset != 0 — считаем, что since/to локальные и конвертируем в UTC.
+    status — фильтр по статусу (если передан, override на delivered).
     """
     start, end = _range_with_tz(since, to, tz_offset_hours)
-    return await sales_today(since=start.isoformat() + "Z", to=end.isoformat() + "Z", tz_offset_hours=0, db=db)
+    return await sales_today(since=start.isoformat() + "Z", to=end.isoformat() + "Z", tz_offset_hours=0, status=status, db=db)
 
 @router.get("/sales_today")
 async def sales_today(
     since: str | None = None,
     to: str | None = None,
     tz_offset_hours: int = 0,
+    status: str | None = None,
     db: Session = Depends(get_db),
 ):
     # Диапазон в UTC с учётом локального смещения
     start, end = _range_with_tz(since, to, tz_offset_hours)
     await _ensure_data_for_range(db, start, end)
-    postings = (
-        db.query(OrderPosting.posting_number)
-        .filter(OrderPosting.status == "delivered")
-        .filter(OrderPosting.fact_delivery_date >= start.isoformat() + "Z")
-        .filter(OrderPosting.fact_delivery_date < end.isoformat() + "Z")
-        .all()
-    )
-    posting_numbers = [p[0] for p in postings]
+    
+    if status:
+        # Фильтруем по указанному статусу
+        postings_q = (
+            db.query(OrderPosting.posting_number, OrderPosting.status)
+            .filter(OrderPosting.in_process_at >= start.isoformat() + "Z")
+            .filter(OrderPosting.in_process_at < end.isoformat() + "Z")
+        )
+        posting_numbers = _filter_items_by_status([], postings_q, status, db)
+    else:
+        # По умолчанию delivered
+        postings = (
+            db.query(OrderPosting.posting_number)
+            .filter(OrderPosting.status == "delivered")
+            .filter(OrderPosting.fact_delivery_date >= start.isoformat() + "Z")
+            .filter(OrderPosting.fact_delivery_date < end.isoformat() + "Z")
+            .all()
+        )
+        posting_numbers = [p[0] for p in postings]
     # Fallback: если по in_process_at ничего не нашли (старая история без обогащения),
     # возьмём posting_number из таблицы orders по created_at
     if not posting_numbers:
@@ -156,12 +179,14 @@ async def sales_today_raw(
     to: str | None = None,
     tz_offset_hours: int = 0,
     include_canceled: bool = True,
+    status: str | None = None,
     db: Session = Depends(get_db),
 ):
     """
     Считает продажи за сегодня по незавершённым статусам: только количество единиц,
     без финансовых показателей. Полезно для оперативной витрины до доставки.
     Параметр include_statuses — через запятую.
+    status — фильтр по одному статусу (если передан, override include_statuses).
     """
     statuses = {s.strip() for s in include_statuses.split(",") if s.strip()}
     start, end = _range_with_tz(since, to, tz_offset_hours)
@@ -173,12 +198,17 @@ async def sales_today_raw(
         .filter(OrderPosting.in_process_at < end.isoformat() + "Z")
     )
     rows = postings_q.all()
-    # Не фильтруем по статусам: считаем все заказы за день принятия в обработку
-    # Если нужно скрыть отменённые, можно использовать include_canceled=false
-    postings = [
-        (pn, st) for (pn, st) in rows
-        if include_canceled or (st is None or ("cancel" not in st.lower()))
-    ]
+    
+    if status:
+        # Фильтруем только по указанному статусу
+        postings = [(pn, st) for (pn, st) in rows if st and st.lower() == status.lower()]
+    else:
+        # Не фильтруем по статусам: считаем все заказы за день принятия в обработку
+        # Если нужно скрыть отменённые, можно использовать include_canceled=false
+        postings = [
+            (pn, st) for (pn, st) in rows
+            if include_canceled or (st is None or ("cancel" not in st.lower()))
+        ]
     # Подготовим сводку по статусам в выборке
     status_counts = {}
     for _, st in postings:
