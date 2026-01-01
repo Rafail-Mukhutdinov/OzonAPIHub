@@ -10,6 +10,7 @@ from db.database import Order, OrderPosting, SessionLocal
 from services.enrichment import enrich_posting_from_ozon
 from services.ozon import ozon_fbo_list
 from db.database import OrderPosting
+from utils.common import valid_posting_number
 
 LOG_OZON_REQUESTS = os.getenv('LOG_OZON_REQUESTS', 'false').lower() in ('1', 'true', 'yes')
 ENRICH_RECENT_POSTINGS = os.getenv('ENRICH_RECENT_POSTINGS', 'true').lower() in ('1', 'true', 'yes')
@@ -27,17 +28,6 @@ MONTH_RECONCILE_MONTHS = int(os.getenv('MONTH_RECONCILE_MONTHS', '3'))
 def _iso_to_dt(s: str):
     s2 = s.rstrip('Z')
     return datetime.fromisoformat(s2)
-
-
-def _valid_posting_number(pn: str | None) -> bool:
-    if not pn:
-        return False
-    if pn.upper().startswith('TEST-POSTING'):
-        return False
-    if '-' not in pn:
-        return False
-    suffix = pn.split('-')[-1]
-    return suffix.isdigit()
 
 
 def save_order(order: dict, db: Session):

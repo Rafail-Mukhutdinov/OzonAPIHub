@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from db.database import Order, OrderPosting, OrderProduct, SessionLocal, get_db
 from services.enrichment import enrich_posting_from_ozon
+from utils.common import valid_posting_number
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -18,19 +19,6 @@ router = APIRouter(prefix="/orders/fbo", tags=["enrichment"])
 # Конфигурация
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
 ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
-
-
-def _valid_posting_number(pn: str | None) -> bool:
-    """Проверяет валидность номера постинга."""
-    if not pn:
-        return False
-    if pn.upper().startswith('TEST-POSTING'):
-        return False
-    if '-' not in pn:
-        return False
-    suffix = pn.split('-')[-1]
-    return suffix.isdigit()
-
 
 def _enrich_with_new_session(posting_number: str):
     """Вспомогательная функция для обогащения в новой сессии."""
