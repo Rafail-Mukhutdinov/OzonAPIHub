@@ -1,9 +1,7 @@
 import os
 import logging
 logger = logging.getLogger("uvicorn.error")
-from concurrent.futures import ThreadPoolExecutor
 import asyncio
-import requests
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from db.database import Order, OrderPosting, SessionLocal
@@ -11,6 +9,8 @@ from services.enrichment import enrich_posting_from_ozon
 from services.ozon import ozon_fbo_list
 from db.database import OrderPosting
 from utils.common import valid_posting_number
+
+_valid_posting_number = valid_posting_number
 
 LOG_OZON_REQUESTS = os.getenv('LOG_OZON_REQUESTS', 'false').lower() in ('1', 'true', 'yes')
 ENRICH_RECENT_POSTINGS = os.getenv('ENRICH_RECENT_POSTINGS', 'true').lower() in ('1', 'true', 'yes')
@@ -105,26 +105,43 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
             if len(items) < limit:
                 break
             current_offset += limit
+        enrich_targets = []
         if ENRICH_ON_FETCH and all_orders:
             try:
-                posting_numbers = sorted({o.get('posting_number') for o in all_orders if _valid_posting_number(o.get('posting_number'))})[:ENRICH_ON_FETCH_LIMIT]
-                def _work(pn):
-                    session = SessionLocal()
-                    try:
-                        enrich_posting_from_ozon(pn, session)
-                    finally:
-                        session.close()
-                with ThreadPoolExecutor(max_workers=ENRICH_CONCURRENCY) as executor:
-                    futures = [executor.submit(_work, pn) for pn in posting_numbers]
-                    for f in futures:
-                        f.result()
-                logger.info(f"Обогащение по результатам выгрузки: обработано={len(posting_numbers)}")
+                enrich_targets = sorted({o.get('posting_number') for o in all_orders if valid_posting_number(o.get('posting_number'))})[:ENRICH_ON_FETCH_LIMIT]
             except Exception as e:
-                logger.debug(f"Ошибка обогащения после выгрузки: {e}")
-        return {"saved": total_saved, "fetched": len(all_orders), "orders": all_orders}
+                logger.debug(f"Ошибка подготовки списка обогащения после выгрузки: {e}")
+        return {"saved": total_saved, "fetched": len(all_orders), "orders": all_orders, "enrich_targets": enrich_targets}
     finally:
         if own_session:
             db.close()
+
+
+async def run_enrichment_batch(posting_numbers: list[str]):
+    """Асинхронно обогащает постинги с ограничением конкурентности."""
+    if not posting_numbers:
+        return 0
+
+    targets = [pn for pn in posting_numbers if valid_posting_number(pn)]
+    if not targets:
+        return 0
+
+    logger.info(f"Запуск обогащения для {len(targets)} постингов...")
+    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+
+    async def _run_one(pn: str):
+        async with sem:
+            def _work():
+                session = SessionLocal()
+                try:
+                    enrich_posting_from_ozon(pn, session)
+                finally:
+                    session.close()
+            return await asyncio.to_thread(_work)
+
+    await asyncio.gather(*(_run_one(pn) for pn in targets))
+    logger.info(f"Обогащение завершено для {len(targets)} постингов")
+    return len(targets)
 
 
 async def background_sync_loop(app, interval_seconds: int = 300):
@@ -138,6 +155,13 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                 app.state.last_sync_new_fetched = res_new.get('fetched')
                 logger.info(f"Инкрементальная синхронизация: добавлено={res_new.get('saved')} получено={res_new.get('fetched')}")
 
+                targets_new = res_new.get('enrich_targets') or []
+                if targets_new:
+                    try:
+                        await run_enrichment_batch(targets_new)
+                    except Exception as e:
+                        logger.debug(f"Ошибка обогащения после инкрементальной синхронизации: {e}")
+
                 recent_since_dt = datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)
                 recent_since = recent_since_dt.isoformat() + 'Z'
                 res_recent = await asyncio.to_thread(fetch_and_save_orders, recent_since, None)
@@ -150,7 +174,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                 # Дополнительно: полное обогащение недавнего окна (без лимитов)
                 try:
                     recent_orders = res_recent.get('orders') or []
-                    posting_numbers = sorted({o.get('posting_number') for o in recent_orders if _valid_posting_number(o.get('posting_number'))})
+                    posting_numbers = sorted({o.get('posting_number') for o in recent_orders if valid_posting_number(o.get('posting_number'))})
                     if posting_numbers:
                         session = SessionLocal()
                         try:
@@ -159,17 +183,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                             session.close()
                         targets = [pn for pn in posting_numbers if pn not in existing]
                         if targets:
-                            sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-                            async def run_one(pn):
-                                async with sem:
-                                    def _work():
-                                        s = SessionLocal()
-                                        try:
-                                            enrich_posting_from_ozon(pn, s)
-                                        finally:
-                                            s.close()
-                                    await asyncio.to_thread(_work)
-                            await asyncio.gather(*(run_one(pn) for pn in targets))
+                            await run_enrichment_batch(targets)
                             logger.info(f"Полное обогащение недавнего окна: обработано постингов={len(targets)}")
                 except Exception as e:
                     logger.debug(f"Ошибка полного обогащения недавнего окна: {e}")
@@ -182,7 +196,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                             candidates = []
                             for it in recent_items:
                                 pn = it.get('posting_number')
-                                if not _valid_posting_number(pn):
+                                if not valid_posting_number(pn):
                                     continue
                                 new_status = it.get('status')
                                 row = session.query(OrderPosting).filter(OrderPosting.posting_number == pn).first()
@@ -192,18 +206,8 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                             targets = sorted(set(candidates))[:ENRICH_STATUS_CHANGE_LIMIT]
                         finally:
                             session.close()
-                        sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-                        async def run_one(pn):
-                            async with sem:
-                                def _work():
-                                    s = SessionLocal()
-                                    try:
-                                        enrich_posting_from_ozon(pn, s)
-                                    finally:
-                                        s.close()
-                                await asyncio.to_thread(_work)
                         if targets:
-                            await asyncio.gather(*(run_one(pn) for pn in targets))
+                            await run_enrichment_batch(targets)
                             logger.info(f"Переобогащение по изменению статуса: обработано={len(targets)}")
                     except Exception as e:
                         logger.debug(f"Ошибка переобогащения по статусам: {e}")
@@ -216,20 +220,10 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                             fresh_orders = session.query(Order.posting_number).filter(Order.created_at >= since_iso).order_by(Order.created_at.desc()).limit(ENRICH_RECENT_LIMIT).all()
                             fresh_norm = session.query(OrderPosting.posting_number).filter(OrderPosting.created_at >= since_iso).order_by(OrderPosting.created_at.desc()).limit(ENRICH_RECENT_LIMIT).all()
                             raw_targets = [o[0] for o in fresh_orders] + [n[0] for n in fresh_norm]
-                            targets = sorted({pn for pn in raw_targets if _valid_posting_number(pn)})
+                            targets = sorted({pn for pn in raw_targets if valid_posting_number(pn)})
                         finally:
                             session.close()
-                        sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-                        async def run_with_sem(pn):
-                            async with sem:
-                                def _work():
-                                    s = SessionLocal()
-                                    try:
-                                        enrich_posting_from_ozon(pn, s)
-                                    finally:
-                                        s.close()
-                                await asyncio.to_thread(_work)
-                        await asyncio.gather(*(run_with_sem(pn) for pn in targets))
+                        await run_enrichment_batch(targets)
                         logger.info(f"Обогащение свежих постингов: обработано={len(targets)}")
                     except Exception as e:
                         logger.debug(f"Ошибка фонового обогащения: {e}")
@@ -257,7 +251,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                             logger.info(f"Месячная сверка {ym}: добавлено={r.get('saved')} получено={r.get('fetched')}")
                             # Дополнительно: обогатить все новые постинги этого окна, которых ещё нет в нормализованной таблице
                             orders_window = r.get('orders') or []
-                            posting_numbers = sorted({o.get('posting_number') for o in orders_window if _valid_posting_number(o.get('posting_number'))})
+                            posting_numbers = sorted({o.get('posting_number') for o in orders_window if valid_posting_number(o.get('posting_number'))})
                             if posting_numbers:
                                 session = SessionLocal()
                                 try:
@@ -266,17 +260,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                                     session.close()
                                 targets = [pn for pn in posting_numbers if pn not in existing]
                                 if targets:
-                                    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-                                    async def run_one(pn):
-                                        async with sem:
-                                            def _work():
-                                                s = SessionLocal()
-                                                try:
-                                                    enrich_posting_from_ozon(pn, s)
-                                                finally:
-                                                    s.close()
-                                            await asyncio.to_thread(_work)
-                                    await asyncio.gather(*(run_one(pn) for pn in targets))
+                                    await run_enrichment_batch(targets)
                                     logger.info(f"Обогащение месяца {ym}: обработано постингов={len(targets)}")
                         except Exception as e:
                             logger.error(f"Ошибка месячной сверки для {ym}: {e}")

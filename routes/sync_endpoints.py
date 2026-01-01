@@ -5,11 +5,9 @@ import os
 import asyncio
 import logging
 from fastapi import APIRouter, HTTPException
-from sqlalchemy.orm import Session
 from db.database import SessionLocal, Order, OrderPosting
 from datetime import datetime, timedelta
-from services.sync import fetch_and_save_orders, background_sync_loop
-from services.enrichment import enrich_posting_from_ozon
+from services.sync import fetch_and_save_orders, background_sync_loop, run_enrichment_batch
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -19,7 +17,6 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 ENABLE_INITIAL_SYNC = os.getenv('ENABLE_INITIAL_SYNC', 'true').lower() in ('1', 'true', 'yes')
 INITIAL_WINDOW_DAYS = int(os.getenv('INITIAL_WINDOW_DAYS', '365'))
 HISTORY_WINDOW_DAYS = int(os.getenv('HISTORY_WINDOW_DAYS', '30'))
-ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
 
 
@@ -281,17 +278,7 @@ async def startup_sync_tasks(app):
                     
                     targets = [pn for pn in pns if pn not in existing]
                     if targets:
-                        sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-                        
-                        async def run_one(pn):
-                            async with sem:
-                                db = SessionLocal()
-                                try:
-                                    await asyncio.to_thread(enrich_posting_from_ozon, pn, db)
-                                finally:
-                                    db.close()
-                        
-                        await asyncio.gather(*(run_one(pn) for pn in targets))
+                        await run_enrichment_batch(targets)
                         logger.info(f'Обогащение initial sync: обработано постингов={len(targets)}')
             except Exception as e:
                 logger.debug(f'Ошибка обогащения во время initial sync: {e}')

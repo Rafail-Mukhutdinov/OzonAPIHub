@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
-from db.database import OrderPosting, OrderProduct, Order, get_db, SessionLocal
+from db.database import OrderPosting, OrderProduct, Order, get_db
 import asyncio
-from services.sync import fetch_and_save_orders, _valid_posting_number
-from services.enrichment import enrich_posting_from_ozon
+from services.sync import fetch_and_save_orders, run_enrichment_batch
+from utils.common import valid_posting_number
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -58,22 +58,12 @@ async def _ensure_data_for_range(db: Session, start: datetime, end: datetime):
     if not (has_orders or has_postings):
         res = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso, "", 50, 0, True, True, False, db)
         orders = res.get("orders") or []
-        pns = [o.get("posting_number") for o in orders if _valid_posting_number(o.get("posting_number"))]
+        pns = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
         if pns:
             existing = set(r[0] for r in db.query(OrderPosting.posting_number).filter(OrderPosting.posting_number.in_(pns)).all())
             targets = [pn for pn in set(pns) if pn not in existing]
             if targets:
-                sem = asyncio.Semaphore(4)
-                async def run_one(pn):
-                    async with sem:
-                        def _work():
-                            local_db = SessionLocal()
-                            try:
-                                enrich_posting_from_ozon(pn, local_db)
-                            finally:
-                                local_db.close()
-                        await asyncio.to_thread(_work)
-                await asyncio.gather(*(run_one(pn) for pn in targets))
+                await run_enrichment_batch(targets)
 @router.get("/sales_by_date")
 async def sales_by_date(date: str, tz_offset_hours: int = 0, db: Session = Depends(get_db)):
     """Агрегаты по delivered за конкретную локальную дату (с учётом tz_offset_hours)."""
