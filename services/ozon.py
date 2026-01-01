@@ -1,8 +1,9 @@
 import os
 import logging
+import httpx
+import asyncio
+
 logger = logging.getLogger("uvicorn.error")
-import requests
-import time
 
 LOG_OZON_REQUESTS = os.getenv('LOG_OZON_REQUESTS', 'false').lower() in ('1', 'true', 'yes')
 BASE_URL = "https://api-seller.ozon.ru"
@@ -23,7 +24,8 @@ def _headers():
     }
 
 
-def ozon_fbo_list(filter_dict: dict, limit: int, offset: int, with_flags: dict):
+async def ozon_fbo_list_async(filter_dict: dict, limit: int, offset: int, with_flags: dict):
+    """Асинхронно получить список FBO постингов из Ozon API."""
     url = f"{BASE_URL}/v2/posting/fbo/list"
     body = {
         "dir": "ASC",
@@ -35,26 +37,30 @@ def ozon_fbo_list(filter_dict: dict, limit: int, offset: int, with_flags: dict):
     }
     if LOG_OZON_REQUESTS:
         logger.debug(f"Ozon list body: {body}")
+    
     attempt = 0
-    while True:
+    while attempt <= MAX_RETRIES:
         try:
-            r = requests.post(url, headers=_headers(), json=body, timeout=DEFAULT_TIMEOUT)
-            r.raise_for_status()
-            return r.json()
-        except requests.RequestException as e:
-            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            async with httpx.AsyncClient() as client:
+                r = await client.post(url, headers=_headers(), json=body, timeout=DEFAULT_TIMEOUT)
+                r.raise_for_status()
+                return r.json()
+        except httpx.HTTPError as e:
+            status = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
             retryable = (
-                isinstance(e, (requests.Timeout, requests.ConnectionError)) or
+                isinstance(e, (httpx.TimeoutException, httpx.ConnectError)) or
                 (status in (429, 500, 502, 503, 504))
             )
             if retryable and attempt < MAX_RETRIES:
                 attempt += 1
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                wait_time = RETRY_BACKOFF_SECONDS * attempt
+                await asyncio.sleep(wait_time)
                 continue
             raise
 
 
-def ozon_fbo_get(posting_number: str):
+async def ozon_fbo_get_async(posting_number: str):
+    """Асинхронно получить детали FBO постинга из Ozon API."""
     url = f"{BASE_URL}/v2/posting/fbo/get"
     body = {
         "posting_number": posting_number,
@@ -63,20 +69,34 @@ def ozon_fbo_get(posting_number: str):
     }
     if LOG_OZON_REQUESTS:
         logger.debug(f"Ozon get body: {body}")
+    
     attempt = 0
-    while True:
+    while attempt <= MAX_RETRIES:
         try:
-            r = requests.post(url, headers=_headers(), json=body, timeout=DEFAULT_TIMEOUT)
-            r.raise_for_status()
-            return r.json()
-        except requests.RequestException as e:
-            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            async with httpx.AsyncClient() as client:
+                r = await client.post(url, headers=_headers(), json=body, timeout=DEFAULT_TIMEOUT)
+                r.raise_for_status()
+                return r.json()
+        except httpx.HTTPError as e:
+            status = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
             retryable = (
-                isinstance(e, (requests.Timeout, requests.ConnectionError)) or
+                isinstance(e, (httpx.TimeoutException, httpx.ConnectError)) or
                 (status in (429, 500, 502, 503, 504))
             )
             if retryable and attempt < MAX_RETRIES:
                 attempt += 1
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                wait_time = RETRY_BACKOFF_SECONDS * attempt
+                await asyncio.sleep(wait_time)
                 continue
             raise
+
+
+# Синхронные обёртки для обратной совместимости (используются в services/sync.py)
+def ozon_fbo_list(filter_dict: dict, limit: int, offset: int, with_flags: dict = None):
+    """Синхронная обёртка вокруг async функции."""
+    return asyncio.run(ozon_fbo_list_async(filter_dict, limit, offset, with_flags))
+
+
+def ozon_fbo_get(posting_number: str):
+    """Синхронная обёртка вокруг async функции."""
+    return asyncio.run(ozon_fbo_get_async(posting_number))
