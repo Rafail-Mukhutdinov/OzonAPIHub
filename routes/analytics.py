@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime, timedelta
 from db.database import OrderPosting, OrderProduct, Order, get_db, SessionLocal
 import asyncio
@@ -138,33 +139,36 @@ async def sales_today(
             "total_items": 0,
             "total_orders": 0,
         }
-    products = db.query(OrderProduct).filter(OrderProduct.posting_number.in_(posting_numbers)).all()
-    agg = {}
-    for pr in products:
-        key = pr.offer_id or (str(pr.sku) if pr.sku is not None else "<no-offer>")
-        if key not in agg:
-            agg[key] = {
-                "offer_id": pr.offer_id,
-                "sku": pr.sku,
-                "name": pr.name,
-                "quantity_sold": 0,
-                "total_payout": 0,
-                "orders_count": 0,
-                "_postings": set(),
-            }
-        q = pr.quantity or 0
-        agg[key]["quantity_sold"] += q
-        agg[key]["total_payout"] += pr.payout or 0
-        pn = getattr(pr, "posting_number", None)
-        if pn and pn not in agg[key]["_postings"]:
-            agg[key]["_postings"].add(pn)
-            agg[key]["orders_count"] += 1
-    # Очистим служебные поля
-    for v in agg.values():
-        v.pop("_postings", None)
-    items = sorted(agg.values(), key=lambda x: (-x["quantity_sold"], x.get("offer_id") or ""))
+    # Агрегируем на стороне БД, чтобы не тянуть все строки в память
+    rows = (
+        db.query(
+            OrderProduct.offer_id,
+            OrderProduct.sku,
+            OrderProduct.name,
+            func.sum(OrderProduct.quantity).label("quantity_sold"),
+            func.sum(OrderProduct.payout).label("total_payout"),
+            func.count(func.distinct(OrderProduct.posting_number)).label("orders_count"),
+        )
+        .filter(OrderProduct.posting_number.in_(posting_numbers))
+        .group_by(OrderProduct.offer_id, OrderProduct.sku, OrderProduct.name)
+        .all()
+    )
+
+    items = [
+        {
+            "offer_id": r.offer_id,
+            "sku": r.sku,
+            "name": r.name,
+            "quantity_sold": r.quantity_sold or 0,
+            "total_payout": r.total_payout or 0,
+            "orders_count": r.orders_count or 0,
+        }
+        for r in rows
+    ]
+
+    items = sorted(items, key=lambda x: (-x["quantity_sold"], x.get("offer_id") or ""))
     total_items = sum(i["quantity_sold"] for i in items)
-    total_orders = sum(i.get("orders_count", 0) for i in items)
+    total_orders = len(set(posting_numbers))
     return {
         "range": {"since": start.isoformat() + "Z", "to": end.isoformat() + "Z"},
         "items": items,
@@ -215,47 +219,41 @@ async def sales_today_raw(
         label = st or "unknown"
         status_counts[label] = status_counts.get(label, 0) + 1
     posting_numbers = [p[0] for p in postings]
-    products = db.query(OrderProduct).filter(OrderProduct.posting_number.in_(posting_numbers)).all()
-    agg = {}
-    for pr in products:
-        key = pr.offer_id or str(pr.sku)
-        if key not in agg:
-            agg[key] = {
-                "offer_id": pr.offer_id,
-                "sku": pr.sku,
-                "name": pr.name,
-                "quantity": 0,
-                "amount_raw": 0,
-                "orders_count": 0,
-                "_postings": set(),
-            }
-        q = pr.quantity or 0
-        agg[key]["quantity"] += q
-        # Учёт количества заказов (уникальных постингов) по артикулу
-        pn = getattr(pr, "posting_number", None)
-        if pn and pn not in agg[key]["_postings"]:
-            agg[key]["_postings"].add(pn)
-            agg[key]["orders_count"] += 1
-        # Если есть цена товара (unit_price), оценим сумму заказа как цена * количество
-        # В некоторых интеграциях цена хранится в pr.price; используем, если поле существует
-        unit_price = getattr(pr, "price", None)
-        if unit_price is not None:
-            try:
-                agg[key]["amount_raw"] += (unit_price or 0) * q
-            except Exception:
-                pass
-    # Очистим служебные поля
-    for v in agg.values():
-        if "_postings" in v:
-            v.pop("_postings", None)
-    # Уникальные отправления по всему выбору для корректного тотала заказов
+    # Агрегируем на стороне БД
+    amount_expr = func.sum(func.coalesce(OrderProduct.price, 0) * func.coalesce(OrderProduct.quantity, 0))
+    rows_products = (
+        db.query(
+            OrderProduct.offer_id,
+            OrderProduct.sku,
+            OrderProduct.name,
+            func.sum(OrderProduct.quantity).label("quantity"),
+            func.count(func.distinct(OrderProduct.posting_number)).label("orders_count"),
+            amount_expr.label("amount_raw"),
+        )
+        .filter(OrderProduct.posting_number.in_(posting_numbers))
+        .group_by(OrderProduct.offer_id, OrderProduct.sku, OrderProduct.name)
+        .all()
+    )
+
+    items = [
+        {
+            "offer_id": r.offer_id,
+            "sku": r.sku,
+            "name": r.name,
+            "quantity": r.quantity or 0,
+            "amount_raw": r.amount_raw or 0,
+            "orders_count": r.orders_count or 0,
+        }
+        for r in rows_products
+    ]
+
     unique_postings_total = len(set(posting_numbers))
     return {
         "range": {"since": start.isoformat() + "Z", "to": end.isoformat() + "Z"},
-        "items": sorted(agg.values(), key=lambda x: (-x["quantity"], x.get("offer_id") or "")),
-        "total_items": sum(v["quantity"] for v in agg.values()),
+        "items": sorted(items, key=lambda x: (-x["quantity"], x.get("offer_id") or "")),
+        "total_items": sum(v["quantity"] for v in items),
         "total_orders": unique_postings_total,
-        "total_amount_raw": sum(v.get("amount_raw", 0) for v in agg.values()),
+        "total_amount_raw": sum(v.get("amount_raw", 0) for v in items),
         "statuses": sorted({st for _, st in rows if st}),
         "by_status": [{"status": k, "count": v} for k, v in sorted(status_counts.items(), key=lambda x: (-x[1], x[0]))],
     }
