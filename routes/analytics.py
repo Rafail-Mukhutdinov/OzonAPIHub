@@ -296,14 +296,14 @@ async def sales_by_sku_monthly(
     if not posting_numbers:
         return {"data": [], "sku": sku or offer_id}
     
-    # Фильтруем товары по offer_id или sku
+    # Фильтруем товары по offer_id И sku (оба параметра)
     product_filter = db.query(OrderProduct).filter(
         OrderProduct.posting_number.in_(posting_numbers)
     )
     
     if offer_id:
         product_filter = product_filter.filter(OrderProduct.offer_id == offer_id)
-    elif sku:
+    if sku:
         product_filter = product_filter.filter(OrderProduct.sku == sku)
     
     products = product_filter.all()
