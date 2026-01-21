@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'services/api.dart';
@@ -18,6 +19,11 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Ozon Sales Dashboard',
       theme: ThemeData(colorSchemeSeed: Colors.blue, useMaterial3: true),
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      supportedLocales: const [
+        Locale('en', 'US'),
+        Locale('ru', 'RU'),
+      ],
       home: const SalesDashboard(),
     );
   }
