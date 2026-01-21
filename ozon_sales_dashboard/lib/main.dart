@@ -246,7 +246,7 @@ class _SalesDashboardState extends State<SalesDashboard> {
                               runSpacing: 8,
                               children: [
                                 ...items.take(10).map((item) {
-                                  final sku = item['sku'] ?? item['offer_id'] ?? '';
+                                  final sku = '${item['sku'] ?? item['offer_id'] ?? ''}';
                                   final isSelected = selectedChartSku == sku;
                                   return FilterChip(
                                     label: Text(sku),
