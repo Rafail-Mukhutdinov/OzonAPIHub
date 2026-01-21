@@ -361,7 +361,16 @@ async def sales_by_sku_monthly(
             }
         
         monthly_data[month_key]["quantity_sold"] += prod.quantity or 0
-        monthly_data[month_key]["total_payout"] += prod.payout or 0
+
+        # В режиме отгрузок считаем оборот (price * qty), в финансах — payout
+        if mode == "shipped":
+            price = prod.price or 0
+            qty = prod.quantity or 0
+            money_value = price * qty
+        else:
+            money_value = prod.payout or 0
+
+        monthly_data[month_key]["total_payout"] += money_value
         monthly_data[month_key]["orders_count"].add(prod.posting_number)
     
     # Конвертируем в список и сортируем по месяцам
