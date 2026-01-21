@@ -63,6 +63,7 @@ class OzonApiClient {
     String? offerId,
     String? sku,
     int monthsBack = 12,
+    String mode = 'delivered',
   }) async {
     final resp = await dio.get(
       '/analytics/sales_by_sku_monthly',
@@ -70,6 +71,7 @@ class OzonApiClient {
         if (offerId != null) 'offer_id': offerId,
         if (sku != null) 'sku': sku,
         'months_back': monthsBack,
+        'mode': mode,
       },
     );
     return _toJson(resp);

@@ -46,6 +46,9 @@ class _SalesDashboardState extends State<SalesDashboard> {
   Map<String, List<Map<String, dynamic>>> chartDataByItem = {};
   bool chartLoading = false;
   String? chartError;
+  
+  // Режим отображения графика: 'delivered' (финансы) или 'shipped' (отгрузки)
+  String chartMode = 'delivered';
 
   String _fmt(DateTime dt) =>
       DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(dt.toUtc());
@@ -111,6 +114,7 @@ class _SalesDashboardState extends State<SalesDashboard> {
         offerId: offerId,
         sku: sku,
         monthsBack: 12,
+        mode: chartMode,
       );
       final list = (data['data'] as List).cast<Map<String, dynamic>>();
       setState(() {
@@ -258,6 +262,46 @@ class _SalesDashboardState extends State<SalesDashboard> {
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
                               ),
+                            ),
+                            const SizedBox(height: 12),
+                            // Кнопки для переключения режима
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                ChoiceChip(
+                                  label: const Text('Финансы (Доставлено)'),
+                                  selected: chartMode == 'delivered',
+                                  onSelected: (selected) {
+                                    if (selected && chartMode != 'delivered') {
+                                      setState(() => chartMode = 'delivered');
+                                      // Перезагрузить все графики с новым режимом
+                                      for (final itemKey in selectedChartItems) {
+                                        final parts = itemKey.split('|');
+                                        if (parts.length == 2) {
+                                          _loadChart(parts[0], parts[1]);
+                                        }
+                                      }
+                                    }
+                                  },
+                                ),
+                                ChoiceChip(
+                                  label: const Text('Отгрузки (В работе)'),
+                                  selected: chartMode == 'shipped',
+                                  onSelected: (selected) {
+                                    if (selected && chartMode != 'shipped') {
+                                      setState(() => chartMode = 'shipped');
+                                      // Перезагрузить все графики с новым режимом
+                                      for (final itemKey in selectedChartItems) {
+                                        final parts = itemKey.split('|');
+                                        if (parts.length == 2) {
+                                          _loadChart(parts[0], parts[1]);
+                                        }
+                                      }
+                                    }
+                                  },
+                                ),
+                              ],
                             ),
                             const SizedBox(height: 12),
                             Wrap(
