@@ -44,6 +44,8 @@ class OzonApiClient {
   Future<Map<String, dynamic>> getSalesBySkuMonthly({
     String? offerId,
     String? sku,
+    String? since,
+    String? to,
     int monthsBack = 12,
   }) async {
     final resp = await dio.get(
@@ -51,6 +53,8 @@ class OzonApiClient {
       queryParameters: {
         if (offerId != null) 'offer_id': offerId,
         if (sku != null) 'sku': sku,
+        if (since != null) 'since': since,
+        if (to != null) 'to': to,
         'months_back': monthsBack,
       },
     );

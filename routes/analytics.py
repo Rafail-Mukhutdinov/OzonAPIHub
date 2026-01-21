@@ -266,6 +266,8 @@ async def orders_today(db: Session = Depends(get_db)):
 async def sales_by_sku_monthly(
     offer_id: str | None = None,
     sku: str | None = None,
+    since: str | None = None,
+    to: str | None = None,
     months_back: int = 12,
     db: Session = Depends(get_db),
 ):
@@ -274,22 +276,30 @@ async def sales_by_sku_monthly(
     Параметры:
     - offer_id: ID предложения (или sku для фильтра)
     - sku: SKU товара (или offer_id для фильтра)
-    - months_back: сколько месяцев назад смотреть (по умолчанию 12)
+    - since, to: фильтр по дате доставки (ISO format, опционально)
+    - months_back: сколько месяцев назад смотреть (по умолчанию 12, если since/to не указаны)
     
     Возвращает: список объектов {month, quantity_sold, total_payout, orders_count}
     """
     if not offer_id and not sku:
         return {"error": "Укажите offer_id или sku", "data": []}
     
-    # Берём delivered постинги из последних N месяцев
-    now = datetime.utcnow()
-    start_date = now - timedelta(days=30 * months_back)
-    start_iso = start_date.isoformat() + "Z"
+    # Определяем диапазон дат
+    if since and to:
+        start_iso = since
+        end_iso = to
+    else:
+        # Берём delivered постинги из последних N месяцев
+        now = datetime.utcnow()
+        start_date = now - timedelta(days=30 * months_back)
+        start_iso = start_date.isoformat() + "Z"
+        end_iso = now.isoformat() + "Z"
     
-    # Фильтруем постинги
+    # Фильтруем постинги с синхронизацией с sales_today
     posting_q = db.query(OrderPosting.posting_number).filter(
         OrderPosting.status == "delivered",
-        OrderPosting.fact_delivery_date >= start_iso
+        OrderPosting.fact_delivery_date >= start_iso,
+        OrderPosting.fact_delivery_date < end_iso
     )
     posting_numbers = [p[0] for p in posting_q.all()]
     
