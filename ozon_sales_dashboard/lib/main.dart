@@ -1,15 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
-import 'config/api_config.dart';
 import 'services/api.dart';
 import 'widgets/sales_table.dart';
 import 'widgets/sales_chart.dart';
 
 void main() {
-  // Инициализировать API конфиг
-  ApiConfig.initialize();
-  // Инициализировать данные для русской локали перед запуском
+  // Инициализировать русскую локаль для форматирования дат
   initializeDateFormatting('ru_RU', null).then((_) {
     runApp(const MyApp());
   });

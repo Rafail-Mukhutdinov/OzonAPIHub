@@ -2,25 +2,24 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import '../config/api_config.dart';
 
 class OzonApiClient {
   final Dio dio;
 
-  /// Автоматический выбор URL в зависимости от платформы
-  static String _defaultBaseUrl() {
-    // Если запускаем в браузере или на iOS/Desktop -> localhost
-    if (kIsWeb || !Platform.isAndroid) {
-      return 'http://127.0.0.1:8080';
+  /// Умный выбор адреса в зависимости от платформы
+  static String get _defaultBaseUrl {
+    // На Android эмуляторе нужен спец. адрес, который маппится на хост-машину
+    if (!kIsWeb && Platform.isAndroid) {
+      return 'http://10.0.2.2:8080';
     }
-    // Если Android эмулятор -> спец. адрес 10.0.2.2 (указывает на хост-машину)
-    return 'http://10.0.2.2:8080';
+    // Везде else: Web, iOS, Desktop -> localhost
+    return 'http://127.0.0.1:8080';
   }
 
   /// Создает клиент с автоматическим выбором URL или явно переданным
   OzonApiClient({String? baseUrl})
     : dio = Dio(BaseOptions(
-        baseUrl: baseUrl ?? _defaultBaseUrl(),
+        baseUrl: baseUrl ?? _defaultBaseUrl,
         connectTimeout: const Duration(seconds: 30),
         receiveTimeout: const Duration(seconds: 30),
       ));
