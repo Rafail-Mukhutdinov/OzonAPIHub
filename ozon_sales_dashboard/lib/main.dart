@@ -100,15 +100,7 @@ class _SalesDashboardState extends State<SalesDashboard> {
       }
     });
     try {
-      // Используем тот же диапазон дат, что и для таблицы
-      final sinceStr = DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(since.toUtc());
-      final toStr = DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(to.toUtc());
-      
-      final data = await api.getSalesBySkuMonthly(
-        sku: sku,
-        since: sinceStr,
-        to: toStr,
-      );
+      final data = await api.getSalesBySkuMonthly(sku: sku, monthsBack: 12);
       final list = (data['data'] as List).cast<Map<String, dynamic>>();
       setState(() {
         chartDataBySku[sku] = list;
