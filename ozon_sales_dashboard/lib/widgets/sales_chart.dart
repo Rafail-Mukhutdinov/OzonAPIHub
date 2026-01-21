@@ -109,32 +109,7 @@ class _SalesChartState extends State<SalesChart> {
                     touchTooltipData: BarTouchTooltipData(
                       getTooltipColor: (_) => Colors.grey.shade800,
                       tooltipPadding: const EdgeInsets.all(8),
-                      getTooltipText: (group, groupIndex, rod, rodIndex) {
-                        final item = widget.monthlyData[groupIndex];
-                        final month = item['month'] ?? '';
-                        final qty = item['quantity_sold'] ?? 0;
-                        final sum = item['total_payout'] ?? 0;
-                        final orders = item['orders_count'] ?? 0;
-                        return TextSpan(
-                          children: [
-                            TextSpan(
-                              text: '$month\n',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            TextSpan(
-                              text: 'Кол-во: $qty\n',
-                            ),
-                            TextSpan(
-                              text: 'Сумма: $sum ₽\n',
-                            ),
-                            TextSpan(
-                              text: 'Заказов: $orders',
-                            ),
-                          ],
-                        );
-                      },
+                      tooltipMargin: 8,
                     ),
                   ),
                   titlesData: FlTitlesData(

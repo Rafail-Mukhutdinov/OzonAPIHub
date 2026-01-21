@@ -32,100 +32,99 @@ class SalesTable extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        if (totals != null && totals!['by_status'] is List)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: (totals!['by_status'] as List)
-                  .cast<Map<String, dynamic>>()
-                  .map(
-                    (s) => Chip(
-                      label: Text(
-                        '${_statusRu('${s['status']}')}: ${s['count']}',
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (totals != null && totals!['by_status'] is List)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: (totals!['by_status'] as List)
+                    .cast<Map<String, dynamic>>()
+                    .map(
+                      (s) => Chip(
+                        label: Text(
+                          '${_statusRu('${s['status']}')}: ${s['count']}',
+                        ),
+                        visualDensity: VisualDensity.compact,
                       ),
-                      visualDensity: VisualDensity.compact,
+                    )
+                    .toList(),
+              ),
+            ),
+          DataTable(
+            columns: const [
+              DataColumn(label: Text('offer_id')),
+              DataColumn(label: Text('name')),
+              DataColumn(label: Text('quantity')),
+              DataColumn(label: Text('orders_count')),
+              DataColumn(label: Text('payout/amount')),
+            ],
+            rows: [
+              ...items.map((it) {
+                final quantity = it['quantity'] ?? it['quantity_sold'] ?? 0;
+                final orders = it['orders_count'] ?? 0;
+                final payout = delivered
+                    ? (it['total_payout'] ?? 0)
+                    : (it['amount_raw'] ?? 0);
+                return DataRow(
+                  cells: [
+                    DataCell(Text('${it['offer_id'] ?? ''}')),
+                    DataCell(
+                      SizedBox(width: 360, child: Text('${it['name'] ?? ''}')),
                     ),
-                  )
-                  .toList(),
-            ),
-          ),
-        Expanded(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
-              columns: const [
-                DataColumn(label: Text('offer_id')),
-                DataColumn(label: Text('name')),
-                DataColumn(label: Text('quantity')),
-                DataColumn(label: Text('orders_count')),
-                DataColumn(label: Text('payout/amount')),
-              ],
-              rows: [
-                ...items.map((it) {
-                  final quantity = it['quantity'] ?? it['quantity_sold'] ?? 0;
-                  final orders = it['orders_count'] ?? 0;
-                  final payout = delivered
-                      ? (it['total_payout'] ?? 0)
-                      : (it['amount_raw'] ?? 0);
-                  return DataRow(
-                    cells: [
-                      DataCell(Text('${it['offer_id'] ?? ''}')),
-                      DataCell(
-                        SizedBox(width: 360, child: Text('${it['name'] ?? ''}')),
-                      ),
-                      DataCell(Text('$quantity')),
-                      DataCell(Text('$orders')),
-                      DataCell(Text('$payout')),
-                    ],
-                  );
-                }),
-                if (items.isNotEmpty)
-                  DataRow(
-                    color: MaterialStateProperty.all(Colors.grey.shade200),
-                    cells: [
-                      const DataCell(Text('ИТОГО', style: TextStyle(fontWeight: FontWeight.bold))),
-                      const DataCell(Text('')),
-                      DataCell(Text(
-                        items.fold<num>(0, (sum, it) => sum + (it['quantity'] ?? it['quantity_sold'] ?? 0)).toInt().toString(),
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      )),
-                      DataCell(Text(
-                        items.fold<num>(0, (sum, it) => sum + (it['orders_count'] ?? 0)).toInt().toString(),
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      )),
-                      DataCell(Text(
-                        items.fold<num>(0, (sum, it) => sum + (delivered ? (it['total_payout'] ?? 0) : (it['amount_raw'] ?? 0))).toInt().toString(),
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      )),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-        ),
-        if (totals != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Row(
-              children: [
-                Text('Всего: items=${totals!['total_items'] ?? '-'}'),
-                const SizedBox(width: 16),
-                Text('orders=${totals!['total_orders'] ?? '-'}'),
-                const SizedBox(width: 16),
-                Text(
-                  delivered
-                      ? 'payout=${totals!['total_payout'] ?? '-'}'
-                      : 'amount=${totals!['total_amount_raw'] ?? '-'}',
+                    DataCell(Text('$quantity')),
+                    DataCell(Text('$orders')),
+                    DataCell(Text('$payout')),
+                  ],
+                );
+              }),
+              if (items.isNotEmpty)
+                DataRow(
+                  color: MaterialStateProperty.all(Colors.grey.shade200),
+                  cells: [
+                    const DataCell(Text('ИТОГО', style: TextStyle(fontWeight: FontWeight.bold))),
+                    const DataCell(Text('')),
+                    DataCell(Text(
+                      items.fold<num>(0, (sum, it) => sum + (it['quantity'] ?? it['quantity_sold'] ?? 0)).toInt().toString(),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    )),
+                    DataCell(Text(
+                      items.fold<num>(0, (sum, it) => sum + (it['orders_count'] ?? 0)).toInt().toString(),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    )),
+                    DataCell(Text(
+                      items.fold<num>(0, (sum, it) => sum + (delivered ? (it['total_payout'] ?? 0) : (it['amount_raw'] ?? 0))).toInt().toString(),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    )),
+                  ],
                 ),
-              ],
-            ),
+            ],
           ),
-      ],
+          if (totals != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                children: [
+                  Text('Всего: items=${totals!['total_items'] ?? '-'}'),
+                  const SizedBox(width: 16),
+                  Text('orders=${totals!['total_orders'] ?? '-'}'),
+                  const SizedBox(width: 16),
+                  Text(
+                    delivered
+                        ? 'payout=${totals!['total_payout'] ?? '-'}'
+                        : 'amount=${totals!['total_amount_raw'] ?? '-'}',
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
