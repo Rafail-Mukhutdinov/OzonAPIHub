@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'config/api_config.dart';
 import 'services/api.dart';
 import 'widgets/sales_table.dart';
@@ -8,7 +9,10 @@ import 'widgets/sales_chart.dart';
 void main() {
   // Инициализировать API конфиг
   ApiConfig.initialize();
-  runApp(const MyApp());
+  // Инициализировать данные для русской локали перед запуском
+  initializeDateFormatting('ru_RU', null).then((_) {
+    runApp(const MyApp());
+  });
 }
 
 class MyApp extends StatelessWidget {
@@ -48,6 +52,8 @@ class _SalesDashboardState extends State<SalesDashboard> {
 
   String _fmt(DateTime dt) =>
       DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(dt.toUtc());
+
+  String _fmtUi(DateTime dt) => DateFormat("d MMM y", "ru_RU").format(dt);
 
   Future<void> _load() async {
     setState(() {
@@ -158,7 +164,6 @@ class _SalesDashboardState extends State<SalesDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    final df = DateFormat('yyyy-MM-dd');
     return Scaffold(
       appBar: AppBar(
         title: const Text('Ozon Sales Dashboard'),
@@ -184,12 +189,12 @@ class _SalesDashboardState extends State<SalesDashboard> {
               spacing: 12,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Text('С: ${df.format(since)}'),
+                Text('С: ${_fmtUi(since)}'),
                 ElevatedButton(
                   onPressed: () => _pickDate(context, true),
                   child: const Text('Изменить'),
                 ),
-                Text('По: ${df.format(to)}'),
+                Text('По: ${_fmtUi(to)}'),
                 ElevatedButton(
                   onPressed: () => _pickDate(context, false),
                   child: const Text('Изменить'),
