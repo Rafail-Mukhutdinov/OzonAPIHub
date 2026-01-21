@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'config/api_config.dart';
 import 'services/api.dart';
 import 'widgets/sales_table.dart';
 import 'widgets/sales_chart.dart';
 
 void main() {
+  // Инициализировать API конфиг
+  ApiConfig.initialize();
   runApp(const MyApp());
 }
 

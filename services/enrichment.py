@@ -1,9 +1,11 @@
 import os
-import requests
-from services.ozon import ozon_fbo_get
+import logging
+from services.ozon import ozon_fbo_get_async
 from sqlalchemy.orm import Session
 from db.database import OrderHeader, OrderPosting, OrderProduct
 from datetime import datetime
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _to_int(val):
@@ -43,10 +45,9 @@ def recalc_order_header(db: Session, order_number: str):
     db.commit()
 
 
-def enrich_posting_from_ozon(posting_number: str, db: Session):
-    client_id = os.getenv("OZON_CLIENT_ID")
-    api_key = os.getenv("OZON_API_KEY")
-    data = ozon_fbo_get(posting_number).get("result")
+async def enrich_posting_from_ozon(posting_number: str, db: Session):
+    """Асинхронно обогатить данные постинга из Ozon API."""
+    data = (await ozon_fbo_get_async(posting_number)).get("result")
     if not data:
         return {"status": "no_result"}
     order_number = data.get("order_number")

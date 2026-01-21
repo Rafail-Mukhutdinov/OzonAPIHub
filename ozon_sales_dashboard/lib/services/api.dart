@@ -1,10 +1,15 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
+import '../config/api_config.dart';
 
 class OzonApiClient {
   final Dio dio;
-  OzonApiClient({String baseUrl = 'http://127.0.0.1:8080'})
-    : dio = Dio(BaseOptions(baseUrl: baseUrl));
+  OzonApiClient({String? baseUrl})
+    : dio = Dio(BaseOptions(
+        baseUrl: baseUrl ?? ApiConfig.baseUrl,
+        connectTimeout: const Duration(seconds: 30),
+        receiveTimeout: const Duration(seconds: 30),
+      ));
 
   Future<Map<String, dynamic>> getSalesRaw({
     required String since,

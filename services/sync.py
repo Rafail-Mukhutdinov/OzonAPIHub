@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from db.database import Order, OrderPosting, SessionLocal
 from services.enrichment import enrich_posting_from_ozon
-from services.ozon import ozon_fbo_list
+from services.ozon import ozon_fbo_list_async
 from db.database import OrderPosting
 from utils.common import valid_posting_number
 
@@ -53,9 +53,10 @@ def save_order(order: dict, db: Session):
         return 'inserted'
 
 
-def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", limit: int = 50, offset: int = 0,
-                          analytics_data: bool = True, financial_data: bool = True, legal_info: bool = False,
-                          db: Session = None):
+async def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", limit: int = 50, offset: int = 0,
+                                analytics_data: bool = True, financial_data: bool = True, legal_info: bool = False,
+                                db: Session = None):
+    """Асинхронно получить и сохранить заказы из Ozon API."""
     own_session = False
     if db is None:
         db = SessionLocal()
@@ -74,10 +75,7 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
                 since_dt = to_dt - timedelta(days=7)
         since_iso = since_dt.replace(microsecond=0).isoformat() + 'Z' if since_dt else None
         to_iso = to_dt.replace(microsecond=0).isoformat() + 'Z' if to_dt else None
-        client_id = os.getenv("OZON_CLIENT_ID")
-        api_key = os.getenv("OZON_API_KEY")
-        url = "https://api-seller.ozon.ru/v2/posting/fbo/list"
-        headers = {"Client-Id": client_id, "Api-Key": api_key, "Content-Type": "application/json"}
+        
         total_saved = 0
         all_orders = []
         current_offset = offset
@@ -89,11 +87,11 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
                 filter_dict['to'] = to_iso
             if status:
                 filter_dict['status'] = status
-            body = {"dir": "ASC", "filter": filter_dict, "limit": limit, "offset": current_offset, "translit": True,
-                    "with": {"analytics_data": analytics_data, "financial_data": financial_data, "legal_info": legal_info}}
-            if LOG_OZON_REQUESTS:
-                logger.debug(f"Ozon request body: {body}")
-            data = ozon_fbo_list(filter_dict, limit, current_offset, {"analytics_data": analytics_data, "financial_data": financial_data, "legal_info": legal_info})
+            
+            data = await ozon_fbo_list_async(filter_dict, limit, current_offset, 
+                                            {"analytics_data": analytics_data, 
+                                             "financial_data": financial_data, 
+                                             "legal_info": legal_info})
             items = data.get('result', []) or []
             if not items:
                 break
@@ -105,6 +103,7 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
             if len(items) < limit:
                 break
             current_offset += limit
+        
         enrich_targets = []
         if ENRICH_ON_FETCH and all_orders:
             try:
@@ -115,6 +114,7 @@ def fetch_and_save_orders(since: str = None, to: str = None, status: str = "", l
     finally:
         if own_session:
             db.close()
+
 
 
 async def run_enrichment_batch(posting_numbers: list[str]):
@@ -131,13 +131,11 @@ async def run_enrichment_batch(posting_numbers: list[str]):
 
     async def _run_one(pn: str):
         async with sem:
-            def _work():
-                session = SessionLocal()
-                try:
-                    enrich_posting_from_ozon(pn, session)
-                finally:
-                    session.close()
-            return await asyncio.to_thread(_work)
+            session = SessionLocal()
+            try:
+                await enrich_posting_from_ozon(pn, session)
+            finally:
+                session.close()
 
     await asyncio.gather(*(_run_one(pn) for pn in targets))
     logger.info(f"Обогащение завершено для {len(targets)} постингов")
@@ -149,7 +147,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
     try:
         while True:
             try:
-                res_new = await asyncio.to_thread(fetch_and_save_orders)
+                res_new = await fetch_and_save_orders()
                 app.state.last_sync_new = datetime.utcnow().isoformat() + 'Z'
                 app.state.last_sync_new_saved = res_new.get('saved')
                 app.state.last_sync_new_fetched = res_new.get('fetched')
@@ -164,7 +162,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
 
                 recent_since_dt = datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)
                 recent_since = recent_since_dt.isoformat() + 'Z'
-                res_recent = await asyncio.to_thread(fetch_and_save_orders, recent_since, None)
+                res_recent = await fetch_and_save_orders(recent_since, None)
                 app.state.last_sync_recent = datetime.utcnow().isoformat() + 'Z'
                 app.state.last_sync_recent_saved = res_recent.get('saved')
                 app.state.last_sync_recent_fetched = res_recent.get('fetched')
@@ -246,7 +244,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                         to_iso = end_dt.isoformat() + 'Z'
                         ym = start_dt.strftime('%Y-%m')
                         try:
-                            r = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso)
+                            r = await fetch_and_save_orders(since_iso, to_iso)
                             summaries.append((ym, r.get('saved'), r.get('fetched')))
                             logger.info(f"Месячная сверка {ym}: добавлено={r.get('saved')} получено={r.get('fetched')}")
                             # Дополнительно: обогатить все новые постинги этого окна, которых ещё нет в нормализованной таблице

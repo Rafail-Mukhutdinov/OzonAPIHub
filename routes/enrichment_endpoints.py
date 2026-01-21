@@ -20,14 +20,6 @@ router = APIRouter(prefix="/orders/fbo", tags=["enrichment"])
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
 ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
 
-def _enrich_with_new_session(posting_number: str):
-    """Вспомогательная функция для обогащения в новой сессии."""
-    session = SessionLocal()
-    try:
-        return enrich_posting_from_ozon(posting_number, session)
-    finally:
-        session.close()
-
 
 class EnrichPostingIn(BaseModel):
     posting_number: str
@@ -44,7 +36,7 @@ async def enrich_posting(item: EnrichPostingIn, db: Session = Depends(get_db)):
     Сохранит детали в OrderPosting и OrderProduct таблицы.
     """
     try:
-        result = await asyncio.to_thread(_enrich_with_new_session, item.posting_number)
+        result = await enrich_posting_from_ozon(item.posting_number, db)
         return result
     except Exception as e:
         logger.error(f"Ошибка обогащения постинга {item.posting_number}: {e}")
