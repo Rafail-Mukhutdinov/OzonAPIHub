@@ -38,8 +38,8 @@ class _SalesDashboardState extends State<SalesDashboard> {
   String? selectedStatus;
   
   // Для графика
-  String? selectedChartSku;
-  List<Map<String, dynamic>> chartData = [];
+  List<String> selectedChartSkus = [];
+  Map<String, List<Map<String, dynamic>>> chartDataBySku = {};
   bool chartLoading = false;
   String? chartError;
 
@@ -95,13 +95,15 @@ class _SalesDashboardState extends State<SalesDashboard> {
     setState(() {
       chartLoading = true;
       chartError = null;
-      selectedChartSku = sku;
+      if (!selectedChartSkus.contains(sku)) {
+        selectedChartSkus.add(sku);
+      }
     });
     try {
       final data = await api.getSalesBySkuMonthly(sku: sku, monthsBack: 12);
       final list = (data['data'] as List).cast<Map<String, dynamic>>();
       setState(() {
-        chartData = list;
+        chartDataBySku[sku] = list;
       });
     } catch (e) {
       setState(() {
@@ -112,6 +114,13 @@ class _SalesDashboardState extends State<SalesDashboard> {
         chartLoading = false;
       });
     }
+  }
+
+  void _removeChartSku(String sku) {
+    setState(() {
+      selectedChartSkus.remove(sku);
+      chartDataBySku.remove(sku);
+    });
   }
 
   @override
@@ -247,7 +256,7 @@ class _SalesDashboardState extends State<SalesDashboard> {
                               children: [
                                 ...items.take(10).map((item) {
                                   final sku = '${item['sku'] ?? item['offer_id'] ?? ''}';
-                                  final isSelected = selectedChartSku == sku;
+                                  final isSelected = selectedChartSkus.contains(sku);
                                   return FilterChip(
                                     label: Text(sku),
                                     selected: isSelected,
@@ -255,10 +264,7 @@ class _SalesDashboardState extends State<SalesDashboard> {
                                       if (isSelected) {
                                         _loadChart(sku);
                                       } else {
-                                        setState(() {
-                                          selectedChartSku = null;
-                                          chartData = [];
-                                        });
+                                        _removeChartSku(sku);
                                       }
                                     },
                                   );
@@ -278,14 +284,15 @@ class _SalesDashboardState extends State<SalesDashboard> {
                                   style: const TextStyle(color: Colors.red),
                                 ),
                               ),
-                            if (selectedChartSku != null &&
-                                chartData.isNotEmpty &&
+                            if (selectedChartSkus.isNotEmpty &&
+                                chartDataBySku.isNotEmpty &&
                                 !chartLoading)
                               Padding(
                                 padding: const EdgeInsets.only(top: 16),
                                 child: SalesChart(
-                                  monthlyData: chartData,
-                                  selectedSku: selectedChartSku!,
+                                  chartDataBySku: chartDataBySku,
+                                  selectedSkus: selectedChartSkus,
+                                  onRemoveSku: _removeChartSku,
                                 ),
                               ),
                           ],
