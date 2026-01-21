@@ -2,15 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 
 class SalesChart extends StatefulWidget {
-  final Map<String, List<Map<String, dynamic>>> chartDataBySku;
-  final List<String> selectedSkus;
-  final Function(String) onRemoveSku;
+  final Map<String, List<Map<String, dynamic>>> chartDataByItem;
+  final List<String> selectedItems; // "offer_id|sku"
+  final Function(String) onRemoveItem;
   
   const SalesChart({
     super.key,
-    required this.chartDataBySku,
-    required this.selectedSkus,
-    required this.onRemoveSku,
+    required this.chartDataByItem,
+    required this.selectedItems,
+    required this.onRemoveItem,
   });
 
   @override
@@ -34,13 +34,13 @@ class _SalesChartState extends State<SalesChart> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.chartDataBySku.isEmpty) {
-      return const Center(child: Text('Нет данных для выбранных артикулов'));
+    if (widget.chartDataByItem.isEmpty) {
+      return const Center(child: Text('Нет данных для выбранных товаров'));
     }
 
     // Получаем все месяцы из всех наборов данных
     final allMonths = <String>[];
-    for (final data in widget.chartDataBySku.values) {
+    for (final data in widget.chartDataByItem.values) {
       for (final item in data) {
         final month = item['month'] as String?;
         if (month != null && !allMonths.contains(month)) {
@@ -59,7 +59,7 @@ class _SalesChartState extends State<SalesChart> {
     
     // Максимальное значение для оси Y
     double maxValue = 0;
-    for (final data in widget.chartDataBySku.values) {
+    for (final data in widget.chartDataByItem.values) {
       for (final item in data) {
         final val = isQuantity 
             ? (item['quantity_sold'] ?? 0).toDouble()
@@ -75,9 +75,9 @@ class _SalesChartState extends State<SalesChart> {
 
       final barRods = <BarChartRodData>[];
       
-      for (int skuIndex = 0; skuIndex < widget.selectedSkus.length; skuIndex++) {
-        final sku = widget.selectedSkus[skuIndex];
-        final data = widget.chartDataBySku[sku] ?? [];
+      for (int itemIndex = 0; itemIndex < widget.selectedItems.length; itemIndex++) {
+        final itemKey = widget.selectedItems[itemIndex];
+        final data = widget.chartDataByItem[itemKey] ?? [];
         
         // Найдём значение для этого месяца
         final itemForMonth = data.firstWhere(
@@ -92,7 +92,7 @@ class _SalesChartState extends State<SalesChart> {
         barRods.add(
           BarChartRodData(
             toY: value,
-            color: chartColors[skuIndex % chartColors.length],
+            color: chartColors[itemIndex % chartColors.length],
             width: 12,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
           ),
@@ -109,21 +109,24 @@ class _SalesChartState extends State<SalesChart> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Выбранные артикулы с кнопками удаления
+          // Выбранные товары с кнопками удаления
           Padding(
             padding: const EdgeInsets.all(16),
             child: Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                ...widget.selectedSkus.asMap().entries.map((entry) {
+                ...widget.selectedItems.asMap().entries.map((entry) {
                   final colorIndex = entry.key;
-                  final sku = entry.value;
+                  final itemKey = entry.value;
+                  // itemKey формата "offer_id|sku"
+                  final parts = itemKey.split('|');
+                  final displayLabel = parts[0].isNotEmpty ? parts[0] : parts[1];
                   return Chip(
-                    label: Text(sku),
+                    label: Text(displayLabel),
                     backgroundColor: chartColors[colorIndex % chartColors.length].withOpacity(0.3),
                     deleteIcon: const Icon(Icons.close),
-                    onDeleted: () => widget.onRemoveSku(sku),
+                    onDeleted: () => widget.onRemoveItem(itemKey),
                   );
                 }).toList(),
               ],
@@ -248,9 +251,11 @@ class _SalesChartState extends State<SalesChart> {
                   spacing: 16,
                   runSpacing: 8,
                   children: [
-                    ...widget.selectedSkus.asMap().entries.map((entry) {
+                    ...widget.selectedItems.asMap().entries.map((entry) {
                       final colorIndex = entry.key;
-                      final sku = entry.value;
+                      final itemKey = entry.value;
+                      final parts = itemKey.split('|');
+                      final displayLabel = parts[0].isNotEmpty ? parts[0] : parts[1];
                       return Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -263,7 +268,7 @@ class _SalesChartState extends State<SalesChart> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          Text(sku),
+                          Text(displayLabel),
                         ],
                       );
                     }).toList(),

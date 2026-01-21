@@ -37,9 +37,9 @@ class _SalesDashboardState extends State<SalesDashboard> {
   String? error;
   String? selectedStatus;
   
-  // Для графика
-  List<String> selectedChartSkus = [];
-  Map<String, List<Map<String, dynamic>>> chartDataBySku = {};
+  // Для графика - используем комбо offer_id|sku как идентификатор
+  List<String> selectedChartItems = []; // "offer_id|sku"
+  Map<String, List<Map<String, dynamic>>> chartDataByItem = {};
   bool chartLoading = false;
   String? chartError;
 
@@ -91,19 +91,24 @@ class _SalesDashboardState extends State<SalesDashboard> {
     }
   }
 
-  Future<void> _loadChart(String sku) async {
+  Future<void> _loadChart(String offerId, String sku) async {
+    final itemKey = '$offerId|$sku';
     setState(() {
       chartLoading = true;
       chartError = null;
-      if (!selectedChartSkus.contains(sku)) {
-        selectedChartSkus.add(sku);
+      if (!selectedChartItems.contains(itemKey)) {
+        selectedChartItems.add(itemKey);
       }
     });
     try {
-      final data = await api.getSalesBySkuMonthly(sku: sku, monthsBack: 12);
+      final data = await api.getSalesBySkuMonthly(
+        offerId: offerId,
+        sku: sku,
+        monthsBack: 12,
+      );
       final list = (data['data'] as List).cast<Map<String, dynamic>>();
       setState(() {
-        chartDataBySku[sku] = list;
+        chartDataByItem[itemKey] = list;
       });
     } catch (e) {
       setState(() {
@@ -116,10 +121,10 @@ class _SalesDashboardState extends State<SalesDashboard> {
     }
   }
 
-  void _removeChartSku(String sku) {
+  void _removeChartItem(String itemKey) {
     setState(() {
-      selectedChartSkus.remove(sku);
-      chartDataBySku.remove(sku);
+      selectedChartItems.remove(itemKey);
+      chartDataByItem.remove(itemKey);
     });
   }
 
@@ -255,16 +260,19 @@ class _SalesDashboardState extends State<SalesDashboard> {
                               runSpacing: 8,
                               children: [
                                 ...items.take(10).map((item) {
-                                  final sku = '${item['sku'] ?? item['offer_id'] ?? ''}';
-                                  final isSelected = selectedChartSkus.contains(sku);
+                                  final offerId = '${item['offer_id'] ?? ''}';
+                                  final sku = '${item['sku'] ?? ''}';
+                                  final itemKey = '$offerId|$sku';
+                                  final label = offerId.isNotEmpty ? offerId : sku;
+                                  final isSelected = selectedChartItems.contains(itemKey);
                                   return FilterChip(
-                                    label: Text(sku),
+                                    label: Text(label),
                                     selected: isSelected,
                                     onSelected: (isSelected) {
                                       if (isSelected) {
-                                        _loadChart(sku);
+                                        _loadChart(offerId, sku);
                                       } else {
-                                        _removeChartSku(sku);
+                                        _removeChartItem(itemKey);
                                       }
                                     },
                                   );
@@ -284,15 +292,15 @@ class _SalesDashboardState extends State<SalesDashboard> {
                                   style: const TextStyle(color: Colors.red),
                                 ),
                               ),
-                            if (selectedChartSkus.isNotEmpty &&
-                                chartDataBySku.isNotEmpty &&
+                            if (selectedChartItems.isNotEmpty &&
+                                chartDataByItem.isNotEmpty &&
                                 !chartLoading)
                               Padding(
                                 padding: const EdgeInsets.only(top: 16),
                                 child: SalesChart(
-                                  chartDataBySku: chartDataBySku,
-                                  selectedSkus: selectedChartSkus,
-                                  onRemoveSku: _removeChartSku,
+                                  chartDataByItem: chartDataByItem,
+                                  selectedItems: selectedChartItems,
+                                  onRemoveItem: _removeChartItem,
                                 ),
                               ),
                           ],
