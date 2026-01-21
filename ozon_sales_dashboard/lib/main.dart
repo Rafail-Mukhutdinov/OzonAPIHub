@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'services/api.dart';
 import 'widgets/sales_table.dart';
+import 'widgets/sales_chart.dart';
 
 void main() {
   runApp(const MyApp());
@@ -35,6 +36,12 @@ class _SalesDashboardState extends State<SalesDashboard> {
   Map<String, dynamic>? totals;
   String? error;
   String? selectedStatus;
+  
+  // Для графика
+  String? selectedChartSku;
+  List<Map<String, dynamic>> chartData = [];
+  bool chartLoading = false;
+  String? chartError;
 
   String _fmt(DateTime dt) =>
       DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(dt.toUtc());
@@ -80,6 +87,29 @@ class _SalesDashboardState extends State<SalesDashboard> {
         } else {
           to = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
         }
+      });
+    }
+  }
+
+  Future<void> _loadChart(String sku) async {
+    setState(() {
+      chartLoading = true;
+      chartError = null;
+      selectedChartSku = sku;
+    });
+    try {
+      final data = await api.getSalesBySkuMonthly(sku: sku, monthsBack: 12);
+      final list = (data['data'] as List).cast<Map<String, dynamic>>();
+      setState(() {
+        chartData = list;
+      });
+    } catch (e) {
+      setState(() {
+        chartError = e.toString();
+      });
+    } finally {
+      setState(() {
+        chartLoading = false;
       });
     }
   }
@@ -187,10 +217,83 @@ class _SalesDashboardState extends State<SalesDashboard> {
             if (error != null)
               Text('Ошибка: $error', style: const TextStyle(color: Colors.red)),
             Expanded(
-              child: SalesTable(
-                items: items,
-                delivered: delivered,
-                totals: totals,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SalesTable(
+                      items: items,
+                      delivered: delivered,
+                      totals: totals,
+                    ),
+                    const SizedBox(height: 32),
+                    if (items.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '📊 Динамика по месяцам',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                ...items.take(10).map((item) {
+                                  final sku = item['sku'] ?? item['offer_id'] ?? '';
+                                  final isSelected = selectedChartSku == sku;
+                                  return FilterChip(
+                                    label: Text(sku),
+                                    selected: isSelected,
+                                    onSelected: (isSelected) {
+                                      if (isSelected) {
+                                        _loadChart(sku);
+                                      } else {
+                                        setState(() {
+                                          selectedChartSku = null;
+                                          chartData = [];
+                                        });
+                                      }
+                                    },
+                                  );
+                                }).toList(),
+                              ],
+                            ),
+                            if (chartLoading)
+                              const Padding(
+                                padding: EdgeInsets.only(top: 16),
+                                child: CircularProgressIndicator(),
+                              ),
+                            if (chartError != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 16),
+                                child: Text(
+                                  'Ошибка графика: $chartError',
+                                  style: const TextStyle(color: Colors.red),
+                                ),
+                              ),
+                            if (selectedChartSku != null &&
+                                chartData.isNotEmpty &&
+                                !chartLoading)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 16),
+                                child: SalesChart(
+                                  monthlyData: chartData,
+                                  selectedSku: selectedChartSku!,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ),
           ],

@@ -41,9 +41,26 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  Future<Map<String, dynamic>> getSalesBySkuMonthly({
+    String? offerId,
+    String? sku,
+    int monthsBack = 12,
+  }) async {
+    final resp = await dio.get(
+      '/analytics/sales_by_sku_monthly',
+      queryParameters: {
+        if (offerId != null) 'offer_id': offerId,
+        if (sku != null) 'sku': sku,
+        'months_back': monthsBack,
+      },
+    );
+    return _toJson(resp);
+  }
+
   Map<String, dynamic> _toJson(Response resp) {
     if (resp.data is String)
       return json.decode(resp.data as String) as Map<String, dynamic>;
     return resp.data as Map<String, dynamic>;
   }
 }
+

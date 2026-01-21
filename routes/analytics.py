@@ -261,3 +261,133 @@ async def orders_today(db: Session = Depends(get_db)):
         stats[st] = stats.get(st, 0) + 1
     by_status = [{"status": k, "count": v} for k, v in sorted(stats.items(), key=lambda x: (-x[1], x[0]))]
     return {"date": start[:10], "total": total, "by_status": by_status}
+
+@router.get("/sales_by_sku_monthly")
+async def sales_by_sku_monthly(
+    offer_id: str | None = None,
+    sku: str | None = None,
+    months_back: int = 12,
+    db: Session = Depends(get_db),
+):
+    """
+    Получить динамику продаж по месяцам для конкретного артикула.
+    Параметры:
+    - offer_id: ID предложения (или sku для фильтра)
+    - sku: SKU товара (или offer_id для фильтра)
+    - months_back: сколько месяцев назад смотреть (по умолчанию 12)
+    
+    Возвращает: список объектов {month, quantity_sold, total_payout, orders_count}
+    """
+    if not offer_id and not sku:
+        return {"error": "Укажите offer_id или sku", "data": []}
+    
+    # Берём delivered постинги из последних N месяцев
+    now = datetime.utcnow()
+    start_date = now - timedelta(days=30 * months_back)
+    start_iso = start_date.isoformat() + "Z"
+    
+    # Фильтруем постинги
+    posting_q = db.query(OrderPosting.posting_number).filter(
+        OrderPosting.status == "delivered",
+        OrderPosting.fact_delivery_date >= start_iso
+    )
+    posting_numbers = [p[0] for p in posting_q.all()]
+    
+    if not posting_numbers:
+        return {"data": [], "sku": sku or offer_id}
+    
+    # Фильтруем товары по offer_id или sku
+    product_filter = db.query(OrderProduct).filter(
+        OrderProduct.posting_number.in_(posting_numbers)
+    )
+    
+    if offer_id:
+        product_filter = product_filter.filter(OrderProduct.offer_id == offer_id)
+    elif sku:
+        product_filter = product_filter.filter(OrderProduct.sku == sku)
+    
+    products = product_filter.all()
+    
+    if not products:
+        return {"data": [], "sku": sku or offer_id}
+    
+    # Группируем по месяцам (из fact_delivery_date постинга)
+    monthly_data = {}
+    for prod in products:
+        # Берём дату доставки из связанного постинга
+        posting = db.query(OrderPosting).filter(
+            OrderPosting.posting_number == prod.posting_number
+        ).first()
+        
+        if not posting or not posting.fact_delivery_date:
+            continue
+        
+        # Парсим дату доставки
+        try:
+            delivery_date = datetime.fromisoformat(posting.fact_delivery_date.replace("Z", ""))
+            month_key = f"{delivery_date.year}-{delivery_date.month:02d}"
+        except Exception:
+            continue
+        
+        if month_key not in monthly_data:
+            monthly_data[month_key] = {
+                "month": month_key,
+                "quantity_sold": 0,
+                "total_payout": 0,
+                "orders_count": set(),
+            }
+        
+        monthly_data[month_key]["quantity_sold"] += prod.quantity or 0
+        monthly_data[month_key]["total_payout"] += prod.payout or 0
+        monthly_data[month_key]["orders_count"].add(prod.posting_number)
+    
+    # Конвертируем в список и сортируем по месяцам
+    result = [
+        {
+            "month": v["month"],
+            "quantity_sold": v["quantity_sold"],
+            "total_payout": v["total_payout"],
+            "orders_count": len(v["orders_count"]),
+        }
+        for v in monthly_data.values()
+    ]
+    result.sort(key=lambda x: x["month"])
+    
+    # Заполняем недостающие месяцы нулями для красивого графика
+    if result:
+        first_month = result[0]["month"]
+        last_month = result[-1]["month"]
+        
+        from datetime import date as date_class
+        year, month = map(int, first_month.split("-"))
+        start_date_obj = date_class(year, month, 1)
+        year, month = map(int, last_month.split("-"))
+        # Если месяц < 12, то это последний день месяца
+        if month == 12:
+            end_date_obj = date_class(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            end_date_obj = date_class(year, month + 1, 1) - timedelta(days=1)
+        
+        all_months = {}
+        current = start_date_obj
+        while current <= end_date_obj:
+            month_key = f"{current.year}-{current.month:02d}"
+            if month_key not in all_months:
+                all_months[month_key] = {
+                    "month": month_key,
+                    "quantity_sold": 0,
+                    "total_payout": 0,
+                    "orders_count": 0,
+                }
+            current = date_class(current.year, current.month + 1, 1) if current.month < 12 else date_class(current.year + 1, 1, 1)
+        
+        for item in result:
+            all_months[item["month"]] = item
+        
+        result = sorted(all_months.values(), key=lambda x: x["month"])
+    
+    return {
+        "data": result,
+        "sku": sku or offer_id,
+        "months_back": months_back,
+    }
