@@ -223,12 +223,20 @@ async def sales_today_raw(
     statuses = {s.strip() for s in include_statuses.split(",") if s.strip()}
     start, end = _range_with_tz(since, to, tz_offset_hours)
     await _ensure_data_for_range(db, start, end, current_user.id)
-    # Считаем по дате "Принят в обработку" (in_process_at), как в отчёте Ozon
+    
+    # Выбираем дату в зависимости от статуса
+    # Для 'delivered' используем created_at (как Ozon)
+    # Для остальных используем in_process_at (дату принятия в обработку)
+    if status and status.lower() == 'delivered':
+        date_field = OrderPosting.created_at
+    else:
+        date_field = OrderPosting.in_process_at
+    
     postings_q = (
         db.query(OrderPosting.posting_number, OrderPosting.status)
         .filter(OrderPosting.user_id == current_user.id)
-        .filter(OrderPosting.in_process_at >= start.isoformat() + "Z")
-        .filter(OrderPosting.in_process_at < end.isoformat() + "Z")
+        .filter(date_field >= start.isoformat() + "Z")
+        .filter(date_field < end.isoformat() + "Z")
     )
     rows = postings_q.all()
     
