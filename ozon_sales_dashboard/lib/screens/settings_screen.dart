@@ -14,6 +14,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isLoading = false;
   List<Map<String, dynamic>> _credentials = [];
   String? _errorMessage;
+  String _purgeMarketplace = 'ozon';
+
+  final List<Map<String, String>> _marketplaces = [
+    {'value': 'ozon', 'label': 'Ozon'},
+    {'value': 'wildberries', 'label': 'Wildberries'},
+    {'value': 'yandex_market', 'label': 'Yandex Market'},
+    {'value': 'aliexpress', 'label': 'AliExpress'},
+  ];
 
   @override
   void initState() {
@@ -195,6 +203,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _purgeData() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Очистка данных'),
+        content: Text(
+          'Удалить все данные по маркетплейсу "${_marketplaces.firstWhere((m) => m['value'] == _purgeMarketplace)['label']}"?\n\n'
+          'Это действие нельзя отменить.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Удалить данные'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('jwt_token');
+
+      final dio = Dio(BaseOptions(
+        baseUrl: OzonApiClient.getDefaultBaseUrl(),
+        headers: {'Content-Type': 'application/json'},
+      ));
+
+      await dio.post(
+        '/auth/me/data/purge',
+        data: {'marketplace': _purgeMarketplace},
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Данные удалены')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -251,6 +313,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const Text('2. Настройки → API ключи'),
                           const Text('3. Создайте новый API ключ'),
                           const Text('4. Скопируйте Client-Id и Api-Key'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Card(
+                    color: Colors.red.shade50,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.delete_forever, color: Colors.red.shade700),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Очистка данных по маркетплейсу',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.red.shade900,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          DropdownButtonFormField<String>(
+                            value: _purgeMarketplace,
+                            decoration: const InputDecoration(
+                              labelText: 'Маркетплейс',
+                              prefixIcon: Icon(Icons.store),
+                              border: OutlineInputBorder(),
+                            ),
+                            items: _marketplaces.map((m) {
+                              return DropdownMenuItem<String>(
+                                value: m['value']!,
+                                child: Text(m['label']!),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() {
+                                _purgeMarketplace = value;
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: FilledButton.icon(
+                              onPressed: _purgeData,
+                              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                              icon: const Icon(Icons.delete),
+                              label: const Text('Удалить данные'),
+                            ),
+                          ),
                         ],
                       ),
                     ),

@@ -10,6 +10,7 @@ Endpoints:
 - POST /auth/me/ozon-credentials - создание нового набора ключей
 - PUT /auth/me/ozon-credentials/{id}/activate - активация набора
 - DELETE /auth/me/ozon-credentials/{id} - удаление набора
+- POST /auth/me/data/purge - очистка данных по маркетплейсу
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response, BackgroundTasks
@@ -78,6 +79,10 @@ class OzonCredentialCreate(BaseModel):
     name: str
     client_id: str
     api_key: str
+
+
+class DataPurgeRequest(BaseModel):
+    marketplace: str
 
 
 class OzonCredentialResponse(BaseModel):
@@ -400,22 +405,46 @@ async def delete_ozon_credential(
             first_available.is_active = True
             db.commit()
 
-    # Если ключей больше нет - очищаем данные пользователя
-    remaining = db.query(OzonCredential).filter(
-        OzonCredential.user_id == current_user.id
-    ).count()
-
-    if remaining == 0:
-        db.query(OrderProduct).filter(OrderProduct.user_id == current_user.id).delete(synchronize_session=False)
-        db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id).delete(synchronize_session=False)
-        db.query(OrderHeader).filter(OrderHeader.user_id == current_user.id).delete(synchronize_session=False)
-        db.query(Order).filter(Order.user_id == current_user.id).delete(synchronize_session=False)
-        db.query(Cost).filter(Cost.user_id == current_user.id).delete(synchronize_session=False)
-        db.commit()
-    
     return {
         "status": "ok",
-        "message": f"Набор '{credential_name}' удален" + (". Данные очищены" if remaining == 0 else "")
+        "message": f"Набор '{credential_name}' удален"
+    }
+
+
+@router.post("/me/data/purge")
+async def purge_user_data(
+    payload: DataPurgeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Очистить данные пользователя по выбранному маркетплейсу."""
+    marketplace = (payload.marketplace or "").strip().lower()
+    if marketplace != "ozon":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Очистка доступна только для Ozon",
+        )
+
+    counts = {
+        "order_products": db.query(OrderProduct).filter(OrderProduct.user_id == current_user.id).count(),
+        "order_postings": db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id).count(),
+        "order_headers": db.query(OrderHeader).filter(OrderHeader.user_id == current_user.id).count(),
+        "orders": db.query(Order).filter(Order.user_id == current_user.id).count(),
+        "costs": db.query(Cost).filter(Cost.user_id == current_user.id).count(),
+    }
+
+    db.query(OrderProduct).filter(OrderProduct.user_id == current_user.id).delete(synchronize_session=False)
+    db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id).delete(synchronize_session=False)
+    db.query(OrderHeader).filter(OrderHeader.user_id == current_user.id).delete(synchronize_session=False)
+    db.query(Order).filter(Order.user_id == current_user.id).delete(synchronize_session=False)
+    db.query(Cost).filter(Cost.user_id == current_user.id).delete(synchronize_session=False)
+    db.commit()
+
+    return {
+        "status": "ok",
+        "message": "Данные очищены",
+        "marketplace": marketplace,
+        "deleted": counts,
     }
 
 
