@@ -134,11 +134,12 @@ async def sales_today(
         )
         posting_numbers = _filter_items_by_status([], postings_q, status, db)
     else:
-        # По умолчанию delivered
+        # По умолчанию delivered - только реально доставленные (substatus = posting_received)
         postings = (
             db.query(OrderPosting.posting_number)
             .filter(OrderPosting.user_id == current_user.id)
             .filter(OrderPosting.status == "delivered")
+            .filter(OrderPosting.substatus == "posting_received")  # Реально получено покупателем
             .filter(OrderPosting.fact_delivery_date >= start.isoformat() + "Z")
             .filter(OrderPosting.fact_delivery_date < end.isoformat() + "Z")
             .all()
