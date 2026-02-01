@@ -24,7 +24,8 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 # Хеширование паролей
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Используем bcryptpy вместо дефолтного bcrypt backend для избежания ошибки wrap bug detection
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__default_rounds=12)
 
 # OAuth2 scheme для JWT
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
@@ -37,6 +38,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     """Хеширование пароля."""
+    # Проверка длины пароля (ограничение bcrypt)
+    if len(password.encode('utf-8')) > 72:
+        raise ValueError("Пароль слишком длинный (максимум 72 байта)")
     return pwd_context.hash(password)
 
 
