@@ -6,6 +6,7 @@ import '../providers/auth_provider.dart';
 import '../widgets/sales_table.dart';
 import '../widgets/sales_chart.dart';
 import 'login_screen.dart';
+import 'settings_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -232,6 +233,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(
         title: const Text('Ozon Dashboard'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              );
+            },
+            tooltip: 'Настройки',
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _load,
