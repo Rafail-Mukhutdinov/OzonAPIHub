@@ -12,7 +12,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -23,17 +23,13 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-CHANGE-ME")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
-# Хеширование паролей
-# Используем bcryptpy вместо дефолтного bcrypt backend для избежания ошибки wrap bug detection
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__default_rounds=12)
-
 # OAuth2 scheme для JWT
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Проверка пароля."""
-    return pwd_context.verify(plain_password, hashed_password)
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 
 def get_password_hash(password: str) -> str:
@@ -41,7 +37,9 @@ def get_password_hash(password: str) -> str:
     # Проверка длины пароля (ограничение bcrypt)
     if len(password.encode('utf-8')) > 72:
         raise ValueError("Пароль слишком длинный (максимум 72 байта)")
-    return pwd_context.hash(password)
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
