@@ -240,18 +240,31 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
         client_id = decrypt_credential(cred.client_id_encrypted)
         api_key = decrypt_credential(cred.api_key_encrypted)
         
+        # Строим фильтр для API
+        filter_dict = {}
+        if since:
+            filter_dict["since"] = since
+        if to:
+            filter_dict["to"] = to
+        if status:
+            filter_dict["status"] = status
+        
         # Синхронно получаем заказы
-        orders = asyncio.run(ozon_fbo_list_async(
+        response = asyncio.run(ozon_fbo_list_async(
             client_id=client_id,
             api_key=api_key,
-            since=since,
-            to=to,
-            status=status,
+            filter_dict=filter_dict,
             limit=limit,
             offset=offset,
-            with_analytics_data=with_analytics,
-            with_financial_data=with_financial
+            with_flags={
+                "analytics_data": with_analytics,
+                "financial_data": with_financial,
+                "legal_info": with_legal
+            }
         ))
+        
+        # Ozon API возвращает {"result": [...], "postings": [...], ...}
+        orders = response.get("result", []) if isinstance(response, dict) else []
         
         return {"orders": orders}
     

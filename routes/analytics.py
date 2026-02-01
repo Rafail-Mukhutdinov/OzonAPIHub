@@ -4,12 +4,14 @@ from sqlalchemy import func
 from datetime import datetime, timedelta
 from db.database import OrderPosting, OrderProduct, Order, get_db, User
 import asyncio
+import logging
 from services.sync import fetch_and_save_orders, run_enrichment_batch
 from services.enrichment import enrich_posting_from_ozon
 from utils.common import valid_posting_number
 from routes.auth_endpoints import get_current_user
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+logger = logging.getLogger("uvicorn.error")
 
 
 def _parse_iso(dt: str) -> datetime:
@@ -68,15 +70,15 @@ async def _ensure_data_for_range(db: Session, start: datetime, end: datetime, us
                 targets = [pn for pn in set(pns) if pn not in existing]
                 if targets:
                     # Обогащаем постинги для текущего пользователя
-                    for pn in targets:
-                        try:
-                            await enrich_posting_from_ozon(db, pn, user_id)
-                        except Exception:
-                            pass
+                    user = db.query(User).filter(User.id == user_id).first()
+                    if user:
+                        for pn in targets:
+                            try:
+                                await enrich_posting_from_ozon(pn, user, db)
+                            except Exception as e:
+                                logger.debug(f"Ошибка обогащения {pn}: {e}")
         except Exception as e:
             # Если синхронизация не работает (нет API ключа и т.д.), продолжаем работу с пустыми данными
-            import logging
-            logger = logging.getLogger("uvicorn.error")
             logger.debug(f"_ensure_data_for_range ошибка для user_id={user_id}: {e}")
             pass
 @router.get("/sales_by_date")
