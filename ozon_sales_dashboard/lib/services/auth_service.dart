@@ -58,6 +58,7 @@ class AuthService {
         data: {
           'email': email,
           'password': password,
+          'confirm_password': confirmPassword,  // Добавляем confirm_password для сервера
         },
         options: Options(
           contentType: Headers.jsonContentType,
@@ -81,6 +82,13 @@ class AuthService {
           throw Exception(errorData['detail']);
         }
         throw Exception('Пользователь с таким email уже существует');
+      }
+      if (e.response?.statusCode == 422) {
+        final errorData = e.response?.data;
+        if (errorData is Map && errorData['detail'] != null) {
+          throw Exception('Ошибка валидации: ${errorData['detail']}');
+        }
+        throw Exception('Проверьте корректность введенных данных');
       }
       throw Exception('Ошибка регистрации: ${e.message}');
     }

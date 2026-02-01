@@ -26,12 +26,21 @@ app = FastAPI(
 )
 
 # CORS для Flutter Web (dev): разрешаем запросы с localhost
+# Для development разрешаем все localhost адреса и порты
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origins=[
+        "http://localhost:54321",      # Flutter Web dev server
+        "http://127.0.0.1:54321",      # Flutter Web dev server (127.0.0.1)
+        "http://localhost:8080",       # Backend
+        "http://127.0.0.1:8080",       # Backend  
+        "http://localhost",            # Nginx frontend
+        "http://127.0.0.1",            # Nginx frontend
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    max_age=600  # Cache preflight for 10 minutes
 )
 
 # Здоровье-чек

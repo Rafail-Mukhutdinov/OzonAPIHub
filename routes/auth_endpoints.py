@@ -12,7 +12,7 @@ Endpoints:
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from datetime import timedelta
 from db.database import get_db, User
 from utils.auth import (
@@ -35,6 +35,16 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str
     confirm_password: str
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        """Проверяем что пароль не превышает 72 байта (ограничение bcrypt)"""
+        if len(v.encode('utf-8')) > 72:
+            raise ValueError('Пароль слишком длинный (максимум 72 байта)')
+        if len(v) < 6:
+            raise ValueError('Пароль должен содержать минимум 6 символов')
+        return v
 
 
 class UserLogin(BaseModel):
@@ -72,14 +82,14 @@ class ProfileUpdate(BaseModel):
 # Endpoints
 # ============================================================================
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     """
     Регистрация нового пользователя.
     
     - Проверяет уникальность email
     - Создает пользователя с is_demo=True (30 дней trial)
-    - Возвращает данные пользователя
+    - Возвращает JWT токен для автоматического входа
     """
     # Проверка совпадения паролей
     if user_data.password != user_data.confirm_password:
@@ -110,14 +120,13 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
     
-    return UserResponse(
-        id=new_user.id,
-        email=new_user.email,
-        is_demo=new_user.is_demo,
-        subscription_end_date=new_user.subscription_end_date.isoformat() if new_user.subscription_end_date else None,
-        is_active=new_user.is_active,
-        ozon_configured=bool(new_user.ozon_client_id and new_user.ozon_api_key)
+    # Создаем токен для автоматического входа после регистрации
+    access_token = create_access_token(
+        data={"sub": str(new_user.id)},
+        expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
+    
+    return Token(access_token=access_token, token_type="bearer")
 
 
 @router.post("/login", response_model=Token)
