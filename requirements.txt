@@ -4,3 +4,17 @@ sqlalchemy==2.0.23
 pydantic==2.5.0
 python-dotenv==1.0.0
 httpx==0.25.2
+
+# PostgreSQL support
+psycopg2-binary==2.9.9
+# Для async PostgreSQL (опционально):
+# asyncpg==0.29.0
+
+# Security & Authentication
+cryptography==41.0.7
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.6
+
+# Database migrations (опционально, но рекомендуется)
+alembic==1.13.1
