@@ -257,6 +257,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _runInitialSync() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Полная загрузка данных'),
+        content: const Text(
+          'Запустить полную загрузку данных из Ozon?\n\n'
+          'Это может занять несколько минут. Статус будет показан на дашборде.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Запустить'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('jwt_token');
+
+      final dio = Dio(BaseOptions(
+        baseUrl: OzonApiClient.getDefaultBaseUrl(),
+        headers: {'Content-Type': 'application/json'},
+      ));
+
+      await dio.post(
+        '/sync/initial/force',
+        data: {},
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Полная загрузка запущена')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка запуска: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -370,6 +423,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               style: FilledButton.styleFrom(backgroundColor: Colors.red),
                               icon: const Icon(Icons.delete),
                               label: const Text('Удалить данные'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Card(
+                    color: Colors.blue.shade50,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.cloud_download, color: Colors.blue.shade700),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Полная загрузка данных',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.blue.shade900,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Запускает полную загрузку данных из Ozon.\n'
+                            'Статус загрузки отображается на дашборде.',
+                          ),
+                          const SizedBox(height: 12),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: FilledButton.icon(
+                              onPressed: _runInitialSync,
+                              icon: const Icon(Icons.play_arrow),
+                              label: const Text('Запустить загрузку'),
                             ),
                           ),
                         ],
