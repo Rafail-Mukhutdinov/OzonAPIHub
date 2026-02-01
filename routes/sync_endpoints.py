@@ -165,9 +165,3 @@ async def run_history_sync(
     
     summary = await history_forward_sync(current_user, db, start_dt, end_dt)
     return {"status": "done", "windows": summary}
-
-
-@router.on_event("startup")
-async def startup_sync_tasks(app):
-    """Оставлено пустым для совместимости; глобальный initial sync отключен в SaaS."""
-    return None
