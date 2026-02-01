@@ -82,6 +82,17 @@ class ProfileUpdate(BaseModel):
 # Endpoints
 # ============================================================================
 
+# Явные OPTIONS обработчики для CORS preflight
+@router.options("/register")
+async def options_register():
+    """CORS preflight для регистрации"""
+    return {}
+
+@router.options("/login")
+async def options_login():
+    """CORS preflight для входа"""
+    return {}
+
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     """
