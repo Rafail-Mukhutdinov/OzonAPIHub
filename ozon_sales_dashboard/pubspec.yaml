@@ -39,6 +39,7 @@ dependencies:
   dio: ^5.9.0
   intl: ^0.20.2
   fl_chart: ^0.68.0
+  shared_preferences: ^2.2.2  # Хранение токена (работает на Web)
 
 dev_dependencies:
   flutter_test:

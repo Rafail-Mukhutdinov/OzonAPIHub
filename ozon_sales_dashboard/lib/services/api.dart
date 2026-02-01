@@ -2,12 +2,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class OzonApiClient {
   final Dio dio;
+  final Function()? onUnauthorized;
 
   /// Умный выбор адреса в зависимости от платформы
-  static String get _defaultBaseUrl {
+  static String getDefaultBaseUrl() {
     // На Android эмуляторе нужен спец. адрес, который маппится на хост-машину
     if (!kIsWeb && Platform.isAndroid) {
       return 'http://10.0.2.2:8080';
@@ -17,12 +19,42 @@ class OzonApiClient {
   }
 
   /// Создает клиент с автоматическим выбором URL или явно переданным
-  OzonApiClient({String? baseUrl})
+  OzonApiClient({String? baseUrl, this.onUnauthorized})
     : dio = Dio(BaseOptions(
-        baseUrl: baseUrl ?? _defaultBaseUrl,
+        baseUrl: baseUrl ?? getDefaultBaseUrl(),
         connectTimeout: const Duration(seconds: 30),
         receiveTimeout: const Duration(seconds: 30),
-      ));
+      )) {
+    // Добавляем interceptor для автоматического добавления токена
+    dio.interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) async {
+        // Получаем токен из SharedPreferences
+        final prefs = await SharedPreferences.getInstance();
+        final token = prefs.getString('jwt_token');
+        
+        if (token != null && token.isNotEmpty) {
+          options.headers['Authorization'] = 'Bearer $token';
+        }
+        
+        return handler.next(options);
+      },
+      onError: (DioException error, handler) async {
+        // Если получили 401 - пользователь не авторизован
+        if (error.response?.statusCode == 401) {
+          // Удаляем невалидный токен
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove('jwt_token');
+          
+          // Вызываем callback для перенаправления на экран входа
+          if (onUnauthorized != null) {
+            onUnauthorized!();
+          }
+        }
+        
+        return handler.next(error);
+      },
+    ));
+  }
 
   Future<Map<String, dynamic>> getSalesRaw({
     required String since,
