@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal
+from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal, SyncStatus
 from services.enrichment import enrich_posting_from_ozon
 from services.ozon import ozon_fbo_list_async
 from utils.encryption import decrypt_credential
@@ -335,41 +335,82 @@ async def initial_backfill_for_user(user: User, db: Session) -> dict:
     """
     Первичная загрузка истории для пользователя за INITIAL_WINDOW_DAYS.
     Данные подтягиваются окнами по HISTORY_WINDOW_DAYS.
+    
+    ВАЖНО: Устанавливает флаг is_syncing для отслеживания статуса синхронизации.
+    Периодические обновления по таймеру НЕ должны трогать этот флаг!
     """
+    # Получаем или создаем запись SyncStatus
+    sync_status = db.query(SyncStatus).filter(
+        SyncStatus.user_id == user.id
+    ).first()
+    
+    if not sync_status:
+        sync_status = SyncStatus(
+            user_id=user.id,
+            is_syncing=True,
+            status_message="Идет загрузка данных с маркетплейса",
+            sync_started_at=datetime.utcnow(),
+            total_records_synced=0
+        )
+        db.add(sync_status)
+    else:
+        sync_status.is_syncing = True
+        sync_status.status_message = "Идет загрузка данных с маркетплейса"
+        sync_status.sync_started_at = datetime.utcnow()
+        sync_status.total_records_synced = 0
+    
+    db.commit()
+    
     end_dt = datetime.utcnow()
     start_dt = end_dt - timedelta(days=INITIAL_WINDOW_DAYS)
     window_start = start_dt
     total_saved = 0
     total_fetched = 0
 
-    while window_start < end_dt:
-        window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), end_dt)
-        since_iso = window_start.replace(microsecond=0).isoformat() + 'Z'
-        to_iso = window_end.replace(microsecond=0).isoformat() + 'Z'
+    try:
+        while window_start < end_dt:
+            window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), end_dt)
+            since_iso = window_start.replace(microsecond=0).isoformat() + 'Z'
+            to_iso = window_end.replace(microsecond=0).isoformat() + 'Z'
 
-        result = await asyncio.to_thread(
-            fetch_and_save_orders,
-            since_iso,
-            to_iso,
-            "",
-            50,
-            0,
-            True,
-            True,
-            False,
-            user.id,
-            db
-        )
+            result = await asyncio.to_thread(
+                fetch_and_save_orders,
+                since_iso,
+                to_iso,
+                "",
+                50,
+                0,
+                True,
+                True,
+                False,
+                user.id,
+                db
+            )
 
-        orders = result.get("orders") or []
-        total_saved += result.get("saved") or 0
-        total_fetched += result.get("fetched") or 0
+            orders = result.get("orders") or []
+            total_saved += result.get("saved") or 0
+            total_fetched += result.get("fetched") or 0
 
-        if ENRICH_ON_FETCH and orders:
-            posting_numbers = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
-            if posting_numbers:
-                await run_enrichment_batch(posting_numbers, user.id)
+            if ENRICH_ON_FETCH and orders:
+                posting_numbers = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
+                if posting_numbers:
+                    await run_enrichment_batch(posting_numbers, user.id)
 
-        window_start = window_end + timedelta(seconds=1)
+            window_start = window_end + timedelta(seconds=1)
+        
+        # Синхронизация успешно завершена - обновляем статус
+        sync_status.is_syncing = False
+        sync_status.status_message = "Данные загружены"
+        sync_status.sync_completed_at = datetime.utcnow()
+        sync_status.total_records_synced = total_saved
+        db.commit()
+        
+    except Exception as e:
+        # При ошибке обновляем статус и пробрасываем исключение
+        sync_status.is_syncing = False
+        sync_status.status_message = f"Ошибка при загрузке: {str(e)[:100]}"
+        sync_status.sync_completed_at = datetime.utcnow()
+        db.commit()
+        raise
 
     return {"saved": total_saved, "fetched": total_fetched}

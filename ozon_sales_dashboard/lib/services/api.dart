@@ -113,10 +113,11 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
-  Map<String, dynamic> _toJson(Response resp) {
-    if (resp.data is String)
-      return json.decode(resp.data as String) as Map<String, dynamic>;
-    return resp.data as Map<String, dynamic>;
+  /// Получить статус синхронизации данных
+  /// Используется для отслеживания полной загрузки (backfill)
+  /// Периодические обновления по таймеру НЕ меняют этот статус
+  Future<Map<String, dynamic>> getSyncStatus() async {
+    final resp = await dio.get('/auth/me/sync-status');
+    return _toJson(resp);
   }
-}
 

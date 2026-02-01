@@ -182,6 +182,26 @@ class Cost(Base):
     user = relationship("User", back_populates="costs")
 
 
+class SyncStatus(Base):
+    """Статус синхронизации данных (только для полной скачки/backfill)."""
+    __tablename__ = "sync_status"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True, unique=True)
+    
+    # Статус синхронизации
+    is_syncing = Column(Boolean, default=False, nullable=False)  # True если идет backfill
+    status_message = Column(String(255), default="", nullable=False)  # "идет загрузка...", "данные загружены", и т.д.
+    
+    # Метаданные
+    sync_started_at = Column(DateTime, nullable=True)  # Когда началась синхронизация
+    sync_completed_at = Column(DateTime, nullable=True)  # Когда завершилась
+    total_records_synced = Column(Integer, default=0, nullable=False)  # Кол-во записей
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationship
+    user = relationship("User")
+
+
 # НЕ создаем таблицы автоматически! Используйте Alembic для миграций
 # Base.metadata.create_all(bind=engine)
 

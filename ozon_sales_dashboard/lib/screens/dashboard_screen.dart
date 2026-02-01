@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'dart:async';
 import '../services/api.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/sales_table.dart';
@@ -28,6 +30,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, dynamic>? totals;
   String? error;
   String? selectedStatus;
+  int _loadSeq = 0;
+
+  // Статус синхронизации (для отслеживания полной загрузки)
+  bool syncInProgress = false;
+  String syncMessage = "";
+  Timer? syncStatusTimer;
 
   // Для графика
   List<String> selectedChartItems = []; // "offer_id|sku"
@@ -54,7 +62,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Загружаем данные безопасно
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _load();
+      _startSyncStatusCheck();
     });
+  }
+
+  /// Запускает периодическую проверку статуса синхронизации (каждые 2 секунды)
+  void _startSyncStatusCheck() {
+    syncStatusTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _checkSyncStatus();
+    });
+    // Первый раз сразу же
+    _checkSyncStatus();
+  }
+
+  /// Проверяет статус синхронизации данных
+  Future<void> _checkSyncStatus() async {
+    if (!mounted) return;
+    try {
+      final status = await api.getSyncStatus();
+      if (!mounted) return;
+      
+      setState(() {
+        syncInProgress = status['is_syncing'] ?? false;
+        syncMessage = status['status_message'] ?? '';
+      });
+    } catch (e) {
+      // Ошибка при получении статуса - игнорируем
+      if (kDebugMode) {
+        print('Ошибка при проверке статуса синхронизации: $e');
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    syncStatusTimer?.cancel();
+    super.dispose();
   }
 
   // Обработка разлогинивания при 401
@@ -110,6 +153,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // Загрузка таблицы и итогов
   Future<void> _load() async {
     if (!mounted) return;
+    final int loadSeq = ++_loadSeq;
+    final String modeAtCall = viewMode;
+    final String? statusAtCall = selectedStatus;
+    final DateTime sinceAtCall = since;
+    final DateTime toAtCall = to;
     
     setState(() {
       loading = true;
@@ -129,6 +177,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               status: selectedStatus);
 
       final list = (data['items'] as List).cast<Map<String, dynamic>>();
+      if (!mounted || loadSeq != _loadSeq) return;
+      if (modeAtCall != viewMode || statusAtCall != selectedStatus || sinceAtCall != since || toAtCall != to) return;
       if (mounted) {
         setState(() {
           items = list;
@@ -136,13 +186,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && loadSeq == _loadSeq) {
         setState(() {
           error = e.toString();
         });
       }
     } finally {
-      if (mounted) {
+      if (mounted && loadSeq == _loadSeq) {
         setState(() {
           loading = false;
         });
@@ -187,6 +237,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (viewMode == newMode) return;
     setState(() {
       viewMode = newMode;
+      selectedStatus = null;
+      items = [];
+      totals = null;
     });
     
     _load();
@@ -270,6 +323,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Статус синхронизации (только если идет загрузка)
+            if (syncInProgress)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Card(
+                  color: Colors.blue.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            syncMessage,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            
+            // Если синхронизация завершена и было "Данные загружены" - показываем зеленое уведомление
+            if (!syncInProgress && syncMessage == "Данные загружены")
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Card(
+                  color: Colors.green.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        Icon(Icons.check_circle, color: Colors.green.shade700, size: 20),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Данные загружены',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.green.shade700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            
             // Переключатель режимов
             Center(
               child: SegmentedButton<String>(

@@ -18,7 +18,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, field_validator
 from datetime import timedelta
-from db.database import get_db, User, OzonCredential, Order, OrderPosting, OrderProduct, OrderHeader, Cost
+from db.database import get_db, User, OzonCredential, Order, OrderPosting, OrderProduct, OrderHeader, Cost, SyncStatus
 import asyncio
 from utils.auth import (
     authenticate_user,
@@ -83,6 +83,17 @@ class OzonCredentialCreate(BaseModel):
 
 class DataPurgeRequest(BaseModel):
     marketplace: str
+
+
+class SyncStatusResponse(BaseModel):
+    is_syncing: bool
+    status_message: str
+    total_records_synced: int
+    sync_started_at: str | None
+    sync_completed_at: str | None
+    
+    class Config:
+        from_attributes = True
 
 
 class OzonCredentialResponse(BaseModel):
@@ -483,4 +494,38 @@ async def update_profile(
         subscription_end_date=current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None,
         is_active=current_user.is_active,
         has_credentials=has_credentials
+    )
+
+
+@router.get("/me/sync-status", response_model=SyncStatusResponse)
+async def get_sync_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Получить статус синхронизации данных для текущего пользователя.
+    Используется только для отслеживания полной скачки (backfill).
+    Периодические обновления по таймеру НЕ меняют этот статус.
+    """
+    sync_status = db.query(SyncStatus).filter(
+        SyncStatus.user_id == current_user.id
+    ).first()
+    
+    if not sync_status:
+        # Если записи нет, создаем дефолтную
+        sync_status = SyncStatus(
+            user_id=current_user.id,
+            is_syncing=False,
+            status_message="Данные не загружены"
+        )
+        db.add(sync_status)
+        db.commit()
+        db.refresh(sync_status)
+    
+    return SyncStatusResponse(
+        is_syncing=sync_status.is_syncing,
+        status_message=sync_status.status_message,
+        total_records_synced=sync_status.total_records_synced,
+        sync_started_at=sync_status.sync_started_at.isoformat() + 'Z' if sync_status.sync_started_at else None,
+        sync_completed_at=sync_status.sync_completed_at.isoformat() + 'Z' if sync_status.sync_completed_at else None
     )
