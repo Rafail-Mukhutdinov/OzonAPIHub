@@ -121,3 +121,9 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  Map<String, dynamic> _toJson(Response resp) {
+    if (resp.data is String)
+      return json.decode(resp.data as String) as Map<String, dynamic>;
+    return resp.data as Map<String, dynamic>;
+  }
+}
