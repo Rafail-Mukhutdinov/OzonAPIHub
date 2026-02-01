@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
 import '../services/api.dart';
-import '../services/auth_service.dart';
+import '../providers/auth_provider.dart';
 import '../widgets/sales_table.dart';
 import '../widgets/sales_chart.dart';
 import 'login_screen.dart';
@@ -15,7 +16,6 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   late final OzonApiClient api;
-  final _authService = AuthService();
 
   // Глобальный режим просмотра: 'delivered' (Финансы) или 'shipped' (Отгрузки)
   String viewMode = 'delivered';
@@ -90,8 +90,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
 
-    if (confirmed == true) {
-      await _authService.logout();
+    if (confirmed == true && mounted) {
+      // Используем Provider для выхода
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      await authProvider.logout();
+      
       if (mounted) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const LoginScreen()),

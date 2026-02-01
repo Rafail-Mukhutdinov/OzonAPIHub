@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
+import '../providers/auth_provider.dart';
 import 'dashboard_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -14,10 +16,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
-  final _authService = AuthService();
+  late final AuthService _authService;
   
   bool _isLoading = false;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    _authService = AuthService(
+      onTokenChanged: authProvider.setToken,
+      onLogout: authProvider.logout,
+    );
+  }
 
   @override
   void dispose() {

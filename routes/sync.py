@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime
 from db.database import get_db, OrderPosting
-from services.sync import fetch_and_save_orders, run_enrichment_batch
+# from services.sync import fetch_and_save_orders, run_enrichment_batch  # TODO: Update for SaaS
 from utils.common import valid_posting_number
 import asyncio
 

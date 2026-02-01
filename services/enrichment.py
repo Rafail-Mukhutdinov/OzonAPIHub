@@ -46,7 +46,8 @@ def recalc_order_header(db: Session, order_number: str, user_id: int):
     hdr.total_commission = total_commission
     db.commit()
 
-user: User, db: Session):
+
+async def enrich_posting_from_ozon(posting_number: str, user: User, db: Session):
     """
     Асинхронно обогатить данные постинга из Ozon API.
     Использует Ozon credentials конкретного пользователя.

@@ -4,7 +4,7 @@ from sqlalchemy import func
 from datetime import datetime, timedelta
 from db.database import OrderPosting, OrderProduct, Order, get_db
 import asyncio
-from services.sync import fetch_and_save_orders, run_enrichment_batch
+# from services.sync import fetch_and_save_orders, run_enrichment_batch  # TODO: Update for SaaS
 from utils.common import valid_posting_number
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])

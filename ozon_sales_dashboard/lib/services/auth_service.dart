@@ -5,12 +5,17 @@ import 'api.dart';
 class AuthService {
   static const String _tokenKey = 'jwt_token';
   final Dio dio;
+  
+  // Callback для уведомления об изменении состояния авторизации
+  Function(String)? onTokenChanged;
+  Function()? onLogout;
 
-  AuthService() : dio = Dio(BaseOptions(
-    baseUrl: OzonApiClient.getDefaultBaseUrl(),
-    connectTimeout: const Duration(seconds: 30),
-    receiveTimeout: const Duration(seconds: 30),
-  ));
+  AuthService({this.onTokenChanged, this.onLogout}) 
+      : dio = Dio(BaseOptions(
+          baseUrl: OzonApiClient.getDefaultBaseUrl(),
+          connectTimeout: const Duration(seconds: 30),
+          receiveTimeout: const Duration(seconds: 30),
+        ));
 
   /// Вход в систему
   Future<String> login(String email, String password) async {
@@ -65,6 +70,9 @@ class AuthService {
       // Сохраняем токен
       await _saveToken(token);
       
+      // Уведомляем об изменении
+      onTokenChanged?.call(token);
+      
       return token;
     } on DioException catch (e) {
       if (e.response?.statusCode == 400) {
@@ -82,6 +90,9 @@ class AuthService {
   Future<void> logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
+    
+    // Уведомляем о выходе
+    onLogout?.call();
   }
 
   /// Получить текущий токен

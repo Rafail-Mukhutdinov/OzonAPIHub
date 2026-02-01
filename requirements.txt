@@ -6,7 +6,7 @@ python-dotenv==1.0.0
 httpx==0.25.2
 
 # PostgreSQL support
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.11  # Updated for Python 3.13 compatibility
 # Для async PostgreSQL (опционально):
 # asyncpg==0.29.0
 
