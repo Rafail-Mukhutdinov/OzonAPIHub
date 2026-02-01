@@ -46,12 +46,14 @@ from routes.orders import router as orders_router
 from routes.sync import router as sync_router
 from routes.costs import router as costs_router
 from routes.enrichment_endpoints import router as enrichment_router
+from routes.auth_endpoints import router as auth_router
 
 app.include_router(analytics_router)
 app.include_router(orders_router)
 app.include_router(sync_router)
 app.include_router(costs_router)
 app.include_router(enrichment_router)
+app.include_router(auth_router)
 
 # Инициализация фоновых задач при запуске
 from services.sync import background_sync_loop
