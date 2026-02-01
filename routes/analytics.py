@@ -246,6 +246,10 @@ async def sales_today_raw(
         label = st or "unknown"
         status_counts[label] = status_counts.get(label, 0) + 1
     posting_numbers = [p[0] for p in postings]
+    
+    # DEBUG: проверим posting_numbers
+    logger.info(f"DEBUG posting_numbers: total={len(posting_numbers)}, unique={len(set(posting_numbers))}")
+    
     # Агрегируем на стороне БД
     amount_expr = func.sum(func.coalesce(OrderProduct.price, 0) * func.coalesce(OrderProduct.quantity, 0))
     rows_products = (
@@ -257,6 +261,7 @@ async def sales_today_raw(
             func.count(func.distinct(OrderProduct.posting_number)).label("orders_count"),
             amount_expr.label("amount_raw"),
         )
+        .filter(OrderProduct.user_id == current_user.id)  # ФИКС: фильтр по user_id!
         .filter(OrderProduct.posting_number.in_(posting_numbers))
         .group_by(OrderProduct.offer_id, OrderProduct.sku, OrderProduct.name)
         .all()
@@ -275,6 +280,13 @@ async def sales_today_raw(
     ]
 
     unique_postings_total = len(set(posting_numbers))
+    
+    # DEBUG: Лог для диагностики
+    logger.info(f"DEBUG sales_today_raw: total_items={len(items)}, postings_count={len(posting_numbers)}, since={start.isoformat()}, to={end.isoformat()}")
+    for item in items:
+        if item["offer_id"] == "10001":
+            logger.info(f"DEBUG sales_today_raw: offer_id=10001, quantity={item['quantity']}, orders={item['orders_count']}")
+    
     return {
         "range": {"since": start.isoformat() + "Z", "to": end.isoformat() + "Z"},
         "items": sorted(items, key=lambda x: (-x["quantity"], x.get("offer_id") or "")),
