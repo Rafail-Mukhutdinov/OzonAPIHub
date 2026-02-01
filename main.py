@@ -37,6 +37,7 @@ app.add_middleware(
         "http://localhost",            # Nginx frontend
         "http://127.0.0.1",            # Nginx frontend
     ],
+    allow_origin_regex=r"http://localhost:\d+",  # Разрешаем любой порт localhost для dev
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],

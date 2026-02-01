@@ -139,6 +139,4 @@ async def enrich_posting_from_ozon(posting_number: str, user: User, db: Session)
     
     if order_number:
         recalc_order_header(db, order_number, user.id)
-    
-        recalc_order_header(db, order_number)
     return {"status": "ok", "order_number": order_number, "posting_number": posting_number, "products": len(products)}

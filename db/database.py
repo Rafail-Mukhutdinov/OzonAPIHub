@@ -2,7 +2,7 @@ import os
 import sqlalchemy as sa
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, BigInteger
 from sqlalchemy.types import JSON
 from datetime import datetime
 
@@ -85,7 +85,7 @@ class Order(Base):
     __tablename__ = "orders"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    order_id = Column(Integer, index=True)
+    order_id = Column(BigInteger, index=True)
     posting_number = Column(String(255), index=True)
     status = Column(String(100))
     created_at = Column(String(100))
@@ -148,7 +148,7 @@ class OrderProduct(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     posting_id = Column(Integer, ForeignKey("order_postings.id", ondelete="CASCADE"), nullable=True, index=True)
     posting_number = Column(String(255), index=True)
-    sku = Column(Integer, index=True)
+    sku = Column(BigInteger, index=True)
     offer_id = Column(String(255), index=True)
     name = Column(String(500))
     quantity = Column(Integer)

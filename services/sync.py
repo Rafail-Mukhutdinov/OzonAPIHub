@@ -14,6 +14,9 @@ from utils.common import valid_posting_number
 # Настройки из .env
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
 ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 'yes')
+ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
+INITIAL_WINDOW_DAYS = int(os.getenv('INITIAL_WINDOW_DAYS', '365'))
+HISTORY_WINDOW_DAYS = int(os.getenv('HISTORY_WINDOW_DAYS', '30'))
 
 
 def _iso_to_dt(s: str):
@@ -99,6 +102,7 @@ async def sync_user_orders(user: User, db: Session):
         }
         
         total_saved = 0
+        new_postings: set[str] = set()
         offset = 0
         limit = 50
         
@@ -121,6 +125,9 @@ async def sync_user_orders(user: User, db: Session):
                     saved = save_order_for_user(db, user, order_data)
                     if saved:
                         total_saved += 1
+                        posting_number = order_data.get('posting_number')
+                        if valid_posting_number(posting_number):
+                            new_postings.add(posting_number)
                 except Exception as e:
                     logger.error(f"Ошибка сохранения заказа {order_data.get('posting_number')} для user_id={user.id}: {e}")
             
@@ -131,20 +138,14 @@ async def sync_user_orders(user: User, db: Session):
         logger.info(f"User {user.email}: синхронизировано {total_saved} заказов")
         
         # Опционально: обогатить новые заказы
-        if ENRICH_ON_FETCH and total_saved > 0:
+        if ENRICH_ON_FETCH and (total_saved > 0 or new_postings):
             try:
-                # Получаем постинги, которые еще не обогащены
-                postings = db.query(OrderPosting.posting_number).filter(
-                    OrderPosting.user_id == user.id,
-                    OrderPosting.created_at >= since_iso
-                ).all()
-                
-                for (posting_number,) in postings:
-                    if valid_posting_number(posting_number):
-                        try:
-                            await enrich_posting_from_ozon(posting_number, user, db)
-                        except Exception as e:
-                            logger.debug(f"Ошибка обогащения {posting_number}: {e}")
+                targets = sorted(new_postings)
+                for posting_number in targets:
+                    try:
+                        await enrich_posting_from_ozon(posting_number, user, db)
+                    except Exception as e:
+                        logger.debug(f"Ошибка обогащения {posting_number}: {e}")
             except Exception as e:
                 logger.error(f"Ошибка обогащения для user_id={user.id}: {e}")
     
@@ -203,8 +204,8 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
         return False
 
 
-def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: int, 
-                          with_analytics: bool, with_financial: bool, with_legal: bool, 
+def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: int,
+                          with_analytics: bool, with_financial: bool, with_legal: bool,
                           user_id: int, db: Session) -> dict:
     """
     Получить и сохранить заказы для пользователя из Ozon API.
@@ -249,41 +250,126 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
         if status:
             filter_dict["status"] = status
         
-        # Синхронно получаем заказы
-        response = asyncio.run(ozon_fbo_list_async(
-            client_id=client_id,
-            api_key=api_key,
-            filter_dict=filter_dict,
-            limit=limit,
-            offset=offset,
-            with_flags={
-                "analytics_data": with_analytics,
-                "financial_data": with_financial,
-                "legal_info": with_legal
-            }
-        ))
-        
-        # Ozon API возвращает {"result": [...], "postings": [...], ...}
-        orders = response.get("result", []) if isinstance(response, dict) else []
-        
-        return {"orders": orders}
+        total_saved = 0
+        all_orders = []
+        current_offset = offset
+
+        while True:
+            response = asyncio.run(ozon_fbo_list_async(
+                client_id=client_id,
+                api_key=api_key,
+                filter_dict=filter_dict,
+                limit=limit,
+                offset=current_offset,
+                with_flags={
+                    "analytics_data": with_analytics,
+                    "financial_data": with_financial,
+                    "legal_info": with_legal
+                }
+            ))
+
+            items = response.get("result", []) if isinstance(response, dict) else []
+            if not items:
+                break
+
+            for order_data in items:
+                saved = save_order_for_user(db, user, order_data)
+                if saved:
+                    total_saved += 1
+                all_orders.append(order_data)
+
+            if len(items) < limit:
+                break
+            current_offset += limit
+
+        return {"orders": all_orders, "saved": total_saved, "fetched": len(all_orders)}
     
     except Exception as e:
         logger.error(f"fetch_and_save_orders ошибка для user_id={user_id}: {e}")
         return {"orders": []}
 
 
-async def run_enrichment_batch(posting_numbers: list, user_id: int, db: Session):
+async def run_enrichment_batch(posting_numbers: list[str], user_id: int, force_refresh: bool = False) -> int:
     """
     Обогатить несколько постингов параллельно.
-    """
-    tasks = []
-    for pn in posting_numbers:
-        if valid_posting_number(pn):
-            tasks.append(enrich_posting_from_ozon(db, pn, user_id))
     
-    if tasks:
-        try:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        except Exception as e:
-            logger.error(f"run_enrichment_batch ошибка для user_id={user_id}: {e}")
+    Args:
+        posting_numbers: список posting_number для обогащения
+        user_id: ID пользователя
+        force_refresh: если False, пропускает уже обогащённые постинги
+    """
+    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+
+    async def _run_one(pn: str):
+        async with sem:
+            session = SessionLocal()
+            try:
+                # Проверяем: есть ли уже products для этого постинга и пользователя?
+                if not force_refresh:
+                    existing_products = session.query(OrderProduct).filter(
+                        OrderProduct.posting_number == pn,
+                        OrderProduct.user_id == user_id
+                    ).count()
+                    if existing_products > 0:
+                        logger.debug(f"Постинг {pn} уже обогащен ({existing_products} товаров), пропускаем")
+                        return
+                
+                user = session.query(User).filter(User.id == user_id).first()
+                if user:
+                    await enrich_posting_from_ozon(pn, user, session)
+            finally:
+                session.close()
+
+    targets = [pn for pn in posting_numbers if valid_posting_number(pn)]
+    if not targets:
+        return 0
+
+    try:
+        await asyncio.gather(*(_run_one(pn) for pn in targets), return_exceptions=True)
+    except Exception as e:
+        logger.error(f"run_enrichment_batch ошибка для user_id={user_id}: {e}")
+    return len(targets)
+
+
+async def initial_backfill_for_user(user: User, db: Session) -> dict:
+    """
+    Первичная загрузка истории для пользователя за INITIAL_WINDOW_DAYS.
+    Данные подтягиваются окнами по HISTORY_WINDOW_DAYS.
+    """
+    end_dt = datetime.utcnow()
+    start_dt = end_dt - timedelta(days=INITIAL_WINDOW_DAYS)
+    window_start = start_dt
+    total_saved = 0
+    total_fetched = 0
+
+    while window_start < end_dt:
+        window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), end_dt)
+        since_iso = window_start.replace(microsecond=0).isoformat() + 'Z'
+        to_iso = window_end.replace(microsecond=0).isoformat() + 'Z'
+
+        result = await asyncio.to_thread(
+            fetch_and_save_orders,
+            since_iso,
+            to_iso,
+            "",
+            50,
+            0,
+            True,
+            True,
+            False,
+            user.id,
+            db
+        )
+
+        orders = result.get("orders") or []
+        total_saved += result.get("saved") or 0
+        total_fetched += result.get("fetched") or 0
+
+        if ENRICH_ON_FETCH and orders:
+            posting_numbers = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
+            if posting_numbers:
+                await run_enrichment_batch(posting_numbers, user.id)
+
+        window_start = window_end + timedelta(seconds=1)
+
+    return {"saved": total_saved, "fetched": total_fetched}

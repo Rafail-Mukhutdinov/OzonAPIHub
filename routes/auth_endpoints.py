@@ -12,12 +12,13 @@ Endpoints:
 - DELETE /auth/me/ozon-credentials/{id} - удаление набора
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, field_validator
 from datetime import timedelta
-from db.database import get_db, User, OzonCredential
+from db.database import get_db, User, OzonCredential, Order, OrderPosting, OrderProduct, OrderHeader, Cost
+import asyncio
 from utils.auth import (
     authenticate_user,
     create_access_token,
@@ -242,9 +243,29 @@ async def list_ozon_credentials(
     return {"credentials": result}
 
 
+async def _initial_sync_for_new_credential(user_id: int, credential_id: int):
+    """Фоновая задача: начальная загрузка данных при добавлении credentials."""
+    from services.sync import initial_backfill_for_user
+    from db.database import SessionLocal, User
+
+    logger.info(f"Запуск начальной синхронизации для user_id={user_id}, credential_id={credential_id}")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            await initial_backfill_for_user(user, db)
+            logger.info(f"Начальная синхронизация завершена для user_id={user_id}")
+    except Exception as e:
+        logger.error(f"Ошибка начальной синхронизации для user_id={user_id}: {e}")
+    finally:
+        db.close()
+
+
 @router.post("/me/ozon-credentials", status_code=status.HTTP_201_CREATED)
 async def create_ozon_credential(
     data: OzonCredentialCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -298,11 +319,16 @@ async def create_ozon_credential(
     db.commit()
     db.refresh(credential)
     
+    # Запускаем фоновую синхронизацию для загрузки данных
+    existing_orders = db.query(Order).filter(Order.user_id == current_user.id).count()
+    if is_first or existing_orders == 0:
+        background_tasks.add_task(_initial_sync_for_new_credential, current_user.id, credential.id)
+    
     return {
         "id": credential.id,
         "name": credential.name,
         "is_active": credential.is_active,
-        "message": "Набор ключей успешно создан" + (" и активирован" if is_first else "")
+        "message": "Набор ключей успешно создан" + (" и активирован" if is_first else "") + (" (синхронизация запущена)" if is_first else "")
     }
 
 
@@ -373,10 +399,23 @@ async def delete_ozon_credential(
         if first_available:
             first_available.is_active = True
             db.commit()
+
+    # Если ключей больше нет - очищаем данные пользователя
+    remaining = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id
+    ).count()
+
+    if remaining == 0:
+        db.query(OrderProduct).filter(OrderProduct.user_id == current_user.id).delete(synchronize_session=False)
+        db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id).delete(synchronize_session=False)
+        db.query(OrderHeader).filter(OrderHeader.user_id == current_user.id).delete(synchronize_session=False)
+        db.query(Order).filter(Order.user_id == current_user.id).delete(synchronize_session=False)
+        db.query(Cost).filter(Cost.user_id == current_user.id).delete(synchronize_session=False)
+        db.commit()
     
     return {
         "status": "ok",
-        "message": f"Набор '{credential_name}' удален"
+        "message": f"Набор '{credential_name}' удален" + (". Данные очищены" if remaining == 0 else "")
     }
 
 
