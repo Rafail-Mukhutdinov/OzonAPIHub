@@ -6,7 +6,10 @@ Endpoints:
 - POST /auth/login - вход (получение токена)
 - GET /auth/me - информация о текущем пользователе
 - PUT /auth/me - обновление профиля
-- PUT /auth/me/ozon-credentials - обновление Ozon API ключей
+- GET /auth/me/ozon-credentials - список API ключей
+- POST /auth/me/ozon-credentials - создание нового набора ключей
+- PUT /auth/me/ozon-credentials/{id}/activate - активация набора
+- DELETE /auth/me/ozon-credentials/{id} - удаление набора
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,7 +17,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, field_validator
 from datetime import timedelta
-from db.database import get_db, User
+from db.database import get_db, User, OzonCredential
 from utils.auth import (
     authenticate_user,
     create_access_token,
@@ -63,7 +66,24 @@ class UserResponse(BaseModel):
     is_demo: bool
     subscription_end_date: str | None
     is_active: bool
-    ozon_configured: bool  # True если credentials установлены
+    has_credentials: bool  # True если есть хотя бы один набор ключей
+    
+    class Config:
+        from_attributes = True
+
+
+class OzonCredentialCreate(BaseModel):
+    name: str
+    client_id: str
+    api_key: str
+
+
+class OzonCredentialResponse(BaseModel):
+    id: int
+    name: str
+    is_active: bool
+    created_at: str
+    client_id_preview: str  # Только первые/последние символы
     
     class Config:
         from_attributes = True
@@ -171,65 +191,174 @@ async def login(
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Получение информации о текущем пользователе."""
+    # Проверяем наличие хотя бы одного набора ключей
+    has_credentials = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id
+    ).first() is not None
+    
     return UserResponse(
         id=current_user.id,
         email=current_user.email,
         is_demo=current_user.is_demo,
         subscription_end_date=current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None,
         is_active=current_user.is_active,
-        ozon_configured=bool(current_user.ozon_client_id and current_user.ozon_api_key)
+        has_credentials=has_credentials
     )
 
 
-@router.put("/me/ozon-credentials", status_code=status.HTTP_200_OK)
-async def update_ozon_credentials(
-    credentials: OzonCredentialsUpdate,
+@router.get("/me/ozon-credentials")
+async def list_ozon_credentials(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получить список всех наборов Ozon API ключей пользователя."""
+    credentials = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id
+    ).order_by(OzonCredential.created_at.desc()).all()
+    
+    result = []
+    for cred in credentials:
+        # Расшифровываем только для preview
+        client_id = decrypt_credential(cred.client_id_encrypted)
+        preview = f"{client_id[:4]}...{client_id[-4:]}" if client_id and len(client_id) > 8 else "****"
+        
+        result.append({
+            "id": cred.id,
+            "name": cred.name,
+            "is_active": cred.is_active,
+            "created_at": cred.created_at.isoformat(),
+            "client_id_preview": preview
+        })
+    
+    return {"credentials": result}
+
+
+@router.post("/me/ozon-credentials", status_code=status.HTTP_201_CREATED)
+async def create_ozon_credential(
+    data: OzonCredentialCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Обновление Ozon API credentials.
+    Создать новый набор Ozon API ключей.
     
-    - Шифрует Client ID и API Key перед сохранением
-    - Позволяет каждому пользователю использовать свой Ozon аккаунт
+    - Шифрует Client ID и API Key
+    - Если это первый набор, автоматически делает его активным
     """
-    current_user.ozon_client_id = encrypt_credential(credentials.client_id)
-    current_user.ozon_api_key = encrypt_credential(credentials.api_key)
+    # Проверка уникальности названия
+    existing = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id,
+        OzonCredential.name == data.name
+    ).first()
     
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Набор с названием '{data.name}' уже существует"
+        )
+    
+    # Проверяем, первый ли это набор
+    is_first = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id
+    ).first() is None
+    
+    # Создаем новый набор
+    credential = OzonCredential(
+        user_id=current_user.id,
+        name=data.name,
+        client_id_encrypted=encrypt_credential(data.client_id),
+        api_key_encrypted=encrypt_credential(data.api_key),
+        is_active=is_first  # Первый набор активируется автоматически
+    )
+    
+    db.add(credential)
+    db.commit()
+    db.refresh(credential)
+    
+    return {
+        "id": credential.id,
+        "name": credential.name,
+        "is_active": credential.is_active,
+        "message": "Набор ключей успешно создан" + (" и активирован" if is_first else "")
+    }
+
+
+@router.put("/me/ozon-credentials/{credential_id}/activate")
+async def activate_ozon_credential(
+    credential_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Активировать набор ключей (деактивирует все остальные)."""
+    # Проверяем что набор принадлежит пользователю
+    credential = db.query(OzonCredential).filter(
+        OzonCredential.id == credential_id,
+        OzonCredential.user_id == current_user.id
+    ).first()
+    
+    if not credential:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Набор ключей не найден"
+        )
+    
+    # Деактивируем все наборы пользователя
+    db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id
+    ).update({"is_active": False})
+    
+    # Активируем выбранный
+    credential.is_active = True
     db.commit()
     
     return {
         "status": "ok",
-        "message": "Ozon credentials успешно обновлены"
+        "message": f"Набор '{credential.name}' активирован"
     }
 
 
-@router.get("/me/ozon-credentials/test")
-async def test_ozon_credentials(
-    current_user: User = Depends(get_current_user)
+@router.delete("/me/ozon-credentials/{credential_id}")
+async def delete_ozon_credential(
+    credential_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    """
-    Проверка расшифровки Ozon credentials (для отладки).
+    """Удалить набор ключей."""
+    credential = db.query(OzonCredential).filter(
+        OzonCredential.id == credential_id,
+        OzonCredential.user_id == current_user.id
+    ).first()
     
-    ⚠️ УДАЛИТЕ этот endpoint в продакшене!
-    """
-    if not current_user.ozon_client_id or not current_user.ozon_api_key:
+    if not credential:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ozon credentials не настроены"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Набор ключей не найден"
         )
     
-    # Расшифровка для проверки
-    client_id = decrypt_credential(current_user.ozon_client_id)
-    api_key = decrypt_credential(current_user.ozon_api_key)
+    was_active = credential.is_active
+    credential_name = credential.name
     
-    # Показываем только первые/последние символы для безопасности
+    db.delete(credential)
+    db.commit()
+    
+    # Если удалили активный, активируем первый доступный
+    if was_active:
+        first_available = db.query(OzonCredential).filter(
+            OzonCredential.user_id == current_user.id
+        ).first()
+        
+        if first_available:
+            first_available.is_active = True
+            db.commit()
+    
     return {
-        "client_id_preview": f"{client_id[:4]}...{client_id[-4:]}" if client_id else None,
-        "api_key_preview": f"{api_key[:8]}...{api_key[-4:]}" if api_key else None,
-        "configured": True
+        "status": "ok",
+        "message": f"Набор '{credential_name}' удален"
     }
 
 
@@ -256,11 +385,16 @@ async def update_profile(
     db.commit()
     db.refresh(current_user)
     
+    # Проверяем наличие credentials
+    has_credentials = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id
+    ).first() is not None
+    
     return UserResponse(
         id=current_user.id,
         email=current_user.email,
         is_demo=current_user.is_demo,
         subscription_end_date=current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None,
         is_active=current_user.is_active,
-        ozon_configured=bool(current_user.ozon_client_id and current_user.ozon_api_key)
+        has_credentials=has_credentials
     )
