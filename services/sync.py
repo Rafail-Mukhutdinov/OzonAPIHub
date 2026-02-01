@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from db.database import User, Order, OrderPosting, OrderProduct, SessionLocal
+from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal
 from services.enrichment import enrich_posting_from_ozon
 from services.ozon import ozon_fbo_list_async
 from utils.encryption import decrypt_credential
@@ -25,7 +25,7 @@ def _iso_to_dt(s: str):
 async def background_sync_loop(app, interval_seconds: int = 300):
     """
     Фоновый цикл синхронизации для ВСЕХ пользователей.
-    Каждые interval_seconds опрашивает Ozon API для каждого активного пользователя.
+    Каждые interval_seconds опрашивает Ozon API для каждого активного пользователя с credentials.
     """
     logger.info(f"Фоновая синхронизация запущена (интервал={interval_seconds}с)")
     try:
@@ -33,18 +33,17 @@ async def background_sync_loop(app, interval_seconds: int = 300):
             try:
                 db = SessionLocal()
                 try:
-                    # Получаем всех активных пользователей с настроенными Ozon credentials
-                    users = db.query(User).filter(
+                    # Получаем всех активных пользователей с активными Ozon credentials
+                    users_with_creds = db.query(User).join(OzonCredential).filter(
                         User.is_active == True,
-                        User.ozon_client_id.isnot(None),
-                        User.ozon_api_key.isnot(None)
-                    ).all()
+                        OzonCredential.is_active == True
+                    ).distinct().all()
                     
-                    if not users:
+                    if not users_with_creds:
                         logger.debug("Нет активных пользователей с Ozon credentials")
                     else:
-                        logger.info(f"Синхронизация для {len(users)} пользователей")
-                        for user in users:
+                        logger.info(f"Синхронизация для {len(users_with_creds)} пользователей")
+                        for user in users_with_creds:
                             try:
                                 await sync_user_orders(user, db)
                             except Exception as e:
@@ -64,15 +63,29 @@ async def background_sync_loop(app, interval_seconds: int = 300):
 async def sync_user_orders(user: User, db: Session):
     """
     Синхронизирует заказы для одного пользователя.
-    1. Расшифровывает credentials
+    1. Получает активные credentials из БД
     2. Опрашивает Ozon API за последние RECENT_WINDOW_HOURS
     3. Сохраняет заказы в БД с user_id
     4. При необходимости обогащает данные
     """
     try:
+        # Получаем активные credentials пользователя
+        active_cred = db.query(OzonCredential).filter(
+            OzonCredential.user_id == user.id,
+            OzonCredential.is_active == True
+        ).first()
+        
+        if not active_cred:
+            logger.warning(f"У пользователя {user.email} нет активных credentials")
+            return
+        
         # Расшифровываем credentials
-        client_id = decrypt_credential(user.ozon_client_id)
-        api_key = decrypt_credential(user.ozon_api_key)
+        client_id = decrypt_credential(active_cred.client_id_encrypted)
+        api_key = decrypt_credential(active_cred.api_key_encrypted)
+        
+        if not client_id or not api_key:
+            logger.error(f"Ошибка расшифровки credentials для user_id={user.id}")
+            return
         
         # Период синхронизации
         since_dt = datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)
@@ -93,10 +106,10 @@ async def sync_user_orders(user: User, db: Session):
             data = await ozon_fbo_list_async(
                 client_id=client_id,
                 api_key=api_key,
-                filter_params=filter_dict,
+                filter_dict=filter_dict,
                 limit=limit,
                 offset=offset,
-                with_params={"analytics_data": True, "financial_data": True}
+                with_flags={"analytics_data": True, "financial_data": True}
             )
             
             items = data.get('result', []) or []

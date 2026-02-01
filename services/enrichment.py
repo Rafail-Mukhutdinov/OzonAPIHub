@@ -2,7 +2,7 @@ import os
 import logging
 from services.ozon import ozon_fbo_get_async
 from sqlalchemy.orm import Session
-from db.database import OrderHeader, OrderPosting, OrderProduct, User
+from db.database import OrderHeader, OrderPosting, OrderProduct, User, OzonCredential
 from utils.encryption import decrypt_credential
 from datetime import datetime
 
@@ -50,14 +50,23 @@ def recalc_order_header(db: Session, order_number: str, user_id: int):
 async def enrich_posting_from_ozon(posting_number: str, user: User, db: Session):
     """
     Асинхронно обогатить данные постинга из Ozon API.
-    Использует Ozon credentials конкретного пользователя.
+    Использует активные Ozon credentials конкретного пользователя.
     """
-    # Расшифровка credentials пользователя
-    client_id = decrypt_credential(user.ozon_client_id)
-    api_key = decrypt_credential(user.ozon_api_key)
+    # Получаем активные credentials пользователя
+    active_cred = db.query(OzonCredential).filter(
+        OzonCredential.user_id == user.id,
+        OzonCredential.is_active == True
+    ).first()
+    
+    if not active_cred:
+        raise ValueError(f"У пользователя {user.email} нет активных Ozon credentials")
+    
+    # Расшифровка credentials
+    client_id = decrypt_credential(active_cred.client_id_encrypted)
+    api_key = decrypt_credential(active_cred.api_key_encrypted)
     
     if not client_id or not api_key:
-        raise ValueError(f"Ozon credentials не настроены для пользователя {user.email}")
+        raise ValueError(f"Ошибка расшифровки Ozon credentials для пользователя {user.email}")
     
     # Запрос к Ozon API с credentials пользователя
     data = (await ozon_fbo_get_async(client_id, api_key, posting_number)).get("result")
