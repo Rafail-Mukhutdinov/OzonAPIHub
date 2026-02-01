@@ -147,9 +147,16 @@ async def sales_today(
             .all()
         )
         posting_numbers = [p[0] for p in postings]
-    # Fallback: если по in_process_at ничего не нашли (старая история без обогащения),
-    # возьмём posting_number из таблицы orders по created_at
+    # Fallback: только если фильтруем по status (режим статусов),
+    # иначе для delivered возвращаем пусто (без подмешивания сырых orders)
     if not posting_numbers:
+        if status is None:
+            return {
+                "range": {"since": start.isoformat() + "Z", "to": end.isoformat() + "Z"},
+                "items": [],
+                "total_items": 0,
+                "total_orders": 0,
+            }
         orders_fallback = (
             db.query(Order.posting_number)
             .filter(Order.user_id == current_user.id)
