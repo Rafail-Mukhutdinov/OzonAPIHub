@@ -135,13 +135,15 @@ async def sales_today(
         posting_numbers = _filter_items_by_status([], postings_q, status, db)
     else:
         # По умолчанию delivered - только реально доставленные (substatus = posting_received)
+        # Важно: Ozon считает доставленные заказы по created_at (дата создания заказа),
+        # а НЕ по fact_delivery_date (планируемая дата доставки)
         postings = (
             db.query(OrderPosting.posting_number)
             .filter(OrderPosting.user_id == current_user.id)
             .filter(OrderPosting.status == "delivered")
             .filter(OrderPosting.substatus == "posting_received")  # Реально получено покупателем
-            .filter(OrderPosting.fact_delivery_date >= start.isoformat() + "Z")
-            .filter(OrderPosting.fact_delivery_date < end.isoformat() + "Z")
+            .filter(OrderPosting.created_at >= start.isoformat() + "Z")
+            .filter(OrderPosting.created_at < end.isoformat() + "Z")
             .all()
         )
         posting_numbers = [p[0] for p in postings]
