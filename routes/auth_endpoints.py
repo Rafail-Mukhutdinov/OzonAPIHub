@@ -12,7 +12,7 @@ Endpoints:
 - DELETE /auth/me/ozon-credentials/{id} - удаление набора
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, field_validator
@@ -73,6 +73,7 @@ class UserResponse(BaseModel):
 
 
 class OzonCredentialCreate(BaseModel):
+    marketplace: str  # 'ozon', 'wildberries', 'yandex', и т.д.
     name: str
     client_id: str
     api_key: str
@@ -80,6 +81,7 @@ class OzonCredentialCreate(BaseModel):
 
 class OzonCredentialResponse(BaseModel):
     id: int
+    marketplace: str
     name: str
     is_active: bool
     created_at: str
@@ -90,6 +92,7 @@ class OzonCredentialResponse(BaseModel):
 
 
 class OzonCredentialsUpdate(BaseModel):
+    marketplace: str | None = None  # Может быть обновлено
     client_id: str
     api_key: str
 
@@ -106,12 +109,12 @@ class ProfileUpdate(BaseModel):
 @router.options("/register")
 async def options_register():
     """CORS preflight для регистрации"""
-    return {}
+    return Response(status_code=200)
 
 @router.options("/login")
 async def options_login():
     """CORS preflight для входа"""
-    return {}
+    return Response(status_code=200)
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserRegister, db: Session = Depends(get_db)):
@@ -216,7 +219,7 @@ async def list_ozon_credentials(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Получить список всех наборов Ozon API ключей пользователя."""
+    """Получить список всех наборов API ключей пользователя."""
     credentials = db.query(OzonCredential).filter(
         OzonCredential.user_id == current_user.id
     ).order_by(OzonCredential.created_at.desc()).all()
@@ -229,6 +232,7 @@ async def list_ozon_credentials(
         
         result.append({
             "id": cred.id,
+            "marketplace": cred.marketplace,
             "name": cred.name,
             "is_active": cred.is_active,
             "created_at": cred.created_at.isoformat(),
@@ -245,18 +249,31 @@ async def create_ozon_credential(
     db: Session = Depends(get_db)
 ):
     """
-    Создать новый набор Ozon API ключей.
+    Создать новый набор API ключей.
     
+    - Проверяет дублей по маркетплейсу
     - Шифрует Client ID и API Key
     - Если это первый набор, автоматически делает его активным
     """
+    # Проверка: нет ли уже ключей для этого маркетплейса
+    existing_marketplace = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id,
+        OzonCredential.marketplace == data.marketplace
+    ).first()
+    
+    if existing_marketplace:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Ключи для маркетплейса '{data.marketplace}' уже существуют. Удалите старые или используйте другой маркетплейс."
+        )
+    
     # Проверка уникальности названия
-    existing = db.query(OzonCredential).filter(
+    existing_name = db.query(OzonCredential).filter(
         OzonCredential.user_id == current_user.id,
         OzonCredential.name == data.name
     ).first()
     
-    if existing:
+    if existing_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Набор с названием '{data.name}' уже существует"
@@ -270,6 +287,7 @@ async def create_ozon_credential(
     # Создаем новый набор
     credential = OzonCredential(
         user_id=current_user.id,
+        marketplace=data.marketplace,
         name=data.name,
         client_id_encrypted=encrypt_credential(data.client_id),
         api_key_encrypted=encrypt_credential(data.api_key),

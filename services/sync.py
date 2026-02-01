@@ -201,3 +201,76 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
         db.rollback()
         logger.error(f"Ошибка save_order_for_user (posting={posting_number}, user_id={user.id}): {e}")
         return False
+
+
+def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: int, 
+                          with_analytics: bool, with_financial: bool, with_legal: bool, 
+                          user_id: int, db: Session) -> dict:
+    """
+    Получить и сохранить заказы для пользователя из Ozon API.
+    Используется в analytics endpoints.
+    
+    Args:
+        since, to: ISO timestamps
+        status: фильтр статуса
+        limit, offset: пагинация
+        with_analytics, with_financial, with_legal: флаги данных
+        user_id: ID пользователя
+        db: сессия БД
+    
+    Returns:
+        {"orders": [...]} - список полученных заказов
+    """
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            logger.error(f"Пользователь {user_id} не найден")
+            return {"orders": []}
+        
+        # Получаем активные credentials пользователя
+        cred = db.query(OzonCredential).filter(
+            OzonCredential.user_id == user_id,
+            OzonCredential.is_active == True
+        ).first()
+        
+        if not cred:
+            logger.debug(f"Нет активных credentials для user_id={user_id}")
+            return {"orders": []}
+        
+        client_id = decrypt_credential(cred.client_id_encrypted)
+        api_key = decrypt_credential(cred.api_key_encrypted)
+        
+        # Синхронно получаем заказы
+        orders = asyncio.run(ozon_fbo_list_async(
+            client_id=client_id,
+            api_key=api_key,
+            since=since,
+            to=to,
+            status=status,
+            limit=limit,
+            offset=offset,
+            with_analytics_data=with_analytics,
+            with_financial_data=with_financial
+        ))
+        
+        return {"orders": orders}
+    
+    except Exception as e:
+        logger.error(f"fetch_and_save_orders ошибка для user_id={user_id}: {e}")
+        return {"orders": []}
+
+
+async def run_enrichment_batch(posting_numbers: list, user_id: int, db: Session):
+    """
+    Обогатить несколько постингов параллельно.
+    """
+    tasks = []
+    for pn in posting_numbers:
+        if valid_posting_number(pn):
+            tasks.append(enrich_posting_from_ozon(db, pn, user_id))
+    
+    if tasks:
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            logger.error(f"run_enrichment_batch ошибка для user_id={user_id}: {e}")

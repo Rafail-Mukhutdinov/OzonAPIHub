@@ -88,6 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await dio.post(
         '/auth/me/ozon-credentials',
         data: {
+          'marketplace': result['marketplace'],
           'name': result['name'],
           'client_id': result['client_id'],
           'api_key': result['api_key'],
@@ -303,8 +304,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ),
                                 ),
                                 subtitle: Text(
+                                  '[${cred['marketplace'] ?? 'ozon'}] '
                                   'Client ID: ${cred['client_id_preview']}\n'
-                                  '${isActive ? "Активный" : "Неактивный"}',
+                                  '${isActive ? "✓ Активный" : "○ Неактивный"}',
                                 ),
                                 isThreeLine: true,
                                 trailing: Row(
@@ -354,6 +356,16 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
   final _nameController = TextEditingController();
   final _clientIdController = TextEditingController();
   final _apiKeyController = TextEditingController();
+  
+  String _selectedMarketplace = 'ozon';
+  
+  // Список доступных маркетплейсов
+  final List<Map<String, String>> _marketplaces = [
+    {'value': 'ozon', 'label': 'Ozon'},
+    {'value': 'wildberries', 'label': 'Wildberries'},
+    {'value': 'yandex_market', 'label': 'Yandex Market'},
+    {'value': 'aliexpress', 'label': 'AliExpress'},
+  ];
 
   @override
   void dispose() {
@@ -373,12 +385,41 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Выпадающий список маркетплейсов
+              DropdownButtonFormField<String>(
+                value: _selectedMarketplace,
+                decoration: const InputDecoration(
+                  labelText: 'Маркетплейс',
+                  prefixIcon: Icon(Icons.store),
+                  border: OutlineInputBorder(),
+                ),
+                items: _marketplaces.map((m) {
+                  return DropdownMenuItem<String>(
+                    value: m['value']!,
+                    child: Text(m['label']!),
+                  );
+                }).toList(),
+                onChanged: (value) {
+                  setState(() {
+                    _selectedMarketplace = value!;
+                  });
+                },
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Выберите маркетплейс';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              
               TextFormField(
                 controller: _nameController,
                 decoration: const InputDecoration(
                   labelText: 'Название',
                   hintText: 'Например: Основной магазин',
                   prefixIcon: Icon(Icons.label),
+                  border: OutlineInputBorder(),
                 ),
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
@@ -388,11 +429,13 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
                 },
               ),
               const SizedBox(height: 16),
+              
               TextFormField(
                 controller: _clientIdController,
                 decoration: const InputDecoration(
                   labelText: 'Client ID',
                   prefixIcon: Icon(Icons.key),
+                  border: OutlineInputBorder(),
                 ),
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
@@ -402,11 +445,13 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
                 },
               ),
               const SizedBox(height: 16),
+              
               TextFormField(
                 controller: _apiKeyController,
                 decoration: const InputDecoration(
                   labelText: 'API Key',
                   prefixIcon: Icon(Icons.vpn_key),
+                  border: OutlineInputBorder(),
                 ),
                 obscureText: true,
                 validator: (value) {
@@ -429,6 +474,7 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
           onPressed: () {
             if (_formKey.currentState!.validate()) {
               Navigator.pop(context, {
+                'marketplace': _selectedMarketplace,
                 'name': _nameController.text.trim(),
                 'client_id': _clientIdController.text.trim(),
                 'api_key': _apiKeyController.text.trim(),

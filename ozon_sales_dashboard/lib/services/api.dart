@@ -14,8 +14,12 @@ class OzonApiClient {
     if (!kIsWeb && Platform.isAndroid) {
       return 'http://10.0.2.2:8080';
     }
-    // Везде else: Web, iOS, Desktop -> localhost с правильным портом
-    return 'http://127.0.0.1:8080';
+    // На Web всегда используем localhost вместо 127.0.0.1 для лучшей совместимости с браузерами
+    if (kIsWeb) {
+      return 'http://localhost:8080';
+    }
+    // Desktop и iOS -> localhost
+    return 'http://localhost:8080';
   }
 
   /// Создает клиент с автоматическим выбором URL или явно переданным

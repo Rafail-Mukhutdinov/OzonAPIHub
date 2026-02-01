@@ -51,7 +51,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       onUnauthorized: _handleUnauthorized,
     );
     
-    _load();
+    // Загружаем данные безопасно
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _load();
+    });
   }
 
   // Обработка разлогинивания при 401
@@ -106,6 +109,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   // Загрузка таблицы и итогов
   Future<void> _load() async {
+    if (!mounted) return;
+    
     setState(() {
       loading = true;
       error = null;
@@ -124,18 +129,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
               status: selectedStatus);
 
       final list = (data['items'] as List).cast<Map<String, dynamic>>();
-      setState(() {
-        items = list;
-        totals = data;
-      });
+      if (mounted) {
+        setState(() {
+          items = list;
+          totals = data;
+        });
+      }
     } catch (e) {
-      setState(() {
-        error = e.toString();
-      });
+      if (mounted) {
+        setState(() {
+          error = e.toString();
+        });
+      }
     } finally {
-      setState(() {
-        loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          loading = false;
+        });
+      }
     }
   }
 
@@ -345,7 +356,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             if (loading) const LinearProgressIndicator(),
             if (error != null)
-              Text('Ошибка: $error', style: const TextStyle(color: Colors.red)),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  border: Border.all(color: Colors.red.shade200),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Ошибка загрузки данных',
+                      style: TextStyle(
+                        color: Colors.red.shade900,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      error!,
+                      style: TextStyle(color: Colors.red.shade700),
+                    ),
+                    const SizedBox(height: 12),
+                    if (error!.contains('connection') || error!.contains('No credentials'))
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '💡 Совет:',
+                            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text('1. Добавьте API ключ Ozon в Настройках (иконка ⚙️)'),
+                          const SizedBox(height: 4),
+                          const Text('2. Нажмите кнопку "Обновить" '),
+                          const SizedBox(height: 12),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const SettingsScreen(),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.settings),
+                            label: const Text('Перейти в Настройки'),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
 
             const SizedBox(height: 12),
 

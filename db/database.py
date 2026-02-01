@@ -53,11 +53,12 @@ class User(Base):
 
 
 class OzonCredential(Base):
-    """Набор Ozon API ключей пользователя."""
+    """Набор API ключей пользователя для различных маркетплейсов."""
     __tablename__ = "ozon_credentials"
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    marketplace = Column(String(50), default='ozon', nullable=False)  # 'ozon', 'wildberries', 'yandex', и т.д.
     name = Column(String(255), nullable=False)  # Название набора (например, "Основной магазин", "Тестовый")
     
     # Зашифрованные credentials
@@ -75,7 +76,8 @@ class OzonCredential(Base):
     user = relationship("User", back_populates="ozon_credentials")
     
     __table_args__ = (
-        sa.UniqueConstraint('user_id', 'name', name='uq_user_credential_name'),
+        sa.UniqueConstraint('user_id', 'marketplace', name='uq_user_marketplace'),  # Один ключ на маркетплейс
+        sa.UniqueConstraint('user_id', 'name', name='uq_user_credential_name'),  # Уникальное имя для пользователя
     )
 
 

@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
-from db.database import OrderPosting, OrderProduct, Order, get_db
+from db.database import OrderPosting, OrderProduct, Order, get_db, User
 import asyncio
-# from services.sync import fetch_and_save_orders, run_enrichment_batch  # TODO: Update for SaaS
+from services.sync import fetch_and_save_orders, run_enrichment_batch
+from services.enrichment import enrich_posting_from_ozon
 from utils.common import valid_posting_number
+from routes.auth_endpoints import get_current_user
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -47,40 +49,65 @@ def _range_with_tz(since: str | None, to: str | None, tz_offset_hours: int) -> t
         end_utc = start_utc + timedelta(days=1)
     return start_utc, end_utc
 
-async def _ensure_data_for_range(db: Session, start: datetime, end: datetime):
+async def _ensure_data_for_range(db: Session, start: datetime, end: datetime, user_id: int):
     """
     Если за диапазон нет данных в БД, подтянуть их из Ozon и обогатить постинги.
     """
     since_iso = start.isoformat() + "Z"
     to_iso = end.isoformat() + "Z"
-    has_orders = db.query(Order).filter(Order.created_at >= since_iso).filter(Order.created_at < to_iso).count() > 0
-    has_postings = db.query(OrderPosting).filter(OrderPosting.created_at >= since_iso).filter(OrderPosting.created_at < to_iso).count() > 0
+    has_orders = db.query(Order).filter(Order.user_id == user_id).filter(Order.created_at >= since_iso).filter(Order.created_at < to_iso).count() > 0
+    has_postings = db.query(OrderPosting).filter(OrderPosting.user_id == user_id).filter(OrderPosting.created_at >= since_iso).filter(OrderPosting.created_at < to_iso).count() > 0
     if not (has_orders or has_postings):
-        res = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso, "", 50, 0, True, True, False, db)
-        orders = res.get("orders") or []
-        pns = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
-        if pns:
-            existing = set(r[0] for r in db.query(OrderPosting.posting_number).filter(OrderPosting.posting_number.in_(pns)).all())
-            targets = [pn for pn in set(pns) if pn not in existing]
-            if targets:
-                await run_enrichment_batch(targets)
+        try:
+            # Синхронизируем заказы для текущего пользователя
+            res = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso, "", 50, 0, True, True, False, user_id, db)
+            orders = res.get("orders") or []
+            pns = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
+            if pns:
+                existing = set(r[0] for r in db.query(OrderPosting.posting_number).filter(OrderPosting.user_id == user_id).filter(OrderPosting.posting_number.in_(pns)).all())
+                targets = [pn for pn in set(pns) if pn not in existing]
+                if targets:
+                    # Обогащаем постинги для текущего пользователя
+                    for pn in targets:
+                        try:
+                            await enrich_posting_from_ozon(db, pn, user_id)
+                        except Exception:
+                            pass
+        except Exception as e:
+            # Если синхронизация не работает (нет API ключа и т.д.), продолжаем работу с пустыми данными
+            import logging
+            logger = logging.getLogger("uvicorn.error")
+            logger.debug(f"_ensure_data_for_range ошибка для user_id={user_id}: {e}")
+            pass
 @router.get("/sales_by_date")
-async def sales_by_date(date: str, tz_offset_hours: int = 0, db: Session = Depends(get_db)):
+async def sales_by_date(
+    date: str, 
+    tz_offset_hours: int = 0, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Агрегаты по delivered за конкретную локальную дату (с учётом tz_offset_hours)."""
     target = datetime.fromisoformat(date)  # YYYY-MM-DD
     local_start = datetime(target.year, target.month, target.day)
     start = local_start - timedelta(hours=tz_offset_hours)
     end = start + timedelta(days=1)
-    return await sales_today(since=start.isoformat() + "Z", to=end.isoformat() + "Z", tz_offset_hours=0, db=db)
+    return await sales_today(since=start.isoformat() + "Z", to=end.isoformat() + "Z", tz_offset_hours=0, db=db, current_user=current_user)
 
 @router.get("/sales_range")
-async def sales_range(since: str, to: str, tz_offset_hours: int = 0, status: str | None = None, db: Session = Depends(get_db)):
+async def sales_range(
+    since: str, 
+    to: str, 
+    tz_offset_hours: int = 0, 
+    status: str | None = None, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Агрегаты по delivered за диапазон с учётом tz_offset_hours.
     Если offset != 0 — считаем, что since/to локальные и конвертируем в UTC.
     status — фильтр по статусу (если передан, override на delivered).
     """
     start, end = _range_with_tz(since, to, tz_offset_hours)
-    return await sales_today(since=start.isoformat() + "Z", to=end.isoformat() + "Z", tz_offset_hours=0, status=status, db=db)
+    return await sales_today(since=start.isoformat() + "Z", to=end.isoformat() + "Z", tz_offset_hours=0, status=status, db=db, current_user=current_user)
 
 @router.get("/sales_today")
 async def sales_today(
@@ -89,15 +116,17 @@ async def sales_today(
     tz_offset_hours: int = 0,
     status: str | None = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # Диапазон в UTC с учётом локального смещения
     start, end = _range_with_tz(since, to, tz_offset_hours)
-    await _ensure_data_for_range(db, start, end)
+    await _ensure_data_for_range(db, start, end, current_user.id)
     
     if status:
         # Фильтруем по указанному статусу
         postings_q = (
             db.query(OrderPosting.posting_number, OrderPosting.status)
+            .filter(OrderPosting.user_id == current_user.id)
             .filter(OrderPosting.in_process_at >= start.isoformat() + "Z")
             .filter(OrderPosting.in_process_at < end.isoformat() + "Z")
         )
@@ -106,6 +135,7 @@ async def sales_today(
         # По умолчанию delivered
         postings = (
             db.query(OrderPosting.posting_number)
+            .filter(OrderPosting.user_id == current_user.id)
             .filter(OrderPosting.status == "delivered")
             .filter(OrderPosting.fact_delivery_date >= start.isoformat() + "Z")
             .filter(OrderPosting.fact_delivery_date < end.isoformat() + "Z")
@@ -117,6 +147,7 @@ async def sales_today(
     if not posting_numbers:
         orders_fallback = (
             db.query(Order.posting_number)
+            .filter(Order.user_id == current_user.id)
             .filter(Order.created_at >= start.isoformat() + "Z")
             .filter(Order.created_at < end.isoformat() + "Z")
             .all()
@@ -139,6 +170,7 @@ async def sales_today(
             func.sum(OrderProduct.payout).label("total_payout"),
             func.count(func.distinct(OrderProduct.posting_number)).label("orders_count"),
         )
+        .filter(OrderProduct.user_id == current_user.id)
         .filter(OrderProduct.posting_number.in_(posting_numbers))
         .group_by(OrderProduct.offer_id, OrderProduct.sku, OrderProduct.name)
         .all()
@@ -175,6 +207,7 @@ async def sales_today_raw(
     include_canceled: bool = True,
     status: str | None = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Считает продажи за сегодня по незавершённым статусам: только количество единиц,
@@ -184,10 +217,11 @@ async def sales_today_raw(
     """
     statuses = {s.strip() for s in include_statuses.split(",") if s.strip()}
     start, end = _range_with_tz(since, to, tz_offset_hours)
-    await _ensure_data_for_range(db, start, end)
+    await _ensure_data_for_range(db, start, end, current_user.id)
     # Считаем по дате "Принят в обработку" (in_process_at), как в отчёте Ozon
     postings_q = (
         db.query(OrderPosting.posting_number, OrderPosting.status)
+        .filter(OrderPosting.user_id == current_user.id)
         .filter(OrderPosting.in_process_at >= start.isoformat() + "Z")
         .filter(OrderPosting.in_process_at < end.isoformat() + "Z")
     )
@@ -249,10 +283,13 @@ async def sales_today_raw(
     }
 
 @router.get("/orders_today")
-async def orders_today(db: Session = Depends(get_db)):
+async def orders_today(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     start = datetime.utcnow().date().isoformat() + 'T00:00:00Z'
     end = datetime.utcnow().date().isoformat() + 'T23:59:59Z'
-    q = db.query(Order).filter(Order.created_at >= start).filter(Order.created_at <= end)
+    q = db.query(Order).filter(Order.user_id == current_user.id).filter(Order.created_at >= start).filter(Order.created_at <= end)
     total = q.count()
     rows = q.all()
     stats = {}
@@ -269,6 +306,7 @@ async def sales_by_sku_monthly(
     months_back: int = 12,
     mode: str = "delivered",
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Получить динамику продаж по месяцам для конкретного артикула.
@@ -295,12 +333,14 @@ async def sales_by_sku_monthly(
     if mode == "delivered":
         # Режим "Финансы": только delivered, группировка по fact_delivery_date
         posting_q = db.query(OrderPosting.posting_number).filter(
+            OrderPosting.user_id == current_user.id,
             OrderPosting.status == "delivered",
             OrderPosting.fact_delivery_date >= start_iso
         )
     else:  # mode == "shipped"
         # Режим "Отгрузки": все, кроме отмененных, группировка по in_process_at
         posting_q = db.query(OrderPosting.posting_number).filter(
+            OrderPosting.user_id == current_user.id,
             ~OrderPosting.status.like("%cancel%"),
             OrderPosting.in_process_at >= start_iso
         )
@@ -312,6 +352,7 @@ async def sales_by_sku_monthly(
     
     # Фильтруем товары по offer_id И sku (оба параметра)
     product_filter = db.query(OrderProduct).filter(
+        OrderProduct.user_id == current_user.id,
         OrderProduct.posting_number.in_(posting_numbers)
     )
     

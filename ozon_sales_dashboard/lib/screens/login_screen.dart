@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
-import '../providers/auth_provider.dart';
 import 'register_screen.dart';
 import 'dashboard_screen.dart';
 
@@ -24,11 +22,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    _authService = AuthService(
-      onTokenChanged: authProvider.setToken,
-      onLogout: authProvider.logout,
-    );
+    _authService = AuthService();
   }
 
   @override
