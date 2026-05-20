@@ -9,6 +9,7 @@ import '../widgets/sales_table.dart';
 import '../widgets/sales_chart.dart';
 import 'login_screen.dart';
 import 'settings_screen.dart';
+import 'shipments_screen.dart'; // Добавляем импорт нового экрана
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -297,6 +298,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(
         title: const Text('Ozon Dashboard'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.inventory),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ShipmentsScreen()),
+              );
+            },
+            tooltip: 'Отгрузки',
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () {

@@ -497,3 +497,109 @@ async def sales_by_sku_monthly(
         "mode": mode,
         "months_back": months_back,
     }
+
+
+@router.get("/shipments")
+async def get_shipments(
+    skus: str = None,  # Строка с SKU через запятую
+    since: str = None,  # Начальная дата в формате ISO
+    to: str = None,    # Конечная дата в формате ISO
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Получить данные об отгрузках по артикулам и датам.
+    
+    Args:
+        skus: строка с SKU через запятую (например, "12345,67890,11111")
+        since: начальная дата в формате ISO (например, "2024-01-01T00:00:00Z")
+        to: конечная дата в формате ISO (например, "2024-12-31T23:59:59Z")
+        limit: ограничение на количество возвращаемых записей
+        offset: смещение для пагинации
+        
+    Returns:
+        JSON с данными об отгрузках
+    """
+    # Фильтрация постингов по пользователю и дате
+    query = db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id)
+    
+    # Фильтр по дате создания (дата отгрузки)
+    if since:
+        query = query.filter(OrderPosting.created_at >= since)
+    if to:
+        query = query.filter(OrderPosting.created_at <= to)
+    
+    # Получаем отфильтрованные постинги
+    postings = query.order_by(OrderPosting.created_at.desc()).offset(offset).limit(limit).all()
+    
+    # Фильтр по SKU, если указаны
+    if skus:
+        sku_list = [int(s.strip()) for s in skus.split(",") if s.strip().isdigit()]
+        if sku_list:
+            # Получаем все продукты для этих постингов
+            posting_numbers = [p.posting_number for p in postings]
+            products = db.query(OrderProduct).filter(
+                OrderProduct.user_id == current_user.id,
+                OrderProduct.posting_number.in_(posting_numbers),
+                OrderProduct.sku.in_(sku_list)
+            ).all()
+            
+            # Получаем posting_numbers, которые содержат указанные SKU
+            valid_posting_numbers = {p.posting_number for p in products}
+            # Оставляем только постинги с подходящими SKU
+            postings = [p for p in postings if p.posting_number in valid_posting_numbers]
+    
+    # Подготавливаем результат
+    shipments = []
+    for posting in postings:
+        # Получаем продукты для этого постинга
+        products = db.query(OrderProduct).filter(
+            OrderProduct.user_id == current_user.id,
+            OrderProduct.posting_number == posting.posting_number
+        ).all()
+        
+        for product in products:
+            shipment_item = {
+                "sku": product.sku,
+                "name": product.name,
+                "posting_number": posting.posting_number,
+                "shipment_date": posting.created_at,
+                "quantity": product.quantity,
+                "status": posting.status,
+                "price": product.price,
+                "payout": product.payout,
+                "commission": product.commission_amount,
+            }
+            shipments.append(shipment_item)
+    
+    # Общее количество без ограничений пагинации
+    count_query = db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id)
+    if since:
+        count_query = count_query.filter(OrderPosting.created_at >= since)
+    if to:
+        count_query = count_query.filter(OrderPosting.created_at <= to)
+    
+    # Если указаны SKU, применяем фильтр и к общему количеству
+    if skus:
+        sku_list = [int(s.strip()) for s in skus.split(",") if s.strip().isdigit()]
+        if sku_list:
+            posting_numbers = [p.posting_number for p in count_query.all()]
+            valid_products = db.query(OrderProduct.posting_number).filter(
+                OrderProduct.user_id == current_user.id,
+                OrderProduct.posting_number.in_(posting_numbers),
+                OrderProduct.sku.in_(sku_list)
+            ).distinct().count()
+            total_count = valid_products
+        else:
+            total_count = count_query.count()
+    else:
+        total_count = count_query.count()
+    
+    return {
+        "total": total_count,
+        "limit": limit,
+        "offset": offset,
+        "items": shipments
+    }

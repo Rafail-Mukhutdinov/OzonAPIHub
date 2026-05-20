@@ -121,6 +121,27 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Получить данные об отгрузках по артикулам и датам
+  Future<Map<String, dynamic>> getShipments({
+    String? skus,
+    String? since,
+    String? to,
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    final resp = await dio.get(
+      '/analytics/shipments',
+      queryParameters: {
+        if (skus != null) 'skus': skus,
+        if (since != null) 'since': since,
+        if (to != null) 'to': to,
+        'limit': limit,
+        'offset': offset,
+      },
+    );
+    return _toJson(resp);
+  }
+
   Map<String, dynamic> _toJson(Response resp) {
     if (resp.data is String)
       return json.decode(resp.data as String) as Map<String, dynamic>;
