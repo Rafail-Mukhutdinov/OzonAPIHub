@@ -5,8 +5,12 @@
 """
 
 import os
+from dotenv import load_dotenv  # Добавляем импорт
 from cryptography.fernet import Fernet
 from typing import Optional
+
+# Загружаем переменные окружения
+load_dotenv()
 
 # Ключ шифрования должен быть в .env и НИКОГДА не коммититься в git!
 # Генерация нового ключа: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
