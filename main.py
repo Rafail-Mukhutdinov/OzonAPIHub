@@ -36,6 +36,8 @@ app.add_middleware(
         "http://127.0.0.1:8080",       # Backend  
         "http://localhost",            # Nginx frontend
         "http://127.0.0.1",            # Nginx frontend
+        "http://45.150.11.25",         # Production server
+        "http://45.150.11.25:8080",    # Production server with port
     ],
     allow_origin_regex=r"http://localhost:\d+",  # Разрешаем любой порт localhost для dev
     allow_credentials=True,

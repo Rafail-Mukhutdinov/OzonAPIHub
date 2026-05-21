@@ -14,11 +14,13 @@ class OzonApiClient {
     if (!kIsWeb && Platform.isAndroid) {
       return 'http://10.0.2.2:8080';
     }
-    // На Web всегда используем localhost вместо 127.0.0.1 для лучшей совместимости с браузерами
+    // На Web используем хост страницы, чтобы фронтенд мог работать с любым сервером.
     if (kIsWeb) {
-      return 'http://localhost:8080';
+      final scheme = Uri.base.scheme.isNotEmpty ? Uri.base.scheme : 'http';
+      final host = Uri.base.host.isNotEmpty ? Uri.base.host : 'localhost';
+      return '$scheme://$host:8080';
     }
-    // Desktop и iOS -> localhost
+    // Desktop и iOS -> локальный backend на порту 8080
     return 'http://localhost:8080';
   }
 
