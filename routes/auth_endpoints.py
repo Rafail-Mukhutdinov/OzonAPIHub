@@ -173,7 +173,7 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     
     # Создаем токен для автоматического входа после регистрации
     access_token = create_access_token(
-        data={"sub": str(new_user.id)},
+        data={"sub": new_user.email},
         expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     
