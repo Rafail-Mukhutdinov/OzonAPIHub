@@ -260,6 +260,36 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8080 --reload
 python run_server.py
 ```
 
+#### Быстрая заметка по Docker deployment
+
+Если вы запускаете сервис в Docker на сервере, теперь в проекте добавлены:
+- `docker-entrypoint.sh` — инициализация PostgreSQL схемы при старте backend
+- `INIT_DB_ON_STARTUP=true` в `docker-compose.yml`
+- `Dockerfile` с entrypoint для автозапуска инициализации
+
+Команды для сервера:
+
+```bash
+cd /root/OzonAPIHub
+# Если на сервере установлено новое CLI Docker
+docker compose build backend
+docker compose up -d
+```
+
+Если `docker compose` отсутствует, установите его или используйте
+
+```bash
+apt update
+apt install -y docker-compose
+```
+
+Или очистите локальные изменения перед git pull, если получите конфликт:
+
+```bash
+git checkout -- docker-compose.yml
+git pull origin main
+```
+
 Swagger документация: **http://127.0.0.1:8080/docs**
 
 ### 3. Настройка Frontend
