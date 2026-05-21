@@ -1,12 +1,4 @@
-FROM cirrusci/flutter:latest AS builder
-WORKDIR /app
-COPY . /app/
-
-RUN cd ozon_sales_dashboard && \
-    flutter pub get && \
-    flutter build web --release
-
 FROM nginx:alpine
-COPY --from=builder /app/ozon_sales_dashboard/build/web /usr/share/nginx/html
+COPY ozon_sales_dashboard/build/web /usr/share/nginx/html
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
