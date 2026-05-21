@@ -1,9 +1,10 @@
-FROM cirrusci/flutter:stable AS builder
-WORKDIR /app/ozon_sales_dashboard
-COPY ozon_sales_dashboard/ /app/ozon_sales_dashboard/
+FROM cirrusci/flutter:latest AS builder
+WORKDIR /app
+COPY . /app/
 
-RUN flutter pub get
-RUN flutter build web --release
+RUN cd ozon_sales_dashboard && \
+    flutter pub get && \
+    flutter build web --release
 
 FROM nginx:alpine
 COPY --from=builder /app/ozon_sales_dashboard/build/web /usr/share/nginx/html
