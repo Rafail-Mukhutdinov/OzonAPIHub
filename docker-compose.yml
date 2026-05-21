@@ -34,6 +34,7 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://ozon_user:SecurePass2024!@db:5432/ozon_saas
+      - INIT_DB_ON_STARTUP=true
 
   frontend:
     build:
