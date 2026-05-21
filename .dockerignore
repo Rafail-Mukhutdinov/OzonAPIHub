@@ -1,0 +1,10 @@
+# Exclude local build artifacts and editor/system files
+**/build
+**/.dart_tool
+**/.idea
+**/.vscode
+**/.git
+**/*.pyc
+**/__pycache__
+venv
+.env
