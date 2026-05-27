@@ -15,8 +15,6 @@ RETRY_BACKOFF_SECONDS = float(os.getenv('OZON_RETRY_BACKOFF_SECONDS', '1.5'))
 def _get_headers(client_id: str, api_key: str) -> dict:
     """Генерация заголовков для конкретного пользователя."""
     if not client_id or not api_key:
-        # В SaaS режиме отсутствие ключей - это ошибка уровня пользователя,
-        # которая должна обрабатываться выше.
         raise ValueError("User OZON credentials are missing")
         
     return {
@@ -29,7 +27,6 @@ def _get_headers(client_id: str, api_key: str) -> dict:
 async def ozon_fbo_list_async(client_id: str, api_key: str, filter_dict: dict, limit: int, offset: int, with_flags: dict):
     """
     Асинхронно получить список FBO постингов.
-    ВАЖНО: Принимает client_id и api_key аргументами.
     """
     url = f"{BASE_URL}/v2/posting/fbo/list"
     body = {
@@ -44,7 +41,7 @@ async def ozon_fbo_list_async(client_id: str, api_key: str, filter_dict: dict, l
     headers = _get_headers(client_id, api_key)
 
     if LOG_OZON_REQUESTS:
-        logger.debug(f"Ozon list body (User {client_id[:4]}...): {body}")
+        logger.debug(f"Ozon list request for client {client_id[:4]}...: {body}")
     
     attempt = 0
     while attempt <= MAX_RETRIES:
@@ -53,21 +50,19 @@ async def ozon_fbo_list_async(client_id: str, api_key: str, filter_dict: dict, l
                 r = await client.post(url, headers=headers, json=body, timeout=DEFAULT_TIMEOUT)
                 r.raise_for_status()
                 return r.json()
-        except httpx.HTTPError as e:
-            status = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
-            # Ошибка 401 (Unauthorized) означает неверные ключи пользователя - не ретраим
-            if status == 401:
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
                 logger.error(f"Ozon Auth Failed for client {client_id[:4]}...")
-                raise 
-
-            retryable = (
-                isinstance(e, (httpx.TimeoutException, httpx.ConnectError)) or
-                (status in (429, 500, 502, 503, 504))
-            )
-            if retryable and attempt < MAX_RETRIES:
+                raise
+            if e.response.status_code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
                 attempt += 1
-                wait_time = RETRY_BACKOFF_SECONDS * attempt
-                await asyncio.sleep(wait_time)
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                continue
+            raise
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            if attempt < MAX_RETRIES:
+                attempt += 1
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
                 continue
             raise
 
@@ -83,9 +78,6 @@ async def ozon_fbo_get_async(client_id: str, api_key: str, posting_number: str):
     
     headers = _get_headers(client_id, api_key)
 
-    if LOG_OZON_REQUESTS:
-        logger.debug(f"Ozon get body: {body}")
-    
     attempt = 0
     while attempt <= MAX_RETRIES:
         try:
@@ -93,29 +85,24 @@ async def ozon_fbo_get_async(client_id: str, api_key: str, posting_number: str):
                 r = await client.post(url, headers=headers, json=body, timeout=DEFAULT_TIMEOUT)
                 r.raise_for_status()
                 return r.json()
-        except httpx.HTTPError as e:
-            status = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
-            if status == 401:
-                logger.error(f"Ozon Auth Failed for client {client_id[:4]}...")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
                 raise
-
-            retryable = (
-                isinstance(e, (httpx.TimeoutException, httpx.ConnectError)) or
-                (status in (429, 500, 502, 503, 504))
-            )
-            if retryable and attempt < MAX_RETRIES:
+            if e.response.status_code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
+                attempt += 1
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                continue
+            raise
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            if attempt < MAX_RETRIES:
                 attempt += 1
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
                 continue
             raise
 
+# Синхронные обёртки - теперь принимают credentials
+def ozon_fbo_list(client_id: str, api_key: str, filter_dict: dict, limit: int, offset: int, with_flags: dict = None):
+    return asyncio.run(ozon_fbo_list_async(client_id, api_key, filter_dict, limit, offset, with_flags))
 
-# Синхронные обёртки для обратной совместимости (используются в services/sync.py)
-def ozon_fbo_list(filter_dict: dict, limit: int, offset: int, with_flags: dict = None):
-    """Синхронная обёртка вокруг async функции."""
-    return asyncio.run(ozon_fbo_list_async(filter_dict, limit, offset, with_flags))
-
-
-def ozon_fbo_get(posting_number: str):
-    """Синхронная обёртка вокруг async функции."""
-    return asyncio.run(ozon_fbo_get_async(posting_number))
+def ozon_fbo_get(client_id: str, api_key: str, posting_number: str):
+    return asyncio.run(ozon_fbo_get_async(client_id, api_key, posting_number))

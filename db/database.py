@@ -4,23 +4,25 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, BigInteger
 from sqlalchemy.types import JSON
-from datetime import datetime
+from datetime import datetime, timezone
+
+# Вспомогательная функция для получения текущего UTC времени без TZ-информации (naive),
+# так как это стандарт для многих БД и текущего кода проекта.
+def get_utc_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # PostgreSQL connection setup
-# Формат: postgresql://user:password@host:port/dbname
-# Для asyncpg: postgresql+asyncpg://user:password@host:port/dbname
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://ozonuser:ozonpass@localhost:5432/ozondb"
 )
 
-# Для продакшена рекомендуется использовать connection pool
 engine = sa.create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,  # Проверка соединения перед использованием
+    pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
-    echo=False  # True для отладки SQL-запросов
+    echo=False
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -40,8 +42,8 @@ class User(Base):
     subscription_end_date = Column(DateTime, nullable=True)
     
     # Метаданные
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_utc_now, nullable=False)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     
     # Relationships
@@ -58,26 +60,22 @@ class OzonCredential(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    marketplace = Column(String(50), default='ozon', nullable=False)  # 'ozon', 'wildberries', 'yandex', и т.д.
-    name = Column(String(255), nullable=False)  # Название набора (например, "Основной магазин", "Тестовый")
+    marketplace = Column(String(50), default='ozon', nullable=False)
+    name = Column(String(255), nullable=False)
     
-    # Зашифрованные credentials
     client_id_encrypted = Column(Text, nullable=False)
     api_key_encrypted = Column(Text, nullable=False)
     
-    # Активный набор для синхронизации
     is_active = Column(Boolean, default=False, nullable=False)
     
-    # Метаданные
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_utc_now, nullable=False)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
     
-    # Relationship
     user = relationship("User", back_populates="ozon_credentials")
     
     __table_args__ = (
-        sa.UniqueConstraint('user_id', 'marketplace', name='uq_user_marketplace'),  # Один ключ на маркетплейс
-        sa.UniqueConstraint('user_id', 'name', name='uq_user_credential_name'),  # Уникальное имя для пользователя
+        sa.UniqueConstraint('user_id', 'marketplace', name='uq_user_marketplace'),
+        sa.UniqueConstraint('user_id', 'name', name='uq_user_credential_name'),
     )
 
 
@@ -92,11 +90,9 @@ class Order(Base):
     updated_at = Column(String(100))
     data = Column(JSON)
     
-    # Relationship
     user = relationship("User", back_populates="orders")
     
     __table_args__ = (
-        # Уникальность posting_number только в рамках одного пользователя
         sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting'),
     )
 
@@ -111,7 +107,6 @@ class OrderHeader(Base):
     total_payout = Column(Integer)
     total_commission = Column(Integer)
     
-    # Relationship
     user = relationship("User", back_populates="order_headers")
     
     __table_args__ = (
@@ -133,7 +128,6 @@ class OrderPosting(Base):
     analytics_data = Column(JSON)
     financial_data = Column(JSON)
     
-    # Relationship
     user = relationship("User", back_populates="order_postings")
     products = relationship("OrderProduct", back_populates="posting", cascade="all, delete-orphan")
     
@@ -160,7 +154,6 @@ class OrderProduct(Base):
     total_discount_value = Column(Integer)
     total_discount_percent = Column(Integer)
     
-    # Relationship
     posting = relationship("OrderPosting", back_populates="products")
 
 
@@ -168,46 +161,36 @@ class Cost(Base):
     __tablename__ = "costs"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    type = Column(String(50), index=True)  # COGS, logistics, ads, withdrawal, other
+    type = Column(String(50), index=True)
     amount = Column(Integer)
     currency = Column(String(10), default="RUB")
     date = Column(String(100), index=True)
     scope_order_number = Column(String(255), index=True, nullable=True)
     scope_posting_number = Column(String(255), index=True, nullable=True)
-    scope_sku = Column(Integer, index=True, nullable=True)
+    scope_sku = Column(BigInteger, index=True, nullable=True)
     scope_offer_id = Column(String(255), index=True, nullable=True)
     notes = Column(Text)
     
-    # Relationship
     user = relationship("User", back_populates="costs")
 
 
 class SyncStatus(Base):
-    """Статус синхронизации данных (только для полной скачки/backfill)."""
     __tablename__ = "sync_status"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True, unique=True)
     
-    # Статус синхронизации
-    is_syncing = Column(Boolean, default=False, nullable=False)  # True если идет backfill
-    status_message = Column(String(255), default="", nullable=False)  # "идет загрузка...", "данные загружены", и т.д.
+    is_syncing = Column(Boolean, default=False, nullable=False)
+    status_message = Column(String(255), default="", nullable=False)
     
-    # Метаданные
-    sync_started_at = Column(DateTime, nullable=True)  # Когда началась синхронизация
-    sync_completed_at = Column(DateTime, nullable=True)  # Когда завершилась
-    total_records_synced = Column(Integer, default=0, nullable=False)  # Кол-во записей
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    sync_started_at = Column(DateTime, nullable=True)
+    sync_completed_at = Column(DateTime, nullable=True)
+    total_records_synced = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
     
-    # Relationship
     user = relationship("User")
 
 
-# НЕ создаем таблицы автоматически! Используйте Alembic для миграций
-# Base.metadata.create_all(bind=engine)
-
-
 def get_db():
-    """Dependency для FastAPI endpoints."""
     db = SessionLocal()
     try:
         yield db
@@ -216,18 +199,4 @@ def get_db():
 
 
 def init_db():
-    """
-    Создание всех таблиц (используйте только для первичной инициализации).
-    Для продакшена используйте Alembic migrations.
-    """
     Base.metadata.create_all(bind=engine)
-
-
-def get_user_db_session(user_id: int):
-    """
-    Вспомогательная функция для создания сессии с автоматической фильтрацией по user_id.
-    Полезно для изоляции данных пользователей в SaaS.
-    """
-    db = SessionLocal()
-    # В реальном приложении можно добавить Query Filter для автоматической фильтрации
-    return db

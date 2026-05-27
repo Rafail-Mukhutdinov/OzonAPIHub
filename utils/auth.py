@@ -1,15 +1,9 @@
 """
 Модуль аутентификации для SaaS режима.
-
-Функционал:
-- JWT токены для аутентификации
-- Хеширование паролей (bcrypt)
-- Dependency для получения текущего пользователя
-- Регистрация и вход
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 import bcrypt
@@ -34,7 +28,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     """Хеширование пароля."""
-    # Проверка длины пароля (ограничение bcrypt)
     if len(password.encode('utf-8')) > 72:
         raise ValueError("Пароль слишком длинный (максимум 72 байта)")
     salt = bcrypt.gensalt(rounds=12)
@@ -45,19 +38,14 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
     Создание JWT токена.
-    
-    Args:
-        data: Данные для включения в токен (обычно {"sub": user.email})
-        expires_delta: Время жизни токена
-        
-    Returns:
-        JWT токен (строка)
     """
     to_encode = data.copy()
+    # Заменяем utcnow на современный вариант
+    now = datetime.now(timezone.utc)
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = now + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
@@ -67,14 +55,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
     """
     Аутентификация пользователя.
-    
-    Args:
-        db: Database session
-        email: Email пользователя
-        password: Пароль (plain text)
-        
-    Returns:
-        User объект или None
     """
     user = db.query(User).filter(User.email == email).first()
     if not user:
@@ -89,12 +69,7 @@ async def get_current_user(
     db: Session = Depends(get_db)
 ) -> User:
     """
-    FastAPI dependency для получения текущего пользователя из JWT токена.
-    
-    Использование:
-        @router.get("/me")
-        async def get_me(current_user: User = Depends(get_current_user)):
-            return current_user
+    FastAPI dependency для получения текущего пользователя.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -135,9 +110,6 @@ async def get_current_active_user(
 def check_subscription(user: User) -> bool:
     """
     Проверка активной подписки.
-    
-    Returns:
-        True если подписка активна или is_demo=True
     """
     if user.is_demo:
         return True
@@ -145,7 +117,9 @@ def check_subscription(user: User) -> bool:
     if user.subscription_end_date is None:
         return False
     
-    return user.subscription_end_date > datetime.utcnow()
+    # Сравнение с UTC временем (без TZ-информации, так как в БД обычно хранится без нее)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return user.subscription_end_date > now
 
 
 async def get_current_user_with_subscription(

@@ -4,11 +4,11 @@
 import os
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from db.database import Order, OrderPosting, OrderProduct, SessionLocal, get_db, User
+from db.database import Order, OrderPosting, get_db, User
 from services.enrichment import enrich_posting_from_ozon
 from utils.common import valid_posting_number
 from utils.auth import get_current_user
@@ -19,7 +19,6 @@ router = APIRouter(prefix="/orders/fbo", tags=["enrichment"])
 
 # Конфигурация
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
-ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
 
 
 class EnrichPostingIn(BaseModel):
@@ -28,25 +27,6 @@ class EnrichPostingIn(BaseModel):
 
 class EnrichOrderIn(BaseModel):
     order_number: str
-
-
-def _enrich_with_new_session(posting_number: str, user_id: int):
-    """
-    Вспомогательная функция для обогащения в отдельной сессии (для threading).
-    """
-    session = SessionLocal()
-    try:
-        # Получаем пользователя
-        user = session.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise ValueError(f"User {user_id} not found")
-        
-        # Запускаем асинхронную функцию в синхронном контексте
-        import asyncio
-        result = asyncio.run(enrich_posting_from_ozon(posting_number, user, session))
-        return result
-    finally:
-        session.close()
 
 
 @router.post("/get")
@@ -60,10 +40,11 @@ async def enrich_posting(
     Использует Ozon credentials текущего пользователя.
     """
     try:
+        # enrich_posting_from_ozon асинхронная, вызываем напрямую
         result = await enrich_posting_from_ozon(item.posting_number, current_user, db)
         return result
     except Exception as e:
-        logger.error(f"Ошибка обогащения постинга {item.posting_number}: {e}")
+        logger.error(f"Ошибка обогащения постинга {item.posting_number} для пользователя {current_user.id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -75,31 +56,35 @@ async def enrich_order(
 ):
     """
     Обогатить информацию по всем постингам заказа.
-    Собирает постинги из нормализованной таблицы OrderPosting и легаси таблицы Order.
     """
-    # Собираем постинги из нормализованной таблицы (только для текущего пользователя)
-    postings_norm = db.query(OrderPosting.posting_number).filter(
-        OrderPosting.order_number == item.order_number,
-        OrderPosting.user_id == current_user.id
-    ).all()
-    postings_norm = [p[0] for p in postings_norm]
+    # SQL-запросы в асинхронной функции оборачиваем в to_thread или делаем функцию синхронной.
+    # Здесь удобнее сделать синхронной, но enrich_posting_from_ozon — асинхронная.
+    # Поэтому оставляем async def и используем to_thread для запросов.
     
-    # Собираем легаси постинги по префиксу (только для текущего пользователя)
-    prefix = item.order_number + "-"
-    legacy = db.query(Order.posting_number).filter(
-        Order.posting_number.like(f"{prefix}%"),
-        Order.user_id == current_user.id
-    ).all()
-    postings_legacy = [p[0] for p in legacy]
+    def get_postings():
+        # Собираем постинги из нормализованной таблицы
+        postings_norm = db.query(OrderPosting.posting_number).filter(
+            OrderPosting.order_number == item.order_number,
+            OrderPosting.user_id == current_user.id
+        ).all()
+        p_norm = [p[0] for p in postings_norm]
+
+        # Собираем легаси постинги
+        prefix = item.order_number + "-"
+        legacy = db.query(Order.posting_number).filter(
+            Order.posting_number.like(f"{prefix}%"),
+            Order.user_id == current_user.id
+        ).all()
+        p_legacy = [p[0] for p in legacy]
+
+        return sorted(set(p_norm) | set(p_legacy))
+
+    postings = await asyncio.to_thread(get_postings)
     
-    # Объединяем и сортируем
-    postings = sorted(set(postings_norm) | set(postings_legacy))
-    
-    # Обогащаем каждый постинг
     results = []
     for pn in postings:
         try:
-            res = await asyncio.to_thread(_enrich_with_new_session, pn, current_user.id)
+            res = await enrich_posting_from_ozon(pn, current_user, db)
             results.append(res)
         except Exception as e:
             logger.warning(f"Ошибка обогащения постинга {pn}: {e}")
@@ -119,30 +104,32 @@ async def enrich_recent(
     db: Session = Depends(get_db)
 ):
     """
-    Обогатить недавно созданные постинги (за последние RECENT_WINDOW_HOURS часов).
-    Полезно для обновления информации по свежим заказам текущего пользователя.
+    Обогатить недавно созданные постинги текущего пользователя.
     """
-    since_iso = (datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)).isoformat() + 'Z'
+    # Заменяем utcnow
+    since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
+    since_iso = since_dt.isoformat() + 'Z'
     
-    # Собираем постинги только текущего пользователя
-    fresh_orders = db.query(Order.posting_number).filter(
-        Order.created_at >= since_iso,
-        Order.user_id == current_user.id
-    ).order_by(Order.created_at.desc()).limit(limit).all()
+    def find_targets():
+        fresh_orders = db.query(Order.posting_number).filter(
+            Order.created_at >= since_iso,
+            Order.user_id == current_user.id
+        ).order_by(Order.created_at.desc()).limit(limit).all()
+
+        fresh_norm = db.query(OrderPosting.posting_number).filter(
+            OrderPosting.created_at >= since_iso,
+            OrderPosting.user_id == current_user.id
+        ).order_by(OrderPosting.created_at.desc()).limit(limit).all()
+
+        raw_targets = [o[0] for o in fresh_orders] + [n[0] for n in fresh_norm]
+        return sorted({pn for pn in raw_targets if valid_posting_number(pn)})
+
+    targets = await asyncio.to_thread(find_targets)
     
-    fresh_norm = db.query(OrderPosting.posting_number).filter(
-        OrderPosting.created_at >= since_iso,
-        OrderPosting.user_id == current_user.id
-    ).order_by(OrderPosting.created_at.desc()).limit(limit).all()
-    
-    raw_targets = [o[0] for o in fresh_orders] + [n[0] for n in fresh_norm]
-    targets = sorted({pn for pn in raw_targets if valid_posting_number(pn)})
-    
-    # Обогащаем параллельно
     results = []
     for pn in targets:
         try:
-            res = await asyncio.to_thread(_enrich_with_new_session, pn, current_user.id)
+            res = await enrich_posting_from_ozon(pn, current_user, db)
             results.append(res)
         except Exception as e:
             logger.warning(f"Ошибка обогащения недавнего постинга {pn}: {e}")
@@ -158,42 +145,41 @@ async def enrich_changed_recent(
     db: Session = Depends(get_db)
 ):
     """
-    Обогатить постинги, у которых изменился статус за последнее время.
-    Полезно для синхронизации изменений статусов текущего пользователя.
+    Обогатить постинги, у которых изменился статус.
     """
-    since_iso = (datetime.utcnow() - timedelta(hours=RECENT_WINDOW_HOURS)).isoformat() + 'Z'
+    since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
+    since_iso = since_dt.isoformat() + 'Z'
     
-    # Берём недавние заказы только текущего пользователя
-    recent_orders = db.query(Order).filter(
-        Order.created_at >= since_iso,
-        Order.user_id == current_user.id
-    ).order_by(Order.created_at.desc()).limit(500).all()
-    
-    candidates = []
-    for r in recent_orders:
-        pn = r.posting_number
-        if not valid_posting_number(pn):
-            continue
+    def find_changed():
+        recent_orders = db.query(Order).filter(
+            Order.created_at >= since_iso,
+            Order.user_id == current_user.id
+        ).order_by(Order.created_at.desc()).limit(500).all()
         
-        # Проверяем, изменился ли статус в нормализованной таблице
-        row = db.query(OrderPosting).filter(
-            OrderPosting.posting_number == pn,
-            OrderPosting.user_id == current_user.id
-        ).first()
-        
-        if (row.status if row else None) != r.status:
-            candidates.append(pn)
+        candidates = []
+        for r in recent_orders:
+            pn = r.posting_number
+            if not valid_posting_number(pn):
+                continue
+
+            row = db.query(OrderPosting).filter(
+                OrderPosting.posting_number == pn,
+                OrderPosting.user_id == current_user.id
+            ).first()
+
+            if (row.status if row else None) != r.status:
+                candidates.append(pn)
+        return sorted(set(candidates))[:limit]
+
+    targets = await asyncio.to_thread(find_changed)
     
-    targets = sorted(set(candidates))[:limit]
-    
-    # Обогащаем
     results = []
     for pn in targets:
         try:
-            res = await asyncio.to_thread(_enrich_with_new_session, pn, current_user.id)
+            res = await enrich_posting_from_ozon(pn, current_user, db)
             results.append(res)
         except Exception as e:
-            logger.warning(f"Ошибка обогащения постинга с измененным статусом {pn}: {e}")
+            logger.warning(f"Ошибка обогащения измененного постинга {pn}: {e}")
             results.append({"posting_number": pn, "error": str(e)})
     
     return {"processed": len(targets), "results": results}

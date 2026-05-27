@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime
-from db.database import Cost, get_db
+from db.database import Cost, get_db, User
+from utils.auth import get_current_user
 
 router = APIRouter(prefix="/costs", tags=["costs"])
 
@@ -34,9 +35,14 @@ def _normalize_iso(s: str | None) -> str | None:
 
 
 @router.post("")
-async def add_cost(cost: CostIn, db: Session = Depends(get_db)):
+def add_cost(
+    cost: CostIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Добавить новую запись расходов."""
     obj = Cost(
+        user_id=current_user.id,  # ФИКС: Привязка к пользователю
         type=cost.type,
         amount=cost.amount,
         currency=cost.currency,
@@ -49,11 +55,12 @@ async def add_cost(cost: CostIn, db: Session = Depends(get_db)):
     )
     db.add(obj)
     db.commit()
+    db.refresh(obj)
     return {"status": "ok", "id": obj.id}
 
 
 @router.get("")
-async def list_costs(
+def list_costs(
     type: str | None = None,
     since: str | None = None,
     to: str | None = None,
@@ -64,6 +71,7 @@ async def list_costs(
     limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Получить список расходов с фильтрацией.
@@ -74,14 +82,15 @@ async def list_costs(
     - order_number, posting_number, sku, offer_id: фильтры по объему применения
     - limit, offset: пагинация
     """
-    q = db.query(Cost)
+    # ФИКС: Обязательная фильтрация по user_id
+    q = db.query(Cost).filter(Cost.user_id == current_user.id)
     
     if type:
         q = q.filter(Cost.type == type)
     
     try:
-        since_iso = _normalize_iso(since)
-        to_iso = _normalize_iso(to)
+        since_iso = _normalize_iso(since) if since else None
+        to_iso = _normalize_iso(to) if to else None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     

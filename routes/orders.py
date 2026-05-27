@@ -1,21 +1,25 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
-from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db
-from datetime import datetime
+from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User
+from utils.auth import get_current_user
+from datetime import datetime, timezone
 
 router = APIRouter(tags=["orders"])
 
 def _normalize_iso(s: str | None) -> str | None:
     if not s:
         return None
-    s2 = s.rstrip('Z')
-    dt = datetime.fromisoformat(s2)
-    dt = dt.replace(microsecond=0)
-    return dt.isoformat() + 'Z'
+    try:
+        s2 = s.rstrip('Z')
+        dt = datetime.fromisoformat(s2)
+        dt = dt.replace(microsecond=0)
+        return dt.isoformat() + 'Z'
+    except (ValueError, TypeError):
+        return None
 
 @router.get("/orders")
-async def list_orders(
+def list_orders(
     since: str | None = None,
     to: str | None = None,
     status: str | None = None,
@@ -25,17 +29,22 @@ async def list_orders(
     offset: int = 0,
     sort: str = "-created_at",
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    try:
-        since_iso = _normalize_iso(since)
-        to_iso = _normalize_iso(to)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Bad date format")
+    since_iso = _normalize_iso(since) if since else None
+    to_iso = _normalize_iso(to) if to else None
+
+    if since and not since_iso:
+        raise HTTPException(status_code=400, detail="Bad 'since' date format")
+    if to and not to_iso:
+        raise HTTPException(status_code=400, detail="Bad 'to' date format")
 
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
-    q = db.query(Order)
+    # ВСЕГДА фильтруем по current_user.id
+    q = db.query(Order).filter(Order.user_id == current_user.id)
+
     if since_iso:
         q = q.filter(Order.created_at >= since_iso)
     if to_iso:
@@ -69,20 +78,48 @@ async def list_orders(
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 @router.get("/orders/{posting_number}")
-async def get_order_by_posting(posting_number: str, db: Session = Depends(get_db)):
-    row = db.query(Order).filter(Order.posting_number == posting_number).first()
+def get_order_by_posting(
+    posting_number: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    row = db.query(Order).filter(
+        Order.user_id == current_user.id,
+        Order.posting_number == posting_number
+    ).first()
+
     if not row:
         raise HTTPException(status_code=404, detail="Order not found")
     return row
 
 @router.get("/order/{order_number}")
-async def get_order_summary(order_number: str, db: Session = Depends(get_db)):
-    header = db.query(OrderHeader).filter(OrderHeader.order_number == order_number).first()
-    postings = db.query(OrderPosting).filter(OrderPosting.order_number == order_number).order_by(OrderPosting.created_at.asc()).all()
-    products = db.query(OrderProduct).filter(OrderProduct.posting_number.in_([p.posting_number for p in postings])).all() if postings else []
+def get_order_summary(
+    order_number: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    header = db.query(OrderHeader).filter(
+        OrderHeader.user_id == current_user.id,
+        OrderHeader.order_number == order_number
+    ).first()
+
+    postings = db.query(OrderPosting).filter(
+        OrderPosting.user_id == current_user.id,
+        OrderPosting.order_number == order_number
+    ).order_by(OrderPosting.created_at.asc()).all()
+
+    posting_numbers = [p.posting_number for p in postings]
+    products = []
+    if posting_numbers:
+        products = db.query(OrderProduct).filter(
+            OrderProduct.user_id == current_user.id,
+            OrderProduct.posting_number.in_(posting_numbers)
+        ).all()
+
     total_payout = sum((p.payout or 0) for p in products)
     total_commission = sum((p.commission_amount or 0) for p in products)
     profit = total_payout - total_commission
+
     return {
         "order_number": order_number,
         "header": {
@@ -124,18 +161,33 @@ async def get_order_summary(order_number: str, db: Session = Depends(get_db)):
     }
 
 @router.get("/order/{order_number}/postings")
-async def list_order_postings(order_number: str, db: Session = Depends(get_db)):
-    postings = db.query(OrderPosting).filter(OrderPosting.order_number == order_number).order_by(OrderPosting.created_at.asc()).all()
+def list_order_postings(
+    order_number: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    postings = db.query(OrderPosting).filter(
+        OrderPosting.user_id == current_user.id,
+        OrderPosting.order_number == order_number
+    ).order_by(OrderPosting.created_at.asc()).all()
+
     if not postings:
         prefix = order_number + "-"
-        legacy_postings = db.query(Order.posting_number).filter(Order.posting_number.like(f"{prefix}%")).all()
+        legacy_postings = db.query(Order.posting_number).filter(
+            Order.user_id == current_user.id,
+            Order.posting_number.like(f"{prefix}%")
+        ).all()
         postings = [
             OrderPosting(order_number=order_number, posting_number=p[0], status=None, created_at=None)
             for p in legacy_postings
         ]
+
     result = []
     for p in postings:
-        prods = db.query(OrderProduct).filter(OrderProduct.posting_number == p.posting_number).all()
+        prods = db.query(OrderProduct).filter(
+            OrderProduct.user_id == current_user.id,
+            OrderProduct.posting_number == p.posting_number
+        ).all()
         total_payout = sum((pr.payout or 0) for pr in prods)
         total_commission = sum((pr.commission_amount or 0) for pr in prods)
         result.append({

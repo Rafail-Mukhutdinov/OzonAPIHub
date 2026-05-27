@@ -6,8 +6,8 @@ import asyncio
 import logging
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
-from db.database import SessionLocal, Order, OrderPosting, get_db, User
-from datetime import datetime, timedelta
+from db.database import Order, OrderPosting, get_db, User, SyncStatus
+from datetime import datetime, timedelta, timezone
 from services.sync import fetch_and_save_orders, run_enrichment_batch, initial_backfill_for_user
 from utils.auth import get_current_user
 
@@ -17,9 +17,7 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 
 # Конфигурация из окружения
 ENABLE_INITIAL_SYNC = os.getenv('ENABLE_INITIAL_SYNC', 'true').lower() in ('1', 'true', 'yes')
-INITIAL_WINDOW_DAYS = int(os.getenv('INITIAL_WINDOW_DAYS', '365'))
 HISTORY_WINDOW_DAYS = int(os.getenv('HISTORY_WINDOW_DAYS', '30'))
-RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
 
 
 def _iso_to_dt(s: str) -> datetime:
@@ -45,11 +43,6 @@ def _valid_posting_number(pn: str | None) -> bool:
     return suffix.isdigit()
 
 
-def _get_start_date_for_initial() -> datetime:
-    """Стартовая дата первичной загрузки."""
-    return datetime.utcnow() - timedelta(days=INITIAL_WINDOW_DAYS)
-
-
 async def history_forward_sync(user: User, db: Session, start_dt: datetime, end_dt: datetime) -> list:
     """Импорт истории от start_dt до end_dt окнами по HISTORY_WINDOW_DAYS для пользователя."""
     summary = []
@@ -58,7 +51,7 @@ async def history_forward_sync(user: User, db: Session, start_dt: datetime, end_
         window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), end_dt)
         since_iso = window_start.isoformat() + 'Z'
         to_iso = window_end.isoformat() + 'Z'
-        logger.info(f'[history sync] window: {since_iso} -> {to_iso}')
+        logger.info(f'[history sync] user={user.id} window: {since_iso} -> {to_iso}')
         try:
             result = await asyncio.to_thread(
                 fetch_and_save_orders,
@@ -84,7 +77,7 @@ async def history_forward_sync(user: User, db: Session, start_dt: datetime, end_
             if pns:
                 await run_enrichment_batch(pns, user.id)
         except Exception as e:
-            logger.error(f"Ошибка при синхронизации окна {since_iso} -> {to_iso}: {e}")
+            logger.error(f"Ошибка при синхронизации окна {since_iso} -> {to_iso} для пользователя {user.id}: {e}")
             summary.append({
                 "since": since_iso, 
                 "to": to_iso, 
@@ -100,44 +93,42 @@ async def run_initial_sync_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Запустить первичную полную синхронизацию заказов.
-    Вернёт сводку по выполненным окнам.
+    Запустить первичную полную синхронизацию заказов для текущего пользователя.
     """
     if not ENABLE_INITIAL_SYNC:
         raise HTTPException(status_code=400, detail="Initial sync disabled by config")
 
-    root = os.path.dirname(os.path.dirname(__file__))
-    marker_path = os.path.join(root, '.initial_sync_done')
-    
-    if os.path.exists(marker_path):
-        return {"status": "already_done"}
+    # Проверяем статус в БД, а не в глобальном файле (для SaaS)
+    sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
+    if sync_status and sync_status.status_message == "completed":
+        return {"status": "already_done", "completed_at": sync_status.sync_completed_at}
 
-    result = await initial_backfill_for_user(current_user, db)
+    if sync_status and sync_status.is_syncing:
+        return {"status": "in_progress", "started_at": sync_status.sync_started_at}
 
-    # Создаём маркер, чтобы больше не повторять
-    try:
-        with open(marker_path, 'w') as f:
-            f.write(datetime.utcnow().isoformat() + 'Z')
-    except Exception as e:
-        logger.error(f'Could not write initial sync marker: {e}')
+    # Запускаем фоновую задачу первичного импорта
+    asyncio.create_task(initial_backfill_for_user(current_user, db))
 
-    return {"status": "done", "result": result}
+    return {"status": "started", "message": "Первичная синхронизация запущена в фоне"}
 
 
-@router.post("/initial/force")
-async def run_initial_sync_force_endpoint(
+@router.get("/status")
+def get_sync_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Запустить первичную синхронизацию, игнорируя маркер.
-    Полезно для повторного полного импорта.
-    """
-    if not ENABLE_INITIAL_SYNC:
-        raise HTTPException(status_code=400, detail="Initial sync disabled by config")
+    """Получить статус текущей синхронизации пользователя."""
+    status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
+    if not status:
+        return {"is_syncing": False, "status_message": "not_started"}
 
-    result = await initial_backfill_for_user(current_user, db)
-    return {"status": "done", "result": result}
+    return {
+        "is_syncing": status.is_syncing,
+        "status_message": status.status_message,
+        "sync_started_at": status.sync_started_at,
+        "sync_completed_at": status.sync_completed_at,
+        "total_records_synced": status.total_records_synced
+    }
 
 
 @router.post("/history")
@@ -148,15 +139,13 @@ async def run_history_sync(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Ручной импорт истории по окнам HISTORY_WINDOW_DAYS.
-    
-    Параметры:
-    - start: ISO дата начала (обязательно)
-    - end: ISO дата конца (по умолчанию текущий момент)
+    Ручной импорт истории по окнам.
     """
     try:
         start_dt = _iso_to_dt(start)
-        end_dt = _iso_to_dt(end) if end else datetime.utcnow()
+        # Заменяем utcnow()
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        end_dt = _iso_to_dt(end) if end else now_utc
     except Exception:
         raise HTTPException(status_code=400, detail='Bad date format')
     
