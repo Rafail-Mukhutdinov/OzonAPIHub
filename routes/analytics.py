@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, desc
 from datetime import datetime, timedelta, timezone
 from db.database import OrderPosting, OrderProduct, Order, get_db, User
 import asyncio
@@ -176,18 +176,31 @@ async def sales_today(
             "total_orders": 0,
         }
 
+    # Подзапрос для получения ПОСЛЕДНЕГО названия для каждого артикула (через ID)
+    latest_names_sq = (
+        db.query(
+            OrderProduct.offer_id,
+            OrderProduct.name
+        )
+        .filter(OrderProduct.user_id == current_user.id)
+        .distinct(OrderProduct.offer_id)
+        .order_by(OrderProduct.offer_id, OrderProduct.id.desc())
+        .subquery()
+    )
+
     rows = (
         db.query(
             OrderProduct.offer_id,
             OrderProduct.sku,
-            OrderProduct.name,
+            latest_names_sq.c.name.label("name"),
             func.sum(OrderProduct.quantity).label("quantity_sold"),
             func.sum(OrderProduct.payout).label("total_payout"),
             func.count(func.distinct(OrderProduct.posting_number)).label("orders_count"),
         )
+        .join(latest_names_sq, OrderProduct.offer_id == latest_names_sq.c.offer_id)
         .filter(OrderProduct.user_id == current_user.id)
         .filter(OrderProduct.posting_number.in_(posting_numbers))
-        .group_by(OrderProduct.offer_id, OrderProduct.sku, OrderProduct.name)
+        .group_by(OrderProduct.offer_id, OrderProduct.sku, latest_names_sq.c.name)
         .all()
     )
 
@@ -254,19 +267,32 @@ async def sales_today_raw(
         status_counts[label] = status_counts.get(label, 0) + 1
     posting_numbers = [p[0] for p in postings]
 
+    # Подзапрос для последних названий
+    latest_names_sq = (
+        db.query(
+            OrderProduct.offer_id,
+            OrderProduct.name
+        )
+        .filter(OrderProduct.user_id == current_user.id)
+        .distinct(OrderProduct.offer_id)
+        .order_by(OrderProduct.offer_id, OrderProduct.id.desc())
+        .subquery()
+    )
+
     amount_expr = func.sum(func.coalesce(OrderProduct.price, 0) * func.coalesce(OrderProduct.quantity, 0))
     rows_products = (
         db.query(
             OrderProduct.offer_id,
             OrderProduct.sku,
-            OrderProduct.name,
+            latest_names_sq.c.name.label("name"),
             func.sum(OrderProduct.quantity).label("quantity"),
             func.count(func.distinct(OrderProduct.posting_number)).label("orders_count"),
             amount_expr.label("amount_raw"),
         )
+        .join(latest_names_sq, OrderProduct.offer_id == latest_names_sq.c.offer_id)
         .filter(OrderProduct.user_id == current_user.id)
         .filter(OrderProduct.posting_number.in_(posting_numbers))
-        .group_by(OrderProduct.offer_id, OrderProduct.sku, OrderProduct.name)
+        .group_by(OrderProduct.offer_id, OrderProduct.sku, latest_names_sq.c.name)
         .all()
     )
 
