@@ -8,144 +8,88 @@ class OzonApiClient {
   final Dio dio;
   final Function()? onUnauthorized;
 
-  /// Умный выбор адреса в зависимости от платформы
   static String getDefaultBaseUrl() {
-    // Используем внешний сервер вместо локального.
-    return 'http://45.150.11.25:8080';
-
-    // Если понадобится локальная отладка на эмуляторе — верните сюда 10.0.2.2.
-    // На Web можно также использовать текущий хост страницы, но тут сервер уже известен.
-    // if (kIsWeb) {
-    //   final scheme = Uri.base.scheme.isNotEmpty ? Uri.base.scheme : 'http';
-    //   final host = Uri.base.host.isNotEmpty ? Uri.base.host : 'localhost';
-    //   return '$scheme://$host:8080';
-    // }
-    // return 'http://localhost:8080';
+    if (kIsWeb) {
+      // Автоматически берем IP сервера, с которого открыт сайт
+      final host = Uri.base.host;
+      if (host.isNotEmpty && host != 'localhost') {
+        return 'http://$host:8082';
+      }
+    }
+    return 'http://45.150.11.25:8082';
   }
 
-  /// Создает клиент с автоматическим выбором URL или явно переданным
   OzonApiClient({String? baseUrl, this.onUnauthorized})
     : dio = Dio(BaseOptions(
         baseUrl: baseUrl ?? getDefaultBaseUrl(),
         connectTimeout: const Duration(seconds: 30),
         receiveTimeout: const Duration(seconds: 30),
       )) {
-    // Добавляем interceptor для автоматического добавления токена
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
-        // Получаем токен из SharedPreferences
         final prefs = await SharedPreferences.getInstance();
         final token = prefs.getString('jwt_token');
-        
         if (token != null && token.isNotEmpty) {
           options.headers['Authorization'] = 'Bearer $token';
         }
-        
         return handler.next(options);
       },
       onError: (DioException error, handler) async {
-        // Если получили 401 - пользователь не авторизован
         if (error.response?.statusCode == 401) {
-          // Удаляем невалидный токен
           final prefs = await SharedPreferences.getInstance();
           await prefs.remove('jwt_token');
-          
-          // Вызываем callback для перенаправления на экран входа
           if (onUnauthorized != null) {
             onUnauthorized!();
           }
         }
-        
         return handler.next(error);
       },
     ));
   }
 
+  Future<Map<String, dynamic>> addOzonCredential({
+    required String clientId,
+    required String apiKey,
+    String marketplace = 'ozon',
+    String name = 'Основной магазин',
+  }) async {
+    // Логируем для отладки в консоль браузера
+    print('Sending keys to: ${dio.options.baseUrl}/auth/me/ozon-credentials');
+
+    final resp = await dio.post(
+      '/auth/me/ozon-credentials',
+      data: {
+        'ozon_client_id': clientId,
+        'ozon_api_key': apiKey,
+        'marketplace': marketplace,
+        'name': name,
+      },
+    );
+    return _toJson(resp);
+  }
+
   Future<Map<String, dynamic>> getSalesRaw({
     required String since,
     required String to,
-    String includeStatuses =
-        'awaiting_assembly,awaiting_packaging,awaiting_deliver,delivering,delivered,canceled',
+    String includeStatuses = 'awaiting_assembly,awaiting_packaging,awaiting_deliver,delivering,delivered,canceled',
     String? status,
   }) async {
-    final resp = await dio.get(
-      '/analytics/sales_today_raw',
-      queryParameters: {
-        'since': since,
-        'to': to,
-        'include_statuses': includeStatuses,
-        if (status != null) 'status': status,
-      },
-    );
+    final resp = await dio.get('/analytics/sales_today_raw', queryParameters: {
+      'since': since,
+      'to': to,
+      'include_statuses': includeStatuses,
+      if (status != null) 'status': status,
+    });
     return _toJson(resp);
   }
 
-  Future<Map<String, dynamic>> getSalesRange({
-    required String since,
-    required String to,
-    String? status,
-  }) async {
-    final resp = await dio.get(
-      '/analytics/sales_range',
-      queryParameters: {
-        'since': since,
-        'to': to,
-        if (status != null) 'status': status,
-      },
-    );
-    return _toJson(resp);
-  }
-
-  Future<Map<String, dynamic>> getSalesBySkuMonthly({
-    String? offerId,
-    String? sku,
-    int monthsBack = 12,
-    String mode = 'delivered',
-  }) async {
-    final resp = await dio.get(
-      '/analytics/sales_by_sku_monthly',
-      queryParameters: {
-        if (offerId != null) 'offer_id': offerId,
-        if (sku != null) 'sku': sku,
-        'months_back': monthsBack,
-        'mode': mode,
-      },
-    );
-    return _toJson(resp);
-  }
-
-  /// Получить статус синхронизации данных
-  /// Используется для отслеживания полной загрузки (backfill)
-  /// Периодические обновления по таймеру НЕ меняют этот статус
   Future<Map<String, dynamic>> getSyncStatus() async {
     final resp = await dio.get('/auth/me/sync-status');
     return _toJson(resp);
   }
 
-  /// Получить данные об отгрузках по артикулам и датам
-  Future<Map<String, dynamic>> getShipments({
-    String? skus,
-    String? since,
-    String? to,
-    int limit = 50,
-    int offset = 0,
-  }) async {
-    final resp = await dio.get(
-      '/analytics/shipments',
-      queryParameters: {
-        if (skus != null) 'skus': skus,
-        if (since != null) 'since': since,
-        if (to != null) 'to': to,
-        'limit': limit,
-        'offset': offset,
-      },
-    );
-    return _toJson(resp);
-  }
-
   Map<String, dynamic> _toJson(Response resp) {
-    if (resp.data is String)
-      return json.decode(resp.data as String) as Map<String, dynamic>;
+    if (resp.data is String) return json.decode(resp.data) as Map<String, dynamic>;
     return resp.data as Map<String, dynamic>;
   }
 }

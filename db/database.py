@@ -11,18 +11,24 @@ from datetime import datetime, timezone
 def get_utc_now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# PostgreSQL connection setup
+# Database connection setup
+# Используем SQLite для локального тестирования вместо PostgreSQL
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://ozonuser:ozonpass@localhost:5432/ozondb"
+    "sqlite:///./ozon_saas.db"
 )
+
+# Если URL всё ещё PostgreSQL, переключаемся на SQLite
+if "postgresql" in DATABASE_URL:
+    DATABASE_URL = "sqlite:///./ozon_saas.db"
 
 engine = sa.create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    echo=False
+    pool_pre_ping=True if not DATABASE_URL.startswith("sqlite") else False,
+    pool_size=10 if not DATABASE_URL.startswith("sqlite") else 5,
+    max_overflow=20 if not DATABASE_URL.startswith("sqlite") else 10,
+    echo=False,
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -74,7 +80,6 @@ class OzonCredential(Base):
     user = relationship("User", back_populates="ozon_credentials")
     
     __table_args__ = (
-        sa.UniqueConstraint('user_id', 'marketplace', name='uq_user_marketplace'),
         sa.UniqueConstraint('user_id', 'name', name='uq_user_credential_name'),
     )
 

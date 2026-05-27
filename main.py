@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends
 from starlette.middleware.cors import CORSMiddleware
-from db.database import get_db, Order
+from db.database import get_db, Order, engine, Base
 from services.sync import background_sync_loop
 
-# Инициализация нашего кастомного логирования
+# Инициализация логирования
 import utils.logging_config
 logger = logging.getLogger("OzonAPIHub")
 
@@ -19,6 +19,10 @@ SYNC_INTERVAL_SECONDS = int(os.getenv('SYNC_INTERVAL_SECONDS', '300'))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Контекст-менеджер жизненного цикла приложения."""
+    # Создаём все таблицы при запуске
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables initialized")
+    
     app.state.last_sync_new = None
     app.state.last_sync_recent = None
     app.state.last_sync_error = None
@@ -45,6 +49,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Настройка CORS для работы фронтенда на 8081 и бэкенда на 8082
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -52,10 +57,14 @@ app.add_middleware(
         "http://127.0.0.1:54321",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
-        "http://localhost",
-        "http://127.0.0.1",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://localhost:8082",
+        "http://127.0.0.1:8082",
         "http://45.150.11.25",
         "http://45.150.11.25:8080",
+        "http://45.150.11.25:8081",
+        "http://45.150.11.25:8082",
     ],
     allow_origin_regex=r"http://localhost:\d+",
     allow_credentials=True,
