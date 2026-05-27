@@ -7,3 +7,6 @@ __pycache__/
 .initial_sync_done
 *.png
 venv/
+
+# Logs
+logs/

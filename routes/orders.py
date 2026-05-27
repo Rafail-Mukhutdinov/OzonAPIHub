@@ -4,6 +4,7 @@ from typing import List
 from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User
 from utils.auth import get_current_user
 from datetime import datetime, timezone
+from utils.logging_config import log_user_event
 
 router = APIRouter(tags=["orders"])
 
@@ -42,7 +43,13 @@ def list_orders(
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
-    # ВСЕГДА фильтруем по current_user.id
+    # Логируем запрос (помогает понять, что ищет пользователь)
+    filters = []
+    if status: filters.append(f"status={status}")
+    if posting_number: filters.append(f"pn={posting_number}")
+    if contains: filters.append(f"contains={contains}")
+    log_user_event(current_user.id, f"Запрос списка заказов. Фильтры: {', '.join(filters) if filters else 'нет'}. Limit: {limit}")
+
     q = db.query(Order).filter(Order.user_id == current_user.id)
 
     if since_iso:
@@ -89,7 +96,9 @@ def get_order_by_posting(
     ).first()
 
     if not row:
+        log_user_event(current_user.id, f"Заказ {posting_number} не найден в БД", "warning")
         raise HTTPException(status_code=404, detail="Order not found")
+
     return row
 
 @router.get("/order/{order_number}")
@@ -98,6 +107,8 @@ def get_order_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    log_user_event(current_user.id, f"Запрос сводки по заказу {order_number}")
+
     header = db.query(OrderHeader).filter(
         OrderHeader.user_id == current_user.id,
         OrderHeader.order_number == order_number

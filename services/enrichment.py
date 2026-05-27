@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 from db.database import OrderHeader, OrderPosting, OrderProduct, User, OzonCredential
 from utils.encryption import decrypt_credential
 from datetime import datetime, timezone
+from utils.logging_config import log_user_event
 
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger("OzonAPIHub")
 
 
 def _to_int(val):
@@ -77,7 +78,7 @@ async def enrich_posting_from_ozon(posting_number: str, user: User, db: Session)
     ).first()
     
     if not active_cred:
-        logger.warning(f"У пользователя {user.email} нет активных Ozon credentials")
+        log_user_event(user.id, f"Обогащение {posting_number} отменено: нет активных ключей", "warning")
         return {"status": "no_credentials"}
     
     # Расшифровка credentials
@@ -85,17 +86,22 @@ async def enrich_posting_from_ozon(posting_number: str, user: User, db: Session)
     api_key = decrypt_credential(active_cred.api_key_encrypted)
     
     if not client_id or not api_key:
-        raise ValueError(f"Ошибка расшифровки Ozon credentials для пользователя {user.email}")
+        error_msg = f"Ошибка расшифровки Ozon credentials для обогащения {posting_number}"
+        log_user_event(user.id, error_msg, "error")
+        return {"status": "error", "message": error_msg}
     
     # Запрос к Ozon API
     try:
+        log_user_event(user.id, f"Запрос деталей постинга {posting_number} из Ozon API")
         response = await ozon_fbo_get_async(client_id, api_key, posting_number)
         data = response.get("result")
     except Exception as e:
-        logger.error(f"Ozon API error for posting {posting_number}: {e}")
+        error_msg = f"Ошибка Ozon API при обогащении {posting_number}: {e}"
+        log_user_event(user.id, error_msg, "error")
         return {"status": "api_error", "detail": str(e)}
 
     if not data:
+        log_user_event(user.id, f"Ozon API не вернул данные для {posting_number}", "warning")
         return {"status": "no_result"}
     
     order_number = data.get("order_number")
@@ -132,7 +138,6 @@ async def enrich_posting_from_ozon(posting_number: str, user: User, db: Session)
     # Маппинг финансовых данных для быстрого поиска
     fin_map = {}
     for f in fin_products:
-        # Пытаемся мапить по SKU или по offer_id
         if f.get("product_id"):
             fin_map[str(f.get("product_id"))] = f
         if f.get("sku"):
@@ -169,6 +174,7 @@ async def enrich_posting_from_ozon(posting_number: str, user: User, db: Session)
     if order_number:
         recalc_order_header(db, order_number, user.id)
 
+    log_user_event(user.id, f"Постинг {posting_number} успешно обогащен ({len(products_data)} товаров)")
     return {
         "status": "ok",
         "order_number": order_number,

@@ -8,19 +8,17 @@ from starlette.middleware.cors import CORSMiddleware
 from db.database import get_db, Order
 from services.sync import background_sync_loop
 
-load_dotenv()
+# Инициализация нашего кастомного логирования
+import utils.logging_config
+logger = logging.getLogger("OzonAPIHub")
 
-# Настройка логирования
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
-logger = logging.getLogger("uvicorn.error")
+load_dotenv()
 
 SYNC_INTERVAL_SECONDS = int(os.getenv('SYNC_INTERVAL_SECONDS', '300'))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Контекст-менеджер жизненного цикла приложения (заменяет startup/shutdown)."""
-    # Инициализация диагностических полей
+    """Контекст-менеджер жизненного цикла приложения."""
     app.state.last_sync_new = None
     app.state.last_sync_recent = None
     app.state.last_sync_error = None
@@ -29,11 +27,10 @@ async def lifespan(app: FastAPI):
     sync_task = asyncio.create_task(background_sync_loop(app, SYNC_INTERVAL_SECONDS))
     app.state.sync_task = sync_task
 
-    logger.info("Application started, background sync task created")
+    logger.info("Application OzonAPIHub started")
 
     yield
 
-    # Завершение
     if sync_task:
         sync_task.cancel()
         try:
@@ -41,7 +38,6 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             logger.info("Background sync task cancelled")
 
-# Инициализация FastAPI
 app = FastAPI(
     title="OzonAPIHub",
     description="Сервис синхронизации и аналитики заказов Ozon FBO",
@@ -49,7 +45,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS конфигурация
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -69,10 +64,8 @@ app.add_middleware(
     max_age=600
 )
 
-# Здоровье-чек
 @app.get("/ping")
 async def ping():
-    logger.info('запрос на ping')
     return {"message": "pong"}
 
 # Подключение роутеров
@@ -92,10 +85,6 @@ app.include_router(auth_router)
 
 @app.get("/stats")
 def stats(db = Depends(get_db)):
-    """
-    Диагностика: количество строк, min/max created_at, последние времена синхронизаций.
-    Используем синхронный эндпоинт для синхронных запросов к БД.
-    """
     total = db.query(Order).count()
     min_created = db.query(Order.created_at).order_by(Order.created_at.asc()).first()
     max_created = db.query(Order.created_at).order_by(Order.created_at.desc()).first()
@@ -104,11 +93,5 @@ def stats(db = Depends(get_db)):
         "min_created_at": min_created[0] if min_created else None,
         "max_created_at": max_created[0] if max_created else None,
         "last_sync_new": getattr(app.state, 'last_sync_new', None),
-        "last_sync_new_saved": getattr(app.state, 'last_sync_new_saved', None),
-        "last_sync_new_fetched": getattr(app.state, 'last_sync_new_fetched', None),
-        "last_sync_recent": getattr(app.state, 'last_sync_recent', None),
-        "last_sync_recent_saved": getattr(app.state, 'last_sync_recent_saved', None),
-        "last_sync_recent_fetched": getattr(app.state, 'last_sync_recent_fetched', None),
         "last_sync_error": getattr(app.state, 'last_sync_error', None),
-        "sync_interval_seconds": getattr(app.state, 'last_sync_interval_seconds', SYNC_INTERVAL_SECONDS),
     }

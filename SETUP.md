@@ -56,47 +56,51 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-### Пример .env:
-```env
-DATABASE_URL=postgresql://ozonuser:ozonpass@localhost:5432/ozondb
-ENCRYPTION_KEY=ваш_fernet_key
-JWT_SECRET_KEY=ваш_jwt_secret
-JWT_ALGORITHM=HS256
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES=10080
-
-SYNC_INTERVAL_SECONDS=300
-INITIAL_WINDOW_DAYS=365
-```
-
 ---
 
-## 4. Инициализация базы данных
+## 4. Инициализация и Запуск
 
-Используйте встроенный скрипт для первичного создания таблиц:
+### Первичная настройка таблиц
 ```bash
 python scripts/init_postgres.py
 ```
-*Примечание: Для дальнейших изменений схемы рекомендуется использовать Alembic (см. ROADMAP.md).*
 
----
-
-## 5. Запуск сервера
-
-Для разработки:
+### Запуск в режиме разработки
 ```bash
 python -m uvicorn main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-Для production (Docker):
+### Запуск через Docker (Production)
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 ---
 
-## 🔍 Проверка и тестирование
+## 5. 🪵 Работа с логами
+
+Система использует продвинутое логирование с разделением прав:
+
+- **Общий лог**: `logs/app.log` — системные события, ошибки БД и запуск сервисов.
+- **Логи пользователей**: `logs/users/user_{id}.log` — персональная история синхронизации, ошибки Ozon API и действия каждого пользователя.
+
+### Просмотр логов на сервере:
+```bash
+# Общие логи
+tail -f logs/app.log
+
+# Логи конкретного пользователя (например, ID 1)
+tail -f logs/users/user_1.log
+
+# Логи Docker контейнера
+docker compose logs -f backend
+```
+*Все логи имеют встроенную ротацию: файлы не превышают 5МБ и автоматически архивируются.*
+
+---
+
+## 🔍 Проверка
 
 1. **Health Check**: `GET http://localhost:8080/ping` -> `{"message": "pong"}`
 2. **Swagger Docs**: `http://localhost:8080/docs`
-3. **Регистрация первого пользователя**:
-   Используйте Postman или curl для отправки `POST /auth/register`. После этого вы сможете войти и получить JWT токен для работы с остальными эндпоинтами.
+3. **Регистрация**: Используйте эндпоинт `POST /auth/register` для создания первого аккаунта.

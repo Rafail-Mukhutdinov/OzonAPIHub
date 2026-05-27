@@ -10,8 +10,9 @@ from db.database import Order, OrderPosting, get_db, User, SyncStatus
 from datetime import datetime, timedelta, timezone
 from services.sync import fetch_and_save_orders, run_enrichment_batch, initial_backfill_for_user
 from utils.auth import get_current_user
+from utils.logging_config import log_user_event
 
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger("OzonAPIHub")
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -47,11 +48,16 @@ async def history_forward_sync(user: User, db: Session, start_dt: datetime, end_
     """Импорт истории от start_dt до end_dt окнами по HISTORY_WINDOW_DAYS для пользователя."""
     summary = []
     window_start = start_dt
+
+    log_user_event(user.id, f"Запуск ручного импорта истории: {start_dt} -> {end_dt}")
+
     while window_start < end_dt:
         window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), end_dt)
         since_iso = window_start.isoformat() + 'Z'
         to_iso = window_end.isoformat() + 'Z'
-        logger.info(f'[history sync] user={user.id} window: {since_iso} -> {to_iso}')
+
+        log_user_event(user.id, f"Синхронизация окна истории: {since_iso} -> {to_iso}")
+
         try:
             result = await asyncio.to_thread(
                 fetch_and_save_orders,
@@ -75,15 +81,19 @@ async def history_forward_sync(user: User, db: Session, start_dt: datetime, end_
             orders = result.get('orders') or []
             pns = [o.get('posting_number') for o in orders if _valid_posting_number(o.get('posting_number'))]
             if pns:
+                log_user_event(user.id, f"Обогащение {len(pns)} заказов из окна истории")
                 await run_enrichment_batch(pns, user.id)
         except Exception as e:
-            logger.error(f"Ошибка при синхронизации окна {since_iso} -> {to_iso} для пользователя {user.id}: {e}")
+            error_msg = f"Ошибка в окне истории {since_iso} -> {to_iso}: {e}"
+            log_user_event(user.id, error_msg, "error")
             summary.append({
                 "since": since_iso, 
                 "to": to_iso, 
                 "error": str(e)
             })
         window_start = window_end + timedelta(seconds=1)
+
+    log_user_event(user.id, "Ручной импорт истории завершен.")
     return summary
 
 
@@ -98,13 +108,14 @@ async def run_initial_sync_endpoint(
     if not ENABLE_INITIAL_SYNC:
         raise HTTPException(status_code=400, detail="Initial sync disabled by config")
 
-    # Проверяем статус в БД, а не в глобальном файле (для SaaS)
     sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
     if sync_status and sync_status.status_message == "completed":
         return {"status": "already_done", "completed_at": sync_status.sync_completed_at}
 
     if sync_status and sync_status.is_syncing:
         return {"status": "in_progress", "started_at": sync_status.sync_started_at}
+
+    log_user_event(current_user.id, "Пользователь запустил первичную синхронизацию (Initial Backfill) вручную.")
 
     # Запускаем фоновую задачу первичного импорта
     asyncio.create_task(initial_backfill_for_user(current_user, db))
@@ -143,7 +154,6 @@ async def run_history_sync(
     """
     try:
         start_dt = _iso_to_dt(start)
-        # Заменяем utcnow()
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         end_dt = _iso_to_dt(end) if end else now_utc
     except Exception:

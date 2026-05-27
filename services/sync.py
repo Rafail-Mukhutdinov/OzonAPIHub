@@ -8,8 +8,9 @@ from services.enrichment import enrich_posting_from_ozon
 from services.ozon import ozon_fbo_list_async
 from utils.encryption import decrypt_credential
 from utils.common import valid_posting_number
+from utils.logging_config import log_user_event
 
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger("OzonAPIHub")
 
 # Настройки из .env
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
@@ -41,17 +42,19 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                     if not users_with_creds:
                         logger.debug("Нет активных пользователей с Ozon credentials")
                     else:
-                        logger.info(f"Синхронизация для {len(users_with_creds)} пользователей")
+                        logger.info(f"Начало цикла синхронизации для {len(users_with_creds)} пользователей")
                         for user in users_with_creds:
                             try:
                                 await sync_user_orders(user, db)
                             except Exception as e:
-                                logger.error(f"Ошибка синхронизации для user_id={user.id}: {e}")
+                                error_msg = f"Ошибка синхронизации для user_id={user.id}: {e}"
+                                logger.error(error_msg)
+                                log_user_event(user.id, error_msg, "error")
                 finally:
                     db.close()
                 
             except Exception as e:
-                logger.error(f"Ошибка фоновой синхронизации: {e}")
+                logger.error(f"Критическая ошибка фоновой синхронизации: {e}")
             
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
@@ -71,12 +74,16 @@ async def sync_user_orders(user: User, db: Session):
         
         if not active_cred:
             return
-        
+
+        log_user_event(user.id, f"Запуск плановой синхронизации (окно {RECENT_WINDOW_HOURS}ч)")
+
         client_id = decrypt_credential(active_cred.client_id_encrypted)
         api_key = decrypt_credential(active_cred.api_key_encrypted)
         
         if not client_id or not api_key:
-            logger.error(f"Ошибка расшифровки credentials для user_id={user.id}")
+            error_msg = "Ошибка расшифровки credentials. Синхронизация невозможна."
+            logger.error(f"User {user.id}: {error_msg}")
+            log_user_event(user.id, error_msg, "error")
             return
         
         now = _get_now_utc()
@@ -87,6 +94,7 @@ async def sync_user_orders(user: User, db: Session):
         filter_dict = {'since': since_iso, 'to': to_iso}
         
         total_saved = 0
+        total_fetched = 0
         new_postings: set[str] = set()
         offset = 0
         limit = 50
@@ -105,23 +113,32 @@ async def sync_user_orders(user: User, db: Session):
             if not items:
                 break
             
+            total_fetched += len(items)
             for order_data in items:
-                saved = save_order_for_user(db, user, order_data)
-                if saved:
-                    total_saved += 1
-                    posting_number = order_data.get('posting_number')
-                    if valid_posting_number(posting_number):
-                        new_postings.add(posting_number)
+                try:
+                    saved = save_order_for_user(db, user, order_data)
+                    if saved:
+                        total_saved += 1
+                        posting_number = order_data.get('posting_number')
+                        if valid_posting_number(posting_number):
+                            new_postings.add(posting_number)
+                except Exception as e:
+                    log_user_event(user.id, f"Ошибка сохранения заказа {order_data.get('posting_number')}: {e}", "error")
             
             if len(items) < limit:
                 break
             offset += limit
 
-        if ENRICH_ON_FETCH and (total_saved > 0 or new_postings):
+        log_user_event(user.id, f"Синхронизация завершена. Получено: {total_fetched}, Новых: {total_saved}")
+
+        if ENRICH_ON_FETCH and new_postings:
+            log_user_event(user.id, f"Запуск обогащения для {len(new_postings)} новых постингов")
             await run_enrichment_batch(list(new_postings), user.id)
 
     except Exception as e:
-        logger.error(f"Ошибка sync_user_orders для user_id={user.id}: {e}")
+        error_msg = f"Ошибка sync_user_orders: {e}"
+        logger.error(f"User {user.id}: {error_msg}")
+        log_user_event(user.id, error_msg, "error")
 
 
 def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
@@ -165,8 +182,7 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
     
     except Exception as e:
         db.rollback()
-        logger.error(f"Ошибка save_order_for_user (user_id={user.id}): {e}")
-        return False
+        raise e
 
 
 def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: int,
@@ -184,7 +200,9 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
         
         if not user or not cred:
             return {"orders": []}
-        
+
+        log_user_event(user_id, f"Ручной запрос заказов: {since} -> {to}")
+
         client_id = decrypt_credential(cred.client_id_encrypted)
         api_key = decrypt_credential(cred.api_key_encrypted)
         
@@ -198,8 +216,6 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
         current_offset = offset
 
         while True:
-            # Т.к. эта функция вызывается в потоке, мы можем использовать asyncio.run
-            # для вызова асинхронного клиента Ozon
             response = asyncio.run(ozon_fbo_list_async(
                 client_id=client_id,
                 api_key=api_key,
@@ -227,9 +243,12 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
                 break
             current_offset += limit
 
+        log_user_event(user_id, f"Результат ручного запроса: сохранено {total_saved}")
         return {"orders": all_orders, "saved": total_saved, "fetched": len(all_orders)}
     except Exception as e:
-        logger.error(f"fetch_and_save_orders error user_id={user_id}: {e}")
+        error_msg = f"Ошибка fetch_and_save_orders: {e}"
+        logger.error(f"User {user_id}: {error_msg}")
+        log_user_event(user_id, error_msg, "error")
         return {"orders": []}
 
 
@@ -241,7 +260,6 @@ async def run_enrichment_batch(posting_numbers: list[str], user_id: int, force_r
 
     async def _run_one(pn: str):
         async with sem:
-            # Создаем новую сессию для каждого потока/таска чтобы избежать конфликтов
             async_db = SessionLocal()
             try:
                 if not force_refresh:
@@ -277,7 +295,9 @@ async def initial_backfill_for_user(user: User, db: Session) -> dict:
     sync_status.status_message = "Идет загрузка данных..."
     sync_status.sync_started_at = _get_now_utc()
     db.commit()
-    
+
+    log_user_event(user.id, f"Начало первичной загрузки за {INITIAL_WINDOW_DAYS} дней")
+
     try:
         now = _get_now_utc()
         start_dt = now - timedelta(days=INITIAL_WINDOW_DAYS)
@@ -288,6 +308,8 @@ async def initial_backfill_for_user(user: User, db: Session) -> dict:
             window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), now)
             since_iso = window_start.replace(microsecond=0).isoformat() + 'Z'
             to_iso = window_end.replace(microsecond=0).isoformat() + 'Z'
+
+            log_user_event(user.id, f"Загрузка окна: {since_iso} -> {to_iso}")
 
             result = await asyncio.to_thread(
                 fetch_and_save_orders,
@@ -308,10 +330,15 @@ async def initial_backfill_for_user(user: User, db: Session) -> dict:
         sync_status.sync_completed_at = _get_now_utc()
         sync_status.total_records_synced = total_saved
         db.commit()
+
+        log_user_event(user.id, f"Первичная загрузка завершена успешно. Всего: {total_saved}")
         return {"saved": total_saved}
 
     except Exception as e:
+        error_msg = f"Критическая ошибка первичной загрузки: {e}"
         logger.error(f"Initial sync failed for user {user.id}: {e}")
+        log_user_event(user.id, error_msg, "error")
+
         sync_status.is_syncing = False
         sync_status.status_message = f"error: {str(e)[:50]}"
         db.commit()

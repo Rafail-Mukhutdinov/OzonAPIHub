@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from db.database import Cost, get_db, User
 from utils.auth import get_current_user
+from utils.logging_config import log_user_event
 
 router = APIRouter(prefix="/costs", tags=["costs"])
 
@@ -41,8 +42,10 @@ def add_cost(
     current_user: User = Depends(get_current_user)
 ):
     """Добавить новую запись расходов."""
+    log_user_event(current_user.id, f"Добавление расхода: type={cost.type}, amount={cost.amount} {cost.currency}")
+
     obj = Cost(
-        user_id=current_user.id,  # ФИКС: Привязка к пользователю
+        user_id=current_user.id,
         type=cost.type,
         amount=cost.amount,
         currency=cost.currency,
@@ -56,6 +59,8 @@ def add_cost(
     db.add(obj)
     db.commit()
     db.refresh(obj)
+
+    log_user_event(current_user.id, f"Расход успешно добавлен (ID: {obj.id})")
     return {"status": "ok", "id": obj.id}
 
 
@@ -75,14 +80,9 @@ def list_costs(
 ):
     """
     Получить список расходов с фильтрацией.
-    
-    Параметры:
-    - type: тип расходов (COGS, logistics, ads, withdrawal, other)
-    - since, to: диапазон дат (ISO формат)
-    - order_number, posting_number, sku, offer_id: фильтры по объему применения
-    - limit, offset: пагинация
     """
-    # ФИКС: Обязательная фильтрация по user_id
+    log_user_event(current_user.id, f"Запрос списка расходов (limit={limit}, offset={offset})")
+
     q = db.query(Cost).filter(Cost.user_id == current_user.id)
     
     if type:
@@ -92,6 +92,7 @@ def list_costs(
         since_iso = _normalize_iso(since) if since else None
         to_iso = _normalize_iso(to) if to else None
     except ValueError as e:
+        log_user_event(current_user.id, f"Ошибка фильтрации расходов: {e}", "error")
         raise HTTPException(status_code=400, detail=str(e))
     
     if since_iso:

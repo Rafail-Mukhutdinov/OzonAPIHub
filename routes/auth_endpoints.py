@@ -16,6 +16,7 @@ from utils.auth import (
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from utils.encryption import encrypt_credential, decrypt_credential
+from utils.logging_config import log_user_event, logger
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -108,7 +109,6 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
     
-    # Заменяем utcnow
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     new_user = User(
         email=user_data.email,
@@ -121,7 +121,10 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
+
+    logger.info(f"Зарегистрирован новый пользователь: {new_user.email} (ID: {new_user.id})")
+    log_user_event(new_user.id, "Аккаунт успешно создан. Начало пробного периода (30 дней).")
+
     access_token = create_access_token(
         data={"sub": new_user.email},
         expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -137,12 +140,14 @@ def login(
 ):
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
+        logger.warning(f"Неудачная попытка входа: {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный email или пароль",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    log_user_event(user.id, "Успешный вход в систему.")
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -233,8 +238,11 @@ def create_ozon_credential(
     db.add(credential)
     db.commit()
     db.refresh(credential)
-    
+
+    log_user_event(current_user.id, f"Добавлен новый набор ключей: {data.name} ({data.marketplace})")
+
     if is_first:
+        log_user_event(current_user.id, "Запуск первичной синхронизации для первого набора ключей.")
         background_tasks.add_task(_initial_sync_task, current_user.id)
     
     return {"id": credential.id, "name": credential.name, "is_active": credential.is_active}
@@ -257,6 +265,8 @@ def activate_ozon_credential(
     db.query(OzonCredential).filter(OzonCredential.user_id == current_user.id).update({"is_active": False})
     credential.is_active = True
     db.commit()
+
+    log_user_event(current_user.id, f"Активирован набор ключей: {credential.name}")
     return {"status": "ok"}
 
 
@@ -275,14 +285,18 @@ def delete_ozon_credential(
         raise HTTPException(status_code=404, detail="Набор не найден")
     
     was_active = credential.is_active
+    name = credential.name
     db.delete(credential)
     db.commit()
-    
+
+    log_user_event(current_user.id, f"Удален набор ключей: {name}")
+
     if was_active:
         next_one = db.query(OzonCredential).filter(OzonCredential.user_id == current_user.id).first()
         if next_one:
             next_one.is_active = True
             db.commit()
+            log_user_event(current_user.id, f"Автоматически активирован следующий набор: {next_one.name}")
     return {"status": "ok"}
 
 
@@ -301,6 +315,8 @@ def purge_user_data(
     db.query(Order).filter(Order.user_id == current_user.id).delete()
     db.query(Cost).filter(Cost.user_id == current_user.id).delete()
     db.commit()
+
+    log_user_event(current_user.id, "ВНИМАНИЕ: Пользователь инициировал полную очистку данных Ozon.", "warning")
     return {"status": "ok"}
 
 

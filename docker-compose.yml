@@ -35,6 +35,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://ozon_user:SecurePass2024!@db:5432/ozon_saas
       - INIT_DB_ON_STARTUP=true
+    volumes:
+      - ./logs:/app/logs  # Пробрасываем папку логов на хост
 
   frontend:
     build:
@@ -47,4 +49,3 @@ services:
 
 volumes:
   postgres_data:
-  

@@ -9,9 +9,10 @@ from services.sync import fetch_and_save_orders, run_enrichment_batch
 from services.enrichment import enrich_posting_from_ozon
 from utils.common import valid_posting_number
 from utils.auth import get_current_user
+from utils.logging_config import log_user_event
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger("OzonAPIHub")
 
 
 def _parse_iso(dt: str) -> datetime:
@@ -58,7 +59,6 @@ async def _ensure_data_for_range(db: Session, start: datetime, end: datetime, us
     since_iso = start.isoformat() + "Z"
     to_iso = end.isoformat() + "Z"
 
-    # ФИКС: Обязательно фильтруем по user_id
     has_orders = db.query(Order).filter(
         Order.user_id == user_id,
         Order.created_at >= since_iso,
@@ -73,6 +73,7 @@ async def _ensure_data_for_range(db: Session, start: datetime, end: datetime, us
 
     if not (has_orders or has_postings):
         try:
+            log_user_event(user_id, f"Авто-подкачка данных для аналитики: {since_iso} -> {to_iso}")
             # Выполняем синхронизацию в отдельном потоке, так как она блокирующая
             res = await asyncio.to_thread(fetch_and_save_orders, since_iso, to_iso, "", 50, 0, True, True, False, user_id, db)
             orders = res.get("orders") or []
@@ -92,7 +93,7 @@ async def _ensure_data_for_range(db: Session, start: datetime, end: datetime, us
                             except Exception as e:
                                 logger.debug(f"Ошибка обогащения {pn}: {e}")
         except Exception as e:
-            logger.debug(f"_ensure_data_for_range ошибка для user_id={user_id}: {e}")
+            log_user_event(user_id, f"Ошибка авто-подкачки данных: {e}", "error")
 
 @router.get("/sales_by_date")
 async def sales_by_date(
