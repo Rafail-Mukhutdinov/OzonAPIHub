@@ -10,18 +10,17 @@ class OzonApiClient {
 
   /// Умный выбор адреса в зависимости от платформы
   static String getDefaultBaseUrl() {
-    // На Android эмуляторе нужен спец. адрес, который маппится на хост-машину
-    if (!kIsWeb && Platform.isAndroid) {
-      return 'http://10.0.2.2:8080';
-    }
-    // На Web используем хост страницы, чтобы фронтенд мог работать с любым сервером.
-    if (kIsWeb) {
-      final scheme = Uri.base.scheme.isNotEmpty ? Uri.base.scheme : 'http';
-      final host = Uri.base.host.isNotEmpty ? Uri.base.host : 'localhost';
-      return '$scheme://$host:8080';
-    }
-    // Desktop и iOS -> локальный backend на порту 8080
-    return 'http://localhost:8080';
+    // Используем внешний сервер вместо локального.
+    return 'http://45.150.11.25:8080';
+
+    // Если понадобится локальная отладка на эмуляторе — верните сюда 10.0.2.2.
+    // На Web можно также использовать текущий хост страницы, но тут сервер уже известен.
+    // if (kIsWeb) {
+    //   final scheme = Uri.base.scheme.isNotEmpty ? Uri.base.scheme : 'http';
+    //   final host = Uri.base.host.isNotEmpty ? Uri.base.host : 'localhost';
+    //   return '$scheme://$host:8080';
+    // }
+    // return 'http://localhost:8080';
   }
 
   /// Создает клиент с автоматическим выбором URL или явно переданным
