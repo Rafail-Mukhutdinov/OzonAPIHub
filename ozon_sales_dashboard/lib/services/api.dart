@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,17 +9,14 @@ class OzonApiClient {
 
   /// Умный выбор адреса в зависимости от платформы
   static String getDefaultBaseUrl() {
-    // Используем внешний сервер вместо локального.
-    return 'http://45.150.11.25:8080';
+    if (kIsWeb) {
+      final scheme = Uri.base.scheme.isNotEmpty ? Uri.base.scheme : 'http';
+      final host = Uri.base.host.isNotEmpty ? Uri.base.host : 'localhost';
+      return '$scheme://$host:8080';
+    }
 
-    // Если понадобится локальная отладка на эмуляторе — верните сюда 10.0.2.2.
-    // На Web можно также использовать текущий хост страницы, но тут сервер уже известен.
-    // if (kIsWeb) {
-    //   final scheme = Uri.base.scheme.isNotEmpty ? Uri.base.scheme : 'http';
-    //   final host = Uri.base.host.isNotEmpty ? Uri.base.host : 'localhost';
-    //   return '$scheme://$host:8080';
-    // }
-    // return 'http://localhost:8080';
+    // Для запуска на хост-машине используем localhost:8080
+    return 'http://localhost:8080';
   }
 
   /// Создает клиент с автоматическим выбором URL или явно переданным
