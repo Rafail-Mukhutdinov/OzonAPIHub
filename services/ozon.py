@@ -3,7 +3,7 @@ import logging
 import httpx
 import asyncio
 
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger("OzonAPIHub")
 
 LOG_OZON_REQUESTS = os.getenv('LOG_OZON_REQUESTS', 'false').lower() in ('1', 'true', 'yes')
 BASE_URL = "https://api-seller.ozon.ru"

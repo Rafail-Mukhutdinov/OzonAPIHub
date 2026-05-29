@@ -32,15 +32,15 @@ Base = declarative_base()
 class User(Base):
     """Модель пользователя для SaaS (мультитенантность)."""
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
-    
+
     # Управление подпиской
     is_demo = Column(Boolean, default=False, nullable=False)
     subscription_end_date = Column(DateTime, nullable=True)
-    
+
     # Метаданные
     created_at = Column(DateTime, default=get_utc_now, nullable=False)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
@@ -57,22 +57,22 @@ class User(Base):
 class OzonCredential(Base):
     """Набор API ключей пользователя для различных маркетплейсов."""
     __tablename__ = "ozon_credentials"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     marketplace = Column(String(50), default='ozon', nullable=False)
     name = Column(String(255), nullable=False)
-    
+
     client_id_encrypted = Column(Text, nullable=False)
     api_key_encrypted = Column(Text, nullable=False)
-    
+
     is_active = Column(Boolean, default=False, nullable=False)
-    
+
     created_at = Column(DateTime, default=get_utc_now, nullable=False)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
-    
+
     user = relationship("User", back_populates="ozon_credentials")
-    
+
     __table_args__ = (
         sa.UniqueConstraint('user_id', 'marketplace', name='uq_user_marketplace'),
         sa.UniqueConstraint('user_id', 'name', name='uq_user_credential_name'),
@@ -89,9 +89,9 @@ class Order(Base):
     created_at = Column(String(100))
     updated_at = Column(String(100))
     data = Column(JSON)
-    
+
     user = relationship("User", back_populates="orders")
-    
+
     __table_args__ = (
         sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting'),
     )
@@ -106,9 +106,9 @@ class OrderHeader(Base):
     last_delivery_at = Column(String(100))
     total_payout = Column(Integer)
     total_commission = Column(Integer)
-    
+
     user = relationship("User", back_populates="order_headers")
-    
+
     __table_args__ = (
         sa.UniqueConstraint('user_id', 'order_number', name='uq_user_order_number'),
     )
@@ -127,10 +127,10 @@ class OrderPosting(Base):
     substatus = Column(String(100))
     analytics_data = Column(JSON)
     financial_data = Column(JSON)
-    
+
     user = relationship("User", back_populates="order_postings")
     products = relationship("OrderProduct", back_populates="posting", cascade="all, delete-orphan")
-    
+
     __table_args__ = (
         sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting_number'),
     )
@@ -153,7 +153,7 @@ class OrderProduct(Base):
     payout = Column(Integer)
     total_discount_value = Column(Integer)
     total_discount_percent = Column(Integer)
-    
+
     posting = relationship("OrderPosting", back_populates="products")
 
 
@@ -170,7 +170,7 @@ class Cost(Base):
     scope_sku = Column(BigInteger, index=True, nullable=True)
     scope_offer_id = Column(String(255), index=True, nullable=True)
     notes = Column(Text)
-    
+
     user = relationship("User", back_populates="costs")
 
 
@@ -178,15 +178,15 @@ class SyncStatus(Base):
     __tablename__ = "sync_status"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True, unique=True)
-    
+
     is_syncing = Column(Boolean, default=False, nullable=False)
     status_message = Column(String(255), default="", nullable=False)
-    
+
     sync_started_at = Column(DateTime, nullable=True)
     sync_completed_at = Column(DateTime, nullable=True)
     total_records_synced = Column(Integer, default=0, nullable=False)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
-    
+
     user = relationship("User")
 
 

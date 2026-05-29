@@ -153,12 +153,12 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
         order_id = order_data.get('order_id')
         status = order_data.get('status')
         created_at = order_data.get('created_at')
-        
+
         existing = db.query(Order).filter(
             Order.user_id == user.id,
             Order.posting_number == posting_number
         ).first()
-        
+
         if existing:
             existing.order_id = order_id
             existing.status = status
@@ -179,7 +179,7 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
             db.add(new_order)
             db.commit()
             return True
-    
+
     except Exception as e:
         db.rollback()
         raise e

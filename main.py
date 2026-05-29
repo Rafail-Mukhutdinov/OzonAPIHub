@@ -23,6 +23,23 @@ async def lifespan(app: FastAPI):
     app.state.last_sync_recent = None
     app.state.last_sync_error = None
 
+    # Сброс зависших статусов синхронизации (если сервер был перезагружен во время backfill)
+    try:
+        from db.database import SessionLocal, SyncStatus
+        db = SessionLocal()
+        try:
+            stuck_syncs = db.query(SyncStatus).filter(SyncStatus.is_syncing == True).all()
+            for sync in stuck_syncs:
+                sync.is_syncing = False
+                sync.status_message = "error: interrupted by server restart"
+            if stuck_syncs:
+                db.commit()
+                logger.info(f"Сброшено {len(stuck_syncs)} зависших статусов синхронизации.")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Ошибка при сбросе зависших статусов: {e}")
+
     # Запуск фоновой синхронизации
     sync_task = asyncio.create_task(background_sync_loop(app, SYNC_INTERVAL_SECONDS))
     app.state.sync_task = sync_task
