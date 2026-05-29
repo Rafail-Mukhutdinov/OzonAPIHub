@@ -97,8 +97,8 @@ async def _ensure_data_for_range(db: Session, start: datetime, end: datetime, us
 
 @router.get("/sales_by_date")
 async def sales_by_date(
-    date: str, 
-    tz_offset_hours: int = 0, 
+    date: str,
+    tz_offset_hours: int = 0,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -110,10 +110,10 @@ async def sales_by_date(
 
 @router.get("/sales_range")
 async def sales_range(
-    since: str, 
-    to: str, 
-    tz_offset_hours: int = 0, 
-    status: str | None = None, 
+    since: str,
+    to: str,
+    tz_offset_hours: int = 0,
+    status: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -131,7 +131,7 @@ async def sales_today(
 ):
     start, end = _range_with_tz(since, to, tz_offset_hours)
     await _ensure_data_for_range(db, start, end, current_user.id)
-    
+
     if status:
         postings_q = (
             db.query(OrderPosting.posting_number, OrderPosting.status)
@@ -253,7 +253,7 @@ async def sales_today_raw(
         .filter(date_field < end.isoformat() + "Z")
     )
     rows = postings_q.all()
-    
+
     if status:
         postings = [(pn, st) for (pn, st) in rows if st and st.lower() == status.lower()]
     else:
@@ -348,14 +348,14 @@ def sales_by_sku_monthly(
 ):
     if not offer_id and not sku:
         return {"error": "Укажите offer_id или sku", "data": []}
-    
+
     if mode not in ("delivered", "shipped"):
         mode = "delivered"
-    
+
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     start_date = now - timedelta(days=30 * months_back)
     start_iso = start_date.isoformat() + "Z"
-    
+
     if mode == "delivered":
         posting_q = db.query(OrderPosting.posting_number).filter(
             OrderPosting.user_id == current_user.id,
@@ -368,7 +368,7 @@ def sales_by_sku_monthly(
             ~OrderPosting.status.like("%cancel%"),
             OrderPosting.in_process_at >= start_iso
         )
-    
+
     posting_numbers = [p[0] for p in posting_q.all()]
     if not posting_numbers:
         return {"data": [], "sku": sku or offer_id, "mode": mode}
@@ -377,16 +377,16 @@ def sales_by_sku_monthly(
         OrderProduct.user_id == current_user.id,
         OrderProduct.posting_number.in_(posting_numbers)
     )
-    
+
     if offer_id:
         product_filter = product_filter.filter(OrderProduct.offer_id == offer_id)
     if sku:
         product_filter = product_filter.filter(OrderProduct.sku == sku)
-    
+
     products = product_filter.all()
     if not products:
         return {"data": [], "sku": sku or offer_id, "mode": mode}
-    
+
     monthly_data = {}
     for prod in products:
         posting = db.query(OrderPosting).filter(
@@ -395,15 +395,15 @@ def sales_by_sku_monthly(
         ).first()
 
         if not posting: continue
-        
+
         date_field = posting.fact_delivery_date if mode == "delivered" else posting.in_process_at
         if not date_field: continue
-        
+
         try:
             target_date = datetime.fromisoformat(date_field.replace("Z", ""))
             month_key = f"{target_date.year}-{target_date.month:02d}"
         except Exception: continue
-        
+
         if month_key not in monthly_data:
             monthly_data[month_key] = {
                 "month": month_key,
@@ -411,7 +411,7 @@ def sales_by_sku_monthly(
                 "total_payout": 0,
                 "orders_count": set(),
             }
-        
+
         monthly_data[month_key]["quantity_sold"] += prod.quantity or 0
         money_value = (prod.price or 0) * (prod.quantity or 0) if mode == "shipped" else (prod.payout or 0)
         monthly_data[month_key]["total_payout"] += money_value
@@ -447,10 +447,10 @@ def get_shipments(
     query = db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id)
     if since: query = query.filter(OrderPosting.created_at >= since)
     if to: query = query.filter(OrderPosting.created_at <= to)
-    
+
     # Сначала получаем все постинги для фильтрации по SKU если нужно
     all_postings = query.order_by(OrderPosting.created_at.desc()).all()
-    
+
     if skus:
         sku_list = [int(s.strip()) for s in skus.split(",") if s.strip().isdigit()]
         if sku_list:
@@ -462,7 +462,7 @@ def get_shipments(
             ).all()
             valid_pns = {p.posting_number for p in products}
             all_postings = [p for p in all_postings if p.posting_number in valid_pns]
-    
+
     total_count = len(all_postings)
     postings_slice = all_postings[offset : offset + limit]
 
@@ -484,5 +484,5 @@ def get_shipments(
                 "payout": product.payout,
                 "commission": product.commission_amount,
             })
-    
+
     return {"total": total_count, "limit": limit, "offset": offset, "items": shipments}

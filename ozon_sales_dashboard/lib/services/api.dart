@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,6 +15,7 @@ class OzonApiClient {
         return 'http://$host:8082';
       }
     }
+    // По умолчанию или для локальной разработки используем внешний IP (согласно main.py)
     return 'http://45.150.11.25:8082';
   }
 

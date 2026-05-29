@@ -35,6 +35,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   // Статус синхронизации (для отслеживания полной загрузки)
   bool syncInProgress = false;
+  bool userDismissedSync = false;
   String syncMessage = "";
   Timer? syncStatusTimer;
 
@@ -84,7 +85,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted) return;
       
       setState(() {
-        syncInProgress = status['is_syncing'] ?? false;
+        syncInProgress = (status['is_syncing'] ?? false) && !userDismissedSync;
         syncMessage = status['status_message'] ?? '';
       });
     } catch (e) {
@@ -357,6 +358,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            setState(() {
+                              userDismissedSync = true;
+                              syncInProgress = false;
+                            });
+                          },
                         ),
                       ],
                     ),

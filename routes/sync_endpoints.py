@@ -123,6 +123,30 @@ async def run_initial_sync_endpoint(
     return {"status": "started", "message": "Первичная синхронизация запущена в фоне"}
 
 
+@router.post("/initial/force")
+async def run_initial_sync_force(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Запустить первичную синхронизацию с принудительным перезапуском (игнорирует статус 'completed').
+    """
+    if not ENABLE_INITIAL_SYNC:
+        raise HTTPException(status_code=400, detail="Initial sync disabled by config")
+
+    sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
+    
+    if sync_status and sync_status.is_syncing:
+        return {"status": "in_progress", "started_at": sync_status.sync_started_at}
+
+    log_user_event(current_user.id, "Пользователь запустил принудительную переза грузку (Force Backfill).")
+
+    # Запускаем фоновую задачу первичного импорта (игнорируем статус "completed")
+    asyncio.create_task(initial_backfill_for_user(current_user, db))
+
+    return {"status": "started", "message": "Принудительная синхронизация запущена в фоне"}
+
+
 @router.get("/status")
 def get_sync_status(
     db: Session = Depends(get_db),
