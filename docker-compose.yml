@@ -24,19 +24,16 @@ services:
     container_name: ozon_db
     restart: always
     environment:
-      # Используем подстановку из .env, но оставляем значения по умолчанию
-      # на случай, если .env файл не был создан (удобно для локального старта)
       POSTGRES_USER: ${POSTGRES_USER:-ozon_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SecurePass2024!}
       POSTGRES_DB: ${POSTGRES_DB:-ozon_saas}
     env_file:
       - .env
     ports:
-      - "5432:5432" # Пробрасываем порт для доступа к БД с хост-машины (например, через DBeaver)
+      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data # Сохраняем данные БД при перезапуске контейнера
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      # Проверяем, готова ли БД принимать подключения, прежде чем запускать бэкенд
       test: ["CMD-SHELL", "pg_isready -U ozon_user -d ozon_saas"]
       interval: 5s
       timeout: 5s
@@ -50,21 +47,21 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: ozon_backend
-    restart: on-failure
+    restart: always
     depends_on:
       db:
-        condition: service_healthy # Ждем успешного прохождения healthcheck базы данных
+        condition: service_healthy
       redis:
-        condition: service_healthy # Ждем запуска Redis
+        condition: service_healthy
     ports:
-      - "8082:8080"  # Бэкенд теперь на 8082
+      - "8080:8080"  # Возвращаем бэкенд на 8080
     env_file:
       - .env
     environment:
-      # Собираем строку подключения к БД из переменных окружения
       - DATABASE_URL=postgresql://${POSTGRES_USER:-ozon_user}:${POSTGRES_PASSWORD:-SecurePass2024!}@db:5432/${POSTGRES_DB:-ozon_saas}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - INIT_DB_ON_STARTUP=true
+      - DEBUG=false
     volumes:
       - ./logs:/app/logs
 
@@ -78,7 +75,7 @@ services:
     container_name: ozon_frontend
     restart: always
     ports:
-      - "8081:80"    # Фронтенд теперь на 8081
+      - "80:80"    # Теперь сайт будет открываться просто по IP адресу
 
 volumes:
   postgres_data:
