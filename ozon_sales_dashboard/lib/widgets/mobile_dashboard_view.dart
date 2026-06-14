@@ -248,21 +248,23 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
               border = Border.all(color: Colors.purple, width: 2.5);
             }
 
-            // УВЕЛИЧЕННАЯ ОБЛАСТЬ НАЖАТИЯ ДЛЯ ТЕЛЕФОНА
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque, // Гарантируем захват нажатия даже в пустой области
-              onTap: () {
-                widget.onDrillDown(DateTime.parse(s['date']));
-              },
-              child: Tooltip(
-                message: "${s['date']}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
-                triggerMode: TooltipTriggerMode.tap,
-                child: Container(
-                  width: isMonth ? 22 : 44, // Увеличили область "хита" (было 14 и 36)
-                  color: Colors.transparent, // Невидимая подложка для нажатия
-                  child: Center(
+            // УВЕЛИЧЕННАЯ ОБЛАСТЬ НАЖАТИЯ ДЛЯ ТЕЛЕФОНА (с InkWell для отклика)
+            return Tooltip(
+              message: "${s['date']}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
+              triggerMode: TooltipTriggerMode.tap,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => widget.onDrillDown(DateTime.parse(s['date'])),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Container(
+                    width: isMonth ? 22 : 44,
+                    // Задаем минимальную высоту всей области нажатия, чтобы легче было попасть
+                    height: 130, 
+                    alignment: Alignment.bottomCenter,
+                    padding: const EdgeInsets.only(bottom: 2), // Небольшой отступ снизу
                     child: Container(
-                      width: isMonth ? 14 : 36, // Сам столбик остался прежнего размера
+                      width: isMonth ? 14 : 36,
                       height: h,
                       decoration: BoxDecoration(
                         color: barColor,
