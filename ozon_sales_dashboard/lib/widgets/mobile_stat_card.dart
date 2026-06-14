@@ -18,9 +18,9 @@ class MobileStatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Убрали фиксированную ширину, чтобы виджет мог адаптироваться внутри Expanded или Row
     return Container(
-      width: (MediaQuery.of(context).size.width / 2) - 20,
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12), // Немного уменьшили отступы для компактности
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -34,21 +34,32 @@ class MobileStatCard extends StatelessWidget {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.grey[600],
-              fontWeight: FontWeight.w500,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 10, // Уменьшили шрифт заголовка
+                  color: Colors.grey[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              Icon(icon, size: 14, color: Colors.blueGrey[300]), // Добавили иконку в угол
+            ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
+          const SizedBox(height: 4),
+          FittedBox( // Гарантируем, что значение влезет в карточку
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 16, // Немного уменьшили шрифт значения
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
           const SizedBox(height: 4),
@@ -56,21 +67,17 @@ class MobileStatCard extends StatelessWidget {
             children: [
               Icon(
                 isPositive ? Icons.trending_up : Icons.trending_down,
-                size: 14,
+                size: 12,
                 color: isPositive ? Colors.green : Colors.red,
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: 2),
               Text(
                 change,
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: 10,
                   color: isPositive ? Colors.green : Colors.red,
                   fontWeight: FontWeight.bold,
                 ),
-              ),
-              Text(
-                ' к вчера',
-                style: TextStyle(fontSize: 10, color: Colors.grey[400]),
               ),
             ],
           ),

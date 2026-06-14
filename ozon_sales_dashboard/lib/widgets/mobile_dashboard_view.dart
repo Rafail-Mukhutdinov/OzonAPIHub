@@ -11,8 +11,11 @@ class MobileDashboardView extends StatefulWidget {
   final bool isLoading;
   final String selectedPeriod;
   final DateTime activeDate;
+  final DateTime? drillDownDate;
   final Function(String) onPeriodChanged;
   final Function(DateTime) onDateChanged;
+  final Function(DateTime) onDrillDown;
+  final VoidCallback onResetDrillDown;
 
   const MobileDashboardView({
     super.key,
@@ -23,8 +26,11 @@ class MobileDashboardView extends StatefulWidget {
     required this.isLoading,
     required this.selectedPeriod,
     required this.activeDate,
+    this.drillDownDate,
     required this.onPeriodChanged,
     required this.onDateChanged,
+    required this.onDrillDown,
+    required this.onResetDrillDown,
   });
 
   @override
@@ -43,22 +49,23 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
   @override
   Widget build(BuildContext context) {
     final f = NumberFormat.decimalPattern('ru_RU');
-    final dateStr = DateFormat("EEEE, d MMMM", "ru_RU").format(widget.activeDate);
-
-    final revenueCurrent = widget.items.fold<num>(0, (sum, item) => sum + (item['amount_raw'] ?? 0));
-    final itemsCurrent = widget.items.fold<num>(0, (sum, item) => sum + (item['quantity'] ?? 0));
     
+    final displayDate = widget.drillDownDate ?? widget.activeDate;
+    final dateStr = DateFormat("EEEE, d MMMM", "ru_RU").format(displayDate);
+
+    // --- РАСЧЕТ ТЕКУЩИХ ПОКАЗАТЕЛЕЙ ---
+    final revenueCurr = widget.items.fold<num>(0, (sum, item) => sum + (item['amount_raw'] ?? 0));
+    final itemsCurr = widget.items.fold<num>(0, (sum, item) => sum + (item['quantity'] ?? 0));
+    final avgPriceCurr = itemsCurr > 0 ? revenueCurr / itemsCurr : 0;
+
+    // --- РАСЧЕТ ПРЕДЫДУЩИХ ПОКАЗАТЕЛЕЙ ---
     final revenuePrev = widget.yesterdayTotals?['total_amount_raw'] ?? 0;
     final itemsPrev = widget.yesterdayTotals?['total_items'] ?? 0;
+    final avgPricePrev = itemsPrev > 0 ? revenuePrev / itemsPrev : 0;
 
     return ScrollConfiguration(
-      // Включаем поддержку скроллинга мышкой для браузера
       behavior: ScrollConfiguration.of(context).copyWith(
-        dragDevices: {
-          PointerDeviceKind.touch,
-          PointerDeviceKind.mouse,
-          PointerDeviceKind.trackpad,
-        },
+        dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse, PointerDeviceKind.trackpad},
       ),
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -66,7 +73,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 1. ПЕРИОДЫ (ВВЕРХУ)
+            // 1. ПЕРИОДЫ
             Container(
               padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(12)),
@@ -87,35 +94,33 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(widget.selectedPeriod == 'today' ? 'Выбранный день:' : 'Итоги периода:', 
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    Text(widget.selectedPeriod == 'today' ? dateStr : 'За ${widget.selectedPeriod == 'week' ? "7" : "30"} дней', 
-                      style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                    Text(widget.drillDownDate != null ? 'Детали за день:' : (widget.selectedPeriod == 'today' ? 'Выбранный день:' : 'Итоги периода:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(widget.selectedPeriod == 'today' || widget.drillDownDate != null ? dateStr : 'За последние ${widget.selectedPeriod == 'week' ? "7" : "30"} дней', style: TextStyle(color: widget.drillDownDate != null ? Colors.blue : Colors.grey[600], fontSize: 14)),
                   ],
                 ),
-                if (widget.selectedPeriod == 'today')
+                if (widget.drillDownDate != null)
+                  TextButton.icon(onPressed: widget.onResetDrillDown, icon: const Icon(Icons.close, size: 16), label: const Text('Сброс', style: TextStyle(fontSize: 12)))
+                else if (widget.selectedPeriod == 'today')
                   Row(
                     children: [
                       IconButton(icon: const Icon(Icons.chevron_left), onPressed: () => widget.onDateChanged(widget.activeDate.subtract(const Duration(days: 1)))),
-                      IconButton(
-                        icon: const Icon(Icons.chevron_right),
-                        onPressed: widget.activeDate.day == DateTime.now().day && widget.activeDate.month == DateTime.now().month ? null : 
-                          () => widget.onDateChanged(widget.activeDate.add(const Duration(days: 1))),
-                      ),
+                      IconButton(icon: const Icon(Icons.chevron_right), onPressed: widget.activeDate.day == DateTime.now().day && widget.activeDate.month == DateTime.now().month ? null : () => widget.onDateChanged(widget.activeDate.add(const Duration(days: 1)))),
                     ],
                   ),
               ],
             ),
             const SizedBox(height: 24),
 
-            // 3. ПОКАЗАТЕЛИ
+            // 3. ПОКАЗАТЕЛИ (ТРИ В ОДНОМ РЯДУ)
             const Text('ПОКАЗАТЕЛИ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, letterSpacing: 0.8, color: Colors.grey)),
             const SizedBox(height: 12),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                MobileStatCard(title: 'Выручка', value: '${f.format(revenueCurrent)} ₽', change: _calcChange(revenueCurrent, revenuePrev), isPositive: revenueCurrent >= revenuePrev, icon: Icons.paid),
-                MobileStatCard(title: 'Продано', value: '${f.format(itemsCurrent)} шт', change: _calcChange(itemsCurrent, itemsPrev), isPositive: itemsCurrent >= itemsPrev, icon: Icons.shopping_bag),
+                Expanded(child: MobileStatCard(title: 'Выручка', value: '${f.format(revenueCurr)} ₽', change: _calcChange(revenueCurr, revenuePrev), isPositive: revenueCurr >= revenuePrev, icon: Icons.paid)),
+                const SizedBox(width: 8),
+                Expanded(child: MobileStatCard(title: 'Продано', value: '${f.format(itemsCurr)} шт', change: _calcChange(itemsCurr, itemsPrev), isPositive: itemsCurr >= itemsPrev, icon: Icons.shopping_bag)),
+                const SizedBox(width: 8),
+                Expanded(child: MobileStatCard(title: 'Ср. цена', value: '${f.format(avgPriceCurr.toInt())} ₽', change: _calcChange(avgPriceCurr, avgPricePrev), isPositive: avgPriceCurr >= avgPricePrev, icon: Icons.analytics)),
               ],
             ),
 
@@ -156,6 +161,10 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                 itemCount: widget.items.length,
                 itemBuilder: (context, index) {
                   final item = widget.items[index];
+                  final qty = item['quantity'] ?? 0;
+                  final total = item['amount_raw'] ?? 0;
+                  final avgItemPrice = qty > 0 ? total / qty : 0; // СРЕДНЯЯ ЦЕНА ТОВАРА
+
                   return Container(
                     margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.01), blurRadius: 5)]),
@@ -165,7 +174,8 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             Text(item['name'] ?? 'Товар', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, height: 1.2)),
                             const SizedBox(height: 4),
-                            Text('${item['quantity'] ?? 0} шт  /  ${f.format(item['amount_raw'] ?? 0)} ₽', style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 11)),
+                            // Добавили среднюю цену в строку инфо
+                            Text('$qty шт × ${f.format(avgItemPrice.toInt())} ₽  =  ${f.format(total)} ₽', style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 11)),
                           ])),
                       ]),
                   );
@@ -206,38 +216,52 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
   Widget _buildChart(NumberFormat f) {
     final bool isMonth = widget.selectedPeriod == 'month';
-    // Отрезаем последние 7 дней, если не выбран месяц
     final stats = isMonth ? widget.weeklyStats : widget.weeklyStats.skip(widget.weeklyStats.length > 7 ? widget.weeklyStats.length - 7 : 0).toList();
     
     if (stats.isEmpty) return const SizedBox(height: 120, child: Center(child: Text('Нет данных')));
 
     final values = stats.map((s) => (_isMoneyMode ? s['revenue'] : s['items']) as num).toList();
     final maxVal = values.isNotEmpty ? values.reduce((a, b) => a > b ? a : b) : 0;
-    final activeDateStr = DateFormat('yyyy-MM-dd').format(widget.activeDate);
+    
+    final activeDateStr = DateFormat('yyyy-MM-dd').format(widget.drillDownDate ?? widget.activeDate);
+    final todayDateStr = DateFormat('yyyy-MM-dd').format(DateTime.now().add(const Duration(hours: 3)));
 
     final chartContent = Column(
       children: [
         Row(
           mainAxisAlignment: isMonth ? MainAxisAlignment.start : MainAxisAlignment.spaceEvenly,
-          mainAxisSize: MainAxisSize.min, // Важно для корректного скролла
           crossAxisAlignment: CrossAxisAlignment.end,
           children: stats.map((s) {
             final val = (_isMoneyMode ? s['revenue'] : s['items']) as num;
             final double h = maxVal > 0 ? (val / maxVal * 120).toDouble().clamp(5.0, 120.0) : 5.0;
+            
             final bool isActive = s['date'] == activeDateStr;
+            final bool isToday = s['date'] == todayDateStr;
             final bool isMax = (val == maxVal && maxVal > 0);
 
-            return Tooltip(
-              message: "${s['date']}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
-              triggerMode: TooltipTriggerMode.tap,
-              child: Container(
-                width: isMonth ? 16 : 36, // Немного увеличим для месяца
-                height: h,
-                margin: const EdgeInsets.symmetric(horizontal: 4),
-                decoration: BoxDecoration(
-                  color: isActive ? const Color(0xFF4CAF50) : (isMax ? Colors.red : const Color(0xFF90CAF9)),
-                  border: (isActive && isMax) ? Border.all(color: Colors.red, width: 2) : null,
-                  borderRadius: BorderRadius.circular(4),
+            Color barColor = const Color(0xFF90CAF9);
+            if (isToday) barColor = const Color(0xFF4CAF50);
+            else if (isMax) barColor = Colors.red;
+
+            BoxBorder? border;
+            if (isActive) {
+              border = Border.all(color: Colors.purple, width: 2.5);
+            }
+
+            return GestureDetector(
+              onTap: () => widget.onDrillDown(DateTime.parse(s['date'])),
+              child: Tooltip(
+                message: "${s['date']}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
+                triggerMode: TooltipTriggerMode.tap,
+                child: Container(
+                  width: isMonth ? 14 : 36,
+                  height: h,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: barColor,
+                    border: border,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
                 ),
               ),
             );
@@ -246,12 +270,11 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         const SizedBox(height: 12),
         Row(
           mainAxisAlignment: isMonth ? MainAxisAlignment.start : MainAxisAlignment.spaceEvenly,
-          mainAxisSize: MainAxisSize.min,
           children: stats.map((s) {
             final date = DateTime.parse(s['date']);
             String label = isMonth ? date.day.toString() : "${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][date.weekday-1]}\n${date.day}";
             return SizedBox(
-              width: isMonth ? 24 : 44, // Должно совпадать с шириной бара + маржинами
+              width: isMonth ? 22 : 44,
               child: Center(child: Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 8, color: Colors.grey, height: 1.2))),
             );
           }).toList(),
@@ -260,14 +283,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
 
     if (isMonth) {
-      return SingleChildScrollView(
-        scrollDirection: Axis.horizontal, 
-        reverse: true, 
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8.0),
-          child: chartContent,
-        )
-      );
+      return SingleChildScrollView(scrollDirection: Axis.horizontal, reverse: true, child: chartContent);
     }
     return chartContent;
   }

@@ -15,20 +15,34 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   late final OzonApiClient api;
   
-  String selectedPeriod = 'today'; 
-  DateTime activeDate = DateTime.now(); 
+  String selectedPeriod = 'today'; // 'today', 'week', 'month'
+  DateTime activeDate = DateTime.now(); // Конечная точка периода
+  DateTime? drillDownDate; // Конкретный день для деталей (если выбран на графике)
 
   List<Map<String, dynamic>> items = [];
   Map<String, dynamic>? totals;
   Map<String, dynamic>? yesterdayTotals;
   List<Map<String, dynamic>> weeklyStats = [];
   bool loading = false;
+  Timer? _autoRefreshTimer;
 
   @override
   void initState() {
     super.initState();
-    api = OzonApiClient(onUnauthorized: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen())));
+    api = OzonApiClient(onUnauthorized: _handleUnauthorized);
     _loadAllData();
+    // ЗАПУСКАЕМ АВТО-ОБНОВЛЕНИЕ каждые 5 минут
+    _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadAllData(isSilent: true));
+  }
+
+  @override
+  void dispose() {
+    _autoRefreshTimer?.cancel();
+    super.dispose();
+  }
+
+  void _handleUnauthorized() {
+    if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
   }
 
   String _getIso(DateTime date, bool endOfDay) {
@@ -38,42 +52,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(d);
   }
 
-  Future<void> _loadAllData() async {
+  Future<void> _loadAllData({bool isSilent = false}) async {
     if (!mounted) return;
-    setState(() => loading = true);
+    if (!isSilent) setState(() => loading = true);
 
     try {
-      DateTime start;
-      DateTime end = activeDate;
+      // 1. ОПРЕДЕЛЯЕМ ПЕРИОД ДЛЯ ОТЧЕТА (КАРТОЧКИ И ТОВАРЫ)
+      DateTime reportStart;
+      DateTime reportEnd;
 
-      if (selectedPeriod == 'today') {
-        start = activeDate;
-      } else if (selectedPeriod == 'week') {
-        start = activeDate.subtract(const Duration(days: 6));
+      if (drillDownDate != null) {
+        // Если выбран конкретный день на графике - смотрим только его
+        reportStart = drillDownDate!;
+        reportEnd = drillDownDate!;
       } else {
-        start = activeDate.subtract(const Duration(days: 29));
+        // Иначе смотрим весь выбранный период (день/неделя/месяц)
+        reportEnd = activeDate;
+        if (selectedPeriod == 'today') reportStart = activeDate;
+        else if (selectedPeriod == 'week') reportStart = activeDate.subtract(const Duration(days: 6));
+        else reportStart = activeDate.subtract(const Duration(days: 29));
       }
 
-      // 1. ТЕКУЩИЙ ПЕРИОД
+      // Запрос основного отчета
       final reportResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
-        'since': _getIso(start, false),
-        'to': _getIso(end, true),
+        'since': _getIso(reportStart, false),
+        'to': _getIso(reportEnd, true),
       });
 
-      // 2. ПРЕДЫДУЩИЙ ПЕРИОД
-      final prevDays = selectedPeriod == 'today' ? 1 : (selectedPeriod == 'week' ? 7 : 30);
-      final prevStart = start.subtract(Duration(days: prevDays));
-      final prevEnd = end.subtract(Duration(days: prevDays));
+      // 2. СРАВНЕНИЕ (всегда сравниваем с таким же периодом в прошлом)
+      final diff = reportEnd.difference(reportStart).inDays + 1;
+      final prevStart = reportStart.subtract(Duration(days: diff));
+      final prevEnd = reportEnd.subtract(Duration(days: diff));
       
       final prevResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
         'since': _getIso(prevStart, false),
         'to': _getIso(prevEnd, true),
       });
 
-      // 3. ГРАФИК (всегда 30 дней)
+      // 3. ГРАФИК (всегда 30 дней от реального сегодня, чтобы не прыгал)
       final statsResponse = await api.dio.get('/analytics/daily_stats', queryParameters: {
-        'since': _getIso(activeDate.subtract(const Duration(days: 29)), false),
-        'to': _getIso(activeDate, true),
+        'since': _getIso(DateTime.now().subtract(const Duration(days: 29)), false),
+        'to': _getIso(DateTime.now(), true),
       });
 
       if (!mounted) return;
@@ -98,11 +117,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: Colors.white, elevation: 0,
         actions: [
           IconButton(icon: const Icon(Icons.settings_outlined), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()))),
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadAllData),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: () => _loadAllData()),
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: _loadAllData,
+        onRefresh: () => _loadAllData(),
         child: MobileDashboardView(
           items: items,
           totals: totals,
@@ -111,16 +130,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
           isLoading: loading,
           selectedPeriod: selectedPeriod,
           activeDate: activeDate,
+          drillDownDate: drillDownDate,
           onPeriodChanged: (period) {
             setState(() {
               selectedPeriod = period;
-              // Если переключили на неделю/месяц, возвращаем дату к "сегодня"
-              if (period != 'today') activeDate = DateTime.now();
+              drillDownDate = null; // Сбрасываем детали при смене периода
+              activeDate = DateTime.now();
             });
             _loadAllData();
           },
           onDateChanged: (newDate) {
-            setState(() => activeDate = newDate);
+            setState(() {
+              activeDate = newDate;
+              drillDownDate = null;
+            });
+            _loadAllData();
+          },
+          onDrillDown: (date) {
+            setState(() => drillDownDate = date);
+            _loadAllData();
+          },
+          onResetDrillDown: () {
+            setState(() => drillDownDate = null);
             _loadAllData();
           },
         ),
