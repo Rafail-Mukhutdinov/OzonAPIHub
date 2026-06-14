@@ -248,19 +248,28 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
               border = Border.all(color: Colors.purple, width: 2.5);
             }
 
+            // УВЕЛИЧЕННАЯ ОБЛАСТЬ НАЖАТИЯ ДЛЯ ТЕЛЕФОНА
             return GestureDetector(
-              onTap: () => widget.onDrillDown(DateTime.parse(s['date'])),
+              behavior: HitTestBehavior.opaque, // Гарантируем захват нажатия даже в пустой области
+              onTap: () {
+                widget.onDrillDown(DateTime.parse(s['date']));
+              },
               child: Tooltip(
                 message: "${s['date']}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
                 triggerMode: TooltipTriggerMode.tap,
                 child: Container(
-                  width: isMonth ? 14 : 36,
-                  height: h,
-                  margin: const EdgeInsets.symmetric(horizontal: 4),
-                  decoration: BoxDecoration(
-                    color: barColor,
-                    border: border,
-                    borderRadius: BorderRadius.circular(4),
+                  width: isMonth ? 22 : 44, // Увеличили область "хита" (было 14 и 36)
+                  color: Colors.transparent, // Невидимая подложка для нажатия
+                  child: Center(
+                    child: Container(
+                      width: isMonth ? 14 : 36, // Сам столбик остался прежнего размера
+                      height: h,
+                      decoration: BoxDecoration(
+                        color: barColor,
+                        border: border,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
                   ),
                 ),
               ),
