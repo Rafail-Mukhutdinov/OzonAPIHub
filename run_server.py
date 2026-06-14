@@ -7,5 +7,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 if __name__ == "__main__":
     import uvicorn
-    # host="0.0.0.0" для Docker, порт 8080 согласно docker-compose.yml
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    # В продакшене (Docker) reload должен быть False, чтобы избежать бесконечных перезапусков из-за логов.
+    # Можно управлять этим через переменную окружения.
+    is_reload = os.getenv("DEBUG", "false").lower() in ("true", "1", "t")
+
+    print(f"Запуск сервера (reload={is_reload})...")
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=is_reload)
