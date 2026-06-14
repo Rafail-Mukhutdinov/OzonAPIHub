@@ -1,3 +1,9 @@
+"""
+Эндпоинты для управления дополнительными расходами (Costs).
+Позволяет пользователям вручную вносить расходы (реклама, упаковка, налоги),
+которые затем могут учитываться в итоговой прибыли (Profit).
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -10,20 +16,20 @@ router = APIRouter(prefix="/costs", tags=["costs"])
 
 
 class CostIn(BaseModel):
-    """Модель для создания новой записи расходов."""
-    type: str
-    amount: int
-    currency: str = "RUB"
-    date: str
-    scope_order_number: str | None = None
-    scope_posting_number: str | None = None
-    scope_sku: int | None = None
+    """Модель данных для создания новой записи расхода."""
+    type: str                # Категория (например, "Логистика", "Упаковка", "Реклама")
+    amount: int              # Сумма в копейках/рублях
+    currency: str = "RUB"    # Валюта
+    date: str                # Дата расхода (ISO)
+    scope_order_number: str | None = None   # Опциональная привязка к заказу
+    scope_posting_number: str | None = None # Опциональная привязка к отправлению
+    scope_sku: int | None = None            # Опциональная привязка к товару
     scope_offer_id: str | None = None
-    notes: str | None = None
+    notes: str | None = None # Произвольный комментарий
 
 
 def _normalize_iso(s: str | None) -> str | None:
-    """Нормализует ISO строку для унификации."""
+    """Нормализует формат даты для базы данных."""
     if not s:
         return None
     try:
@@ -32,7 +38,7 @@ def _normalize_iso(s: str | None) -> str | None:
         dt = dt.replace(microsecond=0)
         return dt.isoformat() + 'Z'
     except Exception:
-        raise ValueError(f"Invalid ISO datetime: {s}")
+        raise ValueError(f"Некорректный формат даты: {s}")
 
 
 @router.post("")
@@ -41,11 +47,11 @@ def add_cost(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Добавить новую запись расходов."""
-    log_user_event(current_user.id, f"Добавление расхода: type={cost.type}, amount={cost.amount} {cost.currency}")
+    """Создает новую запись о расходе пользователя."""
+    log_user_event(current_user.id, f"Добавление расхода: {cost.type} - {cost.amount} {cost.currency}")
 
     obj = Cost(
-        user_id=current_user.id,
+        user_id=current_user.id, # Привязка к текущему пользователю
         type=cost.type,
         amount=cost.amount,
         currency=cost.currency,
@@ -60,7 +66,7 @@ def add_cost(
     db.commit()
     db.refresh(obj)
 
-    log_user_event(current_user.id, f"Расход успешно добавлен (ID: {obj.id})")
+    log_user_event(current_user.id, f"Расход сохранен (ID: {obj.id})")
     return {"status": "ok", "id": obj.id}
 
 
@@ -79,52 +85,51 @@ def list_costs(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Получить список расходов с фильтрацией.
+    Возвращает список расходов пользователя с поддержкой фильтрации и пагинации.
     """
-    log_user_event(current_user.id, f"Запрос списка расходов (limit={limit}, offset={offset})")
+    log_user_event(current_user.id, f"Запрос списка расходов")
 
     q = db.query(Cost).filter(Cost.user_id == current_user.id)
     
-    if type:
-        q = q.filter(Cost.type == type)
+    # Фильтры по категории и датам
+    if type: q = q.filter(Cost.type == type)
     
     try:
         since_iso = _normalize_iso(since) if since else None
         to_iso = _normalize_iso(to) if to else None
     except ValueError as e:
-        log_user_event(current_user.id, f"Ошибка фильтрации расходов: {e}", "error")
         raise HTTPException(status_code=400, detail=str(e))
     
-    if since_iso:
-        q = q.filter(Cost.date >= since_iso)
-    if to_iso:
-        q = q.filter(Cost.date <= to_iso)
-    if order_number:
-        q = q.filter(Cost.scope_order_number == order_number)
-    if posting_number:
-        q = q.filter(Cost.scope_posting_number == posting_number)
-    if sku is not None:
-        q = q.filter(Cost.scope_sku == sku)
-    if offer_id:
-        q = q.filter(Cost.scope_offer_id == offer_id)
+    if since_iso: q = q.filter(Cost.date >= since_iso)
+    if to_iso: q = q.filter(Cost.date <= to_iso)
+
+    # Фильтры по области применения (Scope)
+    if order_number: q = q.filter(Cost.scope_order_number == order_number)
+    if posting_number: q = q.filter(Cost.scope_posting_number == posting_number)
+    if sku is not None: q = q.filter(Cost.scope_sku == sku)
+    if offer_id: q = q.filter(Cost.scope_offer_id == offer_id)
     
     total = q.count()
+    # Сортировка: новые сверху
     rows = q.order_by(Cost.date.desc()).offset(offset).limit(min(max(limit, 1), 500)).all()
-    
-    items = [
-        {
-            "id": r.id,
-            "type": r.type,
-            "amount": r.amount,
-            "currency": r.currency,
-            "date": r.date,
-            "scope_order_number": r.scope_order_number,
-            "scope_posting_number": r.scope_posting_number,
-            "scope_sku": r.scope_sku,
-            "scope_offer_id": r.scope_offer_id,
-            "notes": r.notes,
-        }
-        for r in rows
-    ]
-    
-    return {"total": total, "items": items, "limit": limit, "offset": offset}
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [
+            {
+                "id": r.id,
+                "type": r.type,
+                "amount": r.amount,
+                "currency": r.currency,
+                "date": r.date,
+                "scope_order_number": r.scope_order_number,
+                "scope_posting_number": r.scope_posting_number,
+                "scope_sku": r.scope_sku,
+                "scope_offer_id": r.scope_offer_id,
+                "notes": r.notes,
+            }
+            for r in rows
+        ]
+    }

@@ -26,20 +26,26 @@ from db.database import engine, Base, User, Order, OrderHeader, OrderPosting, Or
 from sqlalchemy import inspect
 
 def check_tables_exist():
-    """Проверка существования таблиц."""
+    """
+    Использует SQLAlchemy Inspector для получения списка всех таблиц в текущей БД.
+    Полезно для диагностики, подключились ли мы к правильной базе.
+    """
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
     print(f"Существующие таблицы: {existing_tables}")
     return existing_tables
 
 def create_all_tables():
-    """Создание всех таблиц согласно моделям."""
+    """
+    Читает все классы, унаследованные от Base (User, Order, Cost и т.д.),
+    превращает их в SQL-запросы 'CREATE TABLE IF NOT EXISTS' и выполняет в БД.
+    """
     print("Создание таблиц...")
     Base.metadata.create_all(bind=engine)
     print("✓ Таблицы успешно созданы!")
 
 def drop_all_tables():
-    """ОПАСНО: Удаление всех таблиц."""
+    """ОПАСНО: Удаление всех таблиц (DROP TABLE) с запросом подтверждения."""
     confirm = input("ВНИМАНИЕ! Все данные будут удалены. Продолжить? (yes/no): ")
     if confirm.lower() == 'yes':
         print("Удаление таблиц...")
@@ -49,7 +55,7 @@ def drop_all_tables():
         print("Отменено")
 
 def show_schema():
-    """Показать структуру таблиц."""
+    """Выводит подробную структуру (Колонки, Типы данных, Индексы) для каждой таблицы."""
     inspector = inspect(engine)
     for table_name in inspector.get_table_names():
         print(f"\n{'='*60}")
@@ -60,7 +66,7 @@ def show_schema():
             nullable = "NULL" if col['nullable'] else "NOT NULL"
             print(f"  {col['name']:30} {str(col['type']):20} {nullable}")
         
-        # Foreign keys
+        # Вывод внешних ключей (связей между таблицами)
         fks = inspector.get_foreign_keys(table_name)
         if fks:
             print("\n  Foreign Keys:")

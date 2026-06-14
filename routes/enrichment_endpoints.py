@@ -1,5 +1,7 @@
 """
-Эндпоинты для обогащения данных постингов.
+Эндпоинты для управления процессом обогащения данных (Enrichment).
+Позволяет вручную или автоматически подгружать детальную информацию о заказах
+(товары, комиссии, выплаты) из Ozon API.
 """
 import os
 import asyncio
@@ -17,15 +19,17 @@ logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/orders/fbo", tags=["enrichment"])
 
-# Конфигурация
+# Настройка окна проверки недавних заказов
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
 
 
 class EnrichPostingIn(BaseModel):
+    """Схема для обогащения одного отправления."""
     posting_number: str
 
 
 class EnrichOrderIn(BaseModel):
+    """Схема для обогащения целого заказа (всех его постингов)."""
     order_number: str
 
 
@@ -36,15 +40,15 @@ async def enrich_posting(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Обогатить информацию по конкретному постингу из Ozon API.
-    Использует Ozon credentials текущего пользователя.
+    Принудительно обогатить информацию по конкретному номеру отправления.
+    Полезно, если по какому-то заказу не подгрузились комиссии.
     """
     try:
-        # enrich_posting_from_ozon асинхронная, вызываем напрямую
+        # Вызываем логику обогащения, которая сходит в Ozon API
         result = await enrich_posting_from_ozon(item.posting_number, current_user, db)
         return result
     except Exception as e:
-        logger.error(f"Ошибка обогащения постинга {item.posting_number} для пользователя {current_user.id}: {e}")
+        logger.error(f"Ошибка обогащения {item.posting_number}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -55,21 +59,20 @@ async def enrich_order(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Обогатить информацию по всем постингам заказа.
+    Находит все отправления (Postings), связанные с этим заказом,
+    и запускает обогащение для каждого из них.
     """
-    # SQL-запросы в асинхронной функции оборачиваем в to_thread или делаем функцию синхронной.
-    # Здесь удобнее сделать синхронной, но enrich_posting_from_ozon — асинхронная.
-    # Поэтому оставляем async def и используем to_thread для запросов.
-    
+
     def get_postings():
-        # Собираем постинги из нормализованной таблицы
+        """Внутренняя функция для поиска всех связанных номеров постингов."""
+        # 1. Поиск в основной таблице постингов
         postings_norm = db.query(OrderPosting.posting_number).filter(
             OrderPosting.order_number == item.order_number,
             OrderPosting.user_id == current_user.id
         ).all()
         p_norm = [p[0] for p in postings_norm]
 
-        # Собираем легаси постинги
+        # 2. Поиск в сырой таблице заказов (на случай, если постинги еще не созданы)
         prefix = item.order_number + "-"
         legacy = db.query(Order.posting_number).filter(
             Order.posting_number.like(f"{prefix}%"),
@@ -79,6 +82,7 @@ async def enrich_order(
 
         return sorted(set(p_norm) | set(p_legacy))
 
+    # Выполняем поиск в потоке, так как SQLAlchemy здесь синхронна
     postings = await asyncio.to_thread(get_postings)
     
     results = []
@@ -87,7 +91,6 @@ async def enrich_order(
             res = await enrich_posting_from_ozon(pn, current_user, db)
             results.append(res)
         except Exception as e:
-            logger.warning(f"Ошибка обогащения постинга {pn}: {e}")
             results.append({"posting_number": pn, "error": str(e)})
     
     return {
@@ -104,13 +107,14 @@ async def enrich_recent(
     db: Session = Depends(get_db)
 ):
     """
-    Обогатить недавно созданные постинги текущего пользователя.
+    Массовое обогащение последних заказов (например, за последние 48 часов).
+    Помогает "докачать" данные, если фоновая задача что-то пропустила.
     """
-    # Заменяем utcnow
     since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
     since_iso = since_dt.isoformat() + 'Z'
     
     def find_targets():
+        # Собираем номера постингов из всех таблиц, где они могут быть
         fresh_orders = db.query(Order.posting_number).filter(
             Order.created_at >= since_iso,
             Order.user_id == current_user.id
@@ -131,9 +135,8 @@ async def enrich_recent(
         try:
             res = await enrich_posting_from_ozon(pn, current_user, db)
             results.append(res)
-        except Exception as e:
-            logger.warning(f"Ошибка обогащения недавнего постинга {pn}: {e}")
-            results.append({"posting_number": pn, "error": str(e)})
+        except Exception:
+            results.append({"posting_number": pn, "status": "error"})
     
     return {"processed": len(targets), "results": results}
 
@@ -145,7 +148,9 @@ async def enrich_changed_recent(
     db: Session = Depends(get_db)
 ):
     """
-    Обогатить постинги, у которых изменился статус.
+    Интеллектуальное обогащение: ищет заказы, у которых изменился статус
+    (например, с 'доставляется' на 'доставлено') и обновляет финансовые данные.
+    Это важно, так как комиссии могут измениться при финальной доставке.
     """
     since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
     since_iso = since_dt.isoformat() + 'Z'
@@ -159,9 +164,10 @@ async def enrich_changed_recent(
         candidates = []
         for r in recent_orders:
             pn = r.posting_number
-            if not valid_posting_number(pn):
-                continue
+            if not valid_posting_number(pn): continue
 
+            # Сравниваем статус в сырой таблице (куда всё качается быстро)
+            # со статусом в нормализованной таблице
             row = db.query(OrderPosting).filter(
                 OrderPosting.posting_number == pn,
                 OrderPosting.user_id == current_user.id
@@ -178,8 +184,7 @@ async def enrich_changed_recent(
         try:
             res = await enrich_posting_from_ozon(pn, current_user, db)
             results.append(res)
-        except Exception as e:
-            logger.warning(f"Ошибка обогащения измененного постинга {pn}: {e}")
-            results.append({"posting_number": pn, "error": str(e)})
+        except Exception:
+            results.append({"posting_number": pn, "status": "error"})
     
     return {"processed": len(targets), "results": results}

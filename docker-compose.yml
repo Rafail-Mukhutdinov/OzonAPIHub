@@ -1,24 +1,50 @@
 version: '3.8'
 
 services:
+  # -----------------------------------------------------------------------
+  # Redis (Для Rate Limiting и Кеширования)
+  # -----------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ozon_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # -----------------------------------------------------------------------
+  # База данных PostgreSQL
+  # -----------------------------------------------------------------------
   db:
     image: postgres:16-alpine
     container_name: ozon_db
     restart: always
     environment:
-      POSTGRES_USER: ozon_user
-      POSTGRES_PASSWORD: SecurePass2024!
-      POSTGRES_DB: ozon_saas
+      # Используем подстановку из .env, но оставляем значения по умолчанию
+      # на случай, если .env файл не был создан (удобно для локального старта)
+      POSTGRES_USER: ${POSTGRES_USER:-ozon_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SecurePass2024!}
+      POSTGRES_DB: ${POSTGRES_DB:-ozon_saas}
+    env_file:
+      - .env
     ports:
-      - "5432:5432"
+      - "5432:5432" # Пробрасываем порт для доступа к БД с хост-машины (например, через DBeaver)
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data # Сохраняем данные БД при перезапуске контейнера
     healthcheck:
+      # Проверяем, готова ли БД принимать подключения, прежде чем запускать бэкенд
       test: ["CMD-SHELL", "pg_isready -U ozon_user -d ozon_saas"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  # -----------------------------------------------------------------------
+  # Бэкенд (FastAPI)
+  # -----------------------------------------------------------------------
   backend:
     build:
       context: .
@@ -27,17 +53,24 @@ services:
     restart: on-failure
     depends_on:
       db:
-        condition: service_healthy
+        condition: service_healthy # Ждем успешного прохождения healthcheck базы данных
+      redis:
+        condition: service_healthy # Ждем запуска Redis
     ports:
       - "8080:8080"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://ozon_user:SecurePass2024!@db:5432/ozon_saas
+      # Собираем строку подключения к БД из переменных окружения
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-ozon_user}:${POSTGRES_PASSWORD:-SecurePass2024!}@db:5432/${POSTGRES_DB:-ozon_saas}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - INIT_DB_ON_STARTUP=true
     volumes:
       - ./logs:/app/logs  # Пробрасываем папку логов на хост
 
+  # -----------------------------------------------------------------------
+  # Фронтенд (Flutter Web)
+  # -----------------------------------------------------------------------
   frontend:
     build:
       context: .

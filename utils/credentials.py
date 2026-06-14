@@ -23,29 +23,32 @@ def get_user_active_credentials(db: Session, user: User) -> Tuple[str, str]:
     Raises:
         HTTPException: Если у пользователя нет активных ключей
     """
-    # Ищем активный набор ключей
+    # Ищем набор ключей, явно помеченный пользователем как активный (is_active=True)
     active_cred = db.query(OzonCredential).filter(
         OzonCredential.user_id == user.id,
         OzonCredential.is_active == True
     ).first()
     
     if not active_cred:
-        # Если нет активного, пробуем взять любой первый
+        # Fallback: Если активного нет (например, только что добавили первый ключ),
+        # берем самый первый найденный ключ этого пользователя
         active_cred = db.query(OzonCredential).filter(
             OzonCredential.user_id == user.id
         ).first()
         
         if not active_cred:
+            # Если ключей вообще нет - не пускаем дальше, отдаем 400
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="У вас не настроены Ozon API ключи. Перейдите в Настройки и добавьте ключи."
             )
         
-        # Активируем первый найденный
+        # Автоматически делаем этот первый ключ активным для будущих запросов
         active_cred.is_active = True
         db.commit()
     
-    # Расшифровываем credentials
+    # Расшифровываем credentials "на лету" с использованием Fernet (ENCRYPTION_KEY из .env)
+    # В БД ключи хранятся в зашифрованном виде, чтобы в случае утечки дампа БД злоумышленник ничего не получил
     try:
         client_id = decrypt_credential(active_cred.client_id_encrypted)
         api_key = decrypt_credential(active_cred.api_key_encrypted)

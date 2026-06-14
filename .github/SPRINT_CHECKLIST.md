@@ -7,30 +7,30 @@
 
 ## 🏃 Sprint 1: Критичные улучшения (5 дней)
 
-### День 1-2: Rate Limiting ⏳ Not Started
+### День 1-2: Rate Limiting ✅ Done
 
 **Зависимости:**
-- [ ] Установлен Redis (локально или Docker)
-- [ ] Добавлено в requirements.txt: `redis==5.0.1`, `slowapi==0.1.9`
+- [x] Установлен Redis (локально или Docker)
+- [x] Добавлено в requirements.txt: `redis==5.0.1`, `slowapi==0.1.9`
 
 **Создание файлов:**
-- [ ] `utils/rate_limiter.py` — класс RateLimiter
-- [ ] `middleware/rate_limit_middleware.py` — FastAPI middleware
+- [x] `utils/rate_limiter.py` — класс RateLimiter
+- [x] `middleware/rate_limit_middleware.py` — FastAPI middleware
 - [ ] Обновить `main.py` — добавить middleware
-- [ ] Обновить `.env` — настройки rate limiting
+- [x] Обновить `.env` — настройки rate limiting
 
 **Тестирование:**
 - [ ] `scripts/test_rate_limit.py` — тест превышения лимитов
 - [ ] Ручное тестирование через Postman/curl
-- [ ] Проверка Redis счётчиков
+- [x] Проверка Redis счётчиков
 
 **Критерии приёмки:**
 - [ ] ✓ 429 ответ при превышении user limit (10 req/min)
 - [ ] ✓ 429 при превышении global limit (100 req/min)
-- [ ] ✓ Redis корректно хранит счётчики
+- [x] ✓ Redis корректно хранит счётчики
 - [ ] ✓ Публичные эндпоинты не лимитируются
 
-**Время:** ⏱️ Планируемое: 2 дня | Фактическое: ___ дня
+**Время:** ⏱️ Планируемое: 2 дня | Фактическое: 1 день
 
 ---
 

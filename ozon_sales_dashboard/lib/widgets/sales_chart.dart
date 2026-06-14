@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 
+/**
+ * SalesChart — сложный виджет для визуализации динамики продаж.
+ * Использует библиотеку fl_chart для построения столбчатых диаграмм (BarChart).
+ * Позволяет сравнивать несколько товаров по количеству или сумме выплат.
+ */
 class SalesChart extends StatefulWidget {
-  final Map<String, List<Map<String, dynamic>>> chartDataByItem;
-  final List<String> selectedItems; // "offer_id|sku"
-  final Function(String) onRemoveItem;
+  final Map<String, List<Map<String, dynamic>>> chartDataByItem; // Данные от API
+  final List<String> selectedItems;                              // ID выбранных SKU
+  final Function(String) onRemoveItem;                           // Удаление товара из графика
   
   const SalesChart({
     super.key,
@@ -18,9 +23,10 @@ class SalesChart extends StatefulWidget {
 }
 
 class _SalesChartState extends State<SalesChart> {
-  String selectedMetric = 'quantity'; // 'quantity' или 'payout'
+  // Выбранная метрика для отображения: 'quantity' (штуки) или 'payout' (деньги)
+  String selectedMetric = 'quantity'; 
   
-  // Цвета для разных артикулов
+  // Палитра цветов для различения разных товаров на графике
   static const List<Color> chartColors = [
     Colors.blueAccent,
     Colors.redAccent,
@@ -38,7 +44,7 @@ class _SalesChartState extends State<SalesChart> {
       return const Center(child: Text('Нет данных для выбранных товаров'));
     }
 
-    // Получаем все месяцы из всех наборов данных
+    // 1. Формируем список всех уникальных месяцев (ось X)
     final allMonths = <String>[];
     for (final data in widget.chartDataByItem.values) {
       for (final item in data) {
@@ -48,16 +54,14 @@ class _SalesChartState extends State<SalesChart> {
         }
       }
     }
-    allMonths.sort();
+    allMonths.sort(); // Сортируем месяцы по порядку (YYYY-MM)
 
     if (allMonths.isEmpty) {
       return const Center(child: Text('Нет данных'));
     }
 
-    // Построение графика
+    // 2. Определяем максимальное значение для масштабирования оси Y
     final isQuantity = selectedMetric == 'quantity';
-    
-    // Максимальное значение для оси Y
     double maxValue = 0;
     for (final data in widget.chartDataByItem.values) {
       for (final item in data) {
@@ -68,7 +72,8 @@ class _SalesChartState extends State<SalesChart> {
       }
     }
 
-    // Группы столбцов для каждого месяца
+    // 3. Формируем группы столбцов (BarChartGroupData)
+    // Каждая группа — это один месяц, внутри которого несколько столбцов (по числу выбранных SKU)
     final barGroups = allMonths.asMap().entries.map((entry) {
       final monthIndex = entry.key;
       final month = entry.value;
@@ -79,7 +84,7 @@ class _SalesChartState extends State<SalesChart> {
         final itemKey = widget.selectedItems[itemIndex];
         final data = widget.chartDataByItem[itemKey] ?? [];
         
-        // Найдём значение для этого месяца
+        // Ищем значение для конкретного месяца в данных товара
         final itemForMonth = data.firstWhere(
           (item) => item['month'] == month,
           orElse: () => {'quantity_sold': 0, 'total_payout': 0},
@@ -93,7 +98,7 @@ class _SalesChartState extends State<SalesChart> {
           BarChartRodData(
             toY: value,
             color: chartColors[itemIndex % chartColors.length],
-            width: 12,
+            width: 12, // Ширина одного столбика
             borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
           ),
         );
@@ -109,7 +114,7 @@ class _SalesChartState extends State<SalesChart> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Выбранные товары с кнопками удаления
+          // Блок со списком выбранных товаров (Chips)
           Padding(
             padding: const EdgeInsets.all(16),
             child: Wrap(
@@ -119,7 +124,6 @@ class _SalesChartState extends State<SalesChart> {
                 ...widget.selectedItems.asMap().entries.map((entry) {
                   final colorIndex = entry.key;
                   final itemKey = entry.value;
-                  // itemKey формата "offer_id|sku"
                   final parts = itemKey.split('|');
                   final displayLabel = parts[0].isNotEmpty ? parts[0] : parts[1];
                   return Chip(
@@ -133,39 +137,26 @@ class _SalesChartState extends State<SalesChart> {
             ),
           ),
 
-          // Выбор метрики
+          // Переключатель метрики (Кол-во / Сумма)
           Padding(
             padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                const Text(
-                  'Метрика: ',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
+                const Text('Метрика: ', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(width: 12),
                 SegmentedButton<String>(
                   segments: const [
-                    ButtonSegment(
-                      value: 'quantity',
-                      label: Text('Кол-во'),
-                    ),
-                    ButtonSegment(
-                      value: 'payout',
-                      label: Text('Сумма (₽)'),
-                    ),
+                    ButtonSegment(value: 'quantity', label: Text('Кол-во шт.')),
+                    ButtonSegment(value: 'payout', label: Text('Сумма ₽')),
                   ],
                   selected: <String>{selectedMetric},
-                  onSelectionChanged: (newSelection) {
-                    setState(() {
-                      selectedMetric = newSelection.first;
-                    });
-                  },
+                  onSelectionChanged: (newSelection) => setState(() => selectedMetric = newSelection.first),
                 ),
               ],
             ),
           ),
 
-          // График
+          // Виджет графика FL Chart
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: SizedBox(
@@ -173,23 +164,19 @@ class _SalesChartState extends State<SalesChart> {
               child: BarChart(
                 BarChartData(
                   alignment: BarChartAlignment.spaceAround,
-                  maxY: maxValue > 0 ? maxValue * 1.1 : 10,
+                  maxY: maxValue > 0 ? maxValue * 1.1 : 10, // Запас 10% сверху
                   barTouchData: BarTouchData(
                     enabled: true,
                     touchTooltipData: BarTouchTooltipData(
                       getTooltipColor: (_) => Colors.grey.shade800,
                       tooltipPadding: const EdgeInsets.all(8),
-                      tooltipMargin: 8,
                     ),
                   ),
                   titlesData: FlTitlesData(
                     show: true,
-                    rightTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false),
-                    ),
-                    topTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false),
-                    ),
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    // Настройка меток по оси X (Месяцы)
                     bottomTitles: AxisTitles(
                       sideTitles: SideTitles(
                         showTitles: true,
@@ -198,10 +185,7 @@ class _SalesChartState extends State<SalesChart> {
                           if (index >= 0 && index < allMonths.length) {
                             return Padding(
                               padding: const EdgeInsets.only(top: 8),
-                              child: Text(
-                                allMonths[index],
-                                style: const TextStyle(fontSize: 10),
-                              ),
+                              child: Text(allMonths[index], style: const TextStyle(fontSize: 10)),
                             );
                           }
                           return const Text('');
@@ -209,23 +193,16 @@ class _SalesChartState extends State<SalesChart> {
                         reservedSize: 28,
                       ),
                     ),
+                    // Настройка меток по оси Y (Значения)
                     leftTitles: AxisTitles(
                       sideTitles: SideTitles(
                         showTitles: true,
-                        getTitlesWidget: (double value, TitleMeta meta) {
-                          if (value == meta.max) {
-                            return const Text('');
-                          }
-                          return Text(
-                            '${value.toInt()}',
-                            style: const TextStyle(fontSize: 10),
-                          );
-                        },
                         reservedSize: 40,
+                        getTitlesWidget: (value, meta) => Text('${value.toInt()}', style: const TextStyle(fontSize: 10)),
                       ),
                     ),
                   ),
-                  gridData: const FlGridData(show: true),
+                  gridData: const FlGridData(show: true, drawVerticalLine: false),
                   borderData: FlBorderData(show: true),
                   barGroups: barGroups,
                 ),
@@ -233,23 +210,16 @@ class _SalesChartState extends State<SalesChart> {
             ),
           ),
 
-          // Легенда
+          // Легенда графика (список соответствий цветов и товаров)
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Легенда:',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                const Text('Легенда:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 Wrap(
-                  spacing: 16,
-                  runSpacing: 8,
+                  spacing: 16, runSpacing: 8,
                   children: [
                     ...widget.selectedItems.asMap().entries.map((entry) {
                       final colorIndex = entry.key;
@@ -259,25 +229,13 @@ class _SalesChartState extends State<SalesChart> {
                       return Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Container(
-                            width: 16,
-                            height: 16,
-                            decoration: BoxDecoration(
-                              color: chartColors[colorIndex % chartColors.length],
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
+                          Container(width: 16, height: 16, decoration: BoxDecoration(color: chartColors[colorIndex % chartColors.length], borderRadius: BorderRadius.circular(2))),
                           const SizedBox(width: 8),
                           Text(displayLabel),
                         ],
                       );
                     }).toList(),
                   ],
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Период: ${allMonths.first} - ${allMonths.last}',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ],
             ),

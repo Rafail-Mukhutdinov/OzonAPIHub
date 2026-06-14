@@ -1,3 +1,9 @@
+"""
+Модуль синхронизации данных с Ozon API.
+Содержит логику фонового обновления заказов, первичной загрузки истории (backfill)
+и функции сохранения данных в базу.
+"""
+
 import os
 import logging
 import asyncio
@@ -13,20 +19,22 @@ from utils.logging_config import log_user_event
 logger = logging.getLogger("OzonAPIHub")
 
 # Настройки из .env
-RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
-ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 'yes')
-ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
-INITIAL_WINDOW_DAYS = int(os.getenv('INITIAL_WINDOW_DAYS', '365'))
-HISTORY_WINDOW_DAYS = int(os.getenv('HISTORY_WINDOW_DAYS', '30'))
+RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))  # Глубина обычной проверки (последние 48 часов)
+ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 'yes') # Подгружать ли детальные данные сразу
+ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))     # Количество параллельных запросов на обогащение
+INITIAL_WINDOW_DAYS = int(os.getenv('INITIAL_WINDOW_DAYS', '365')) # Глубина первой загрузки (1 год)
+HISTORY_WINDOW_DAYS = int(os.getenv('HISTORY_WINDOW_DAYS', '30'))  # Размер порции данных при загрузке истории (30 дней)
 
 
 def _get_now_utc():
+    """Возвращает текущее время UTC без TZ."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def background_sync_loop(app, interval_seconds: int = 300):
     """
-    Фоновый цикл синхронизации для ВСЕХ пользователей.
+    Бесконечный цикл для автоматической синхронизации всех активных пользователей.
+    Запускается при старте приложения.
     """
     logger.info(f"Фоновая синхронизация запущена (интервал={interval_seconds}с)")
     try:
@@ -34,6 +42,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
             try:
                 db = SessionLocal()
                 try:
+                    # Находим всех пользователей, у которых есть активные API ключи
                     users_with_creds = db.query(User).join(OzonCredential).filter(
                         User.is_active == True,
                         OzonCredential.is_active == True
@@ -45,6 +54,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
                         logger.info(f"Начало цикла синхронизации для {len(users_with_creds)} пользователей")
                         for user in users_with_creds:
                             try:
+                                # Синхронизируем заказы для каждого пользователя по очереди
                                 await sync_user_orders(user, db)
                             except Exception as e:
                                 error_msg = f"Ошибка синхронизации для user_id={user.id}: {e}"
@@ -56,6 +66,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
             except Exception as e:
                 logger.error(f"Критическая ошибка фоновой синхронизации: {e}")
             
+            # Ждем до следующего цикла
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
         logger.info("Фоновая синхронизация остановлена")
@@ -64,7 +75,7 @@ async def background_sync_loop(app, interval_seconds: int = 300):
 
 async def sync_user_orders(user: User, db: Session):
     """
-    Синхронизирует заказы для одного пользователя.
+    Синхронизирует заказы для ОДНОГО пользователя (проверяет только недавнее окно времени).
     """
     try:
         active_cred = db.query(OzonCredential).filter(
@@ -77,6 +88,7 @@ async def sync_user_orders(user: User, db: Session):
 
         log_user_event(user.id, f"Запуск плановой синхронизации (окно {RECENT_WINDOW_HOURS}ч)")
 
+        # Дешифруем ключи доступа
         client_id = decrypt_credential(active_cred.client_id_encrypted)
         api_key = decrypt_credential(active_cred.api_key_encrypted)
         
@@ -86,6 +98,7 @@ async def sync_user_orders(user: User, db: Session):
             log_user_event(user.id, error_msg, "error")
             return
         
+        # Определяем временной диапазон для проверки обновлений
         now = _get_now_utc()
         since_dt = now - timedelta(hours=RECENT_WINDOW_HOURS)
         since_iso = since_dt.replace(microsecond=0).isoformat() + 'Z'
@@ -99,6 +112,7 @@ async def sync_user_orders(user: User, db: Session):
         offset = 0
         limit = 50
         
+        # Пагинация: качаем заказы порциями по 50 штук
         while True:
             data = await ozon_fbo_list_async(
                 client_id=client_id,
@@ -116,6 +130,7 @@ async def sync_user_orders(user: User, db: Session):
             total_fetched += len(items)
             for order_data in items:
                 try:
+                    # Сохраняем в таблицу Orders (сырые данные)
                     saved = save_order_for_user(db, user, order_data)
                     if saved:
                         total_saved += 1
@@ -131,6 +146,7 @@ async def sync_user_orders(user: User, db: Session):
 
         log_user_event(user.id, f"Синхронизация завершена. Получено: {total_fetched}, Новых: {total_saved}")
 
+        # Если включено обогащение, запускаем подгрузку деталей для новых заказов
         if ENRICH_ON_FETCH and new_postings:
             log_user_event(user.id, f"Запуск обогащения для {len(new_postings)} новых постингов")
             await run_enrichment_batch(list(new_postings), user.id)
@@ -143,7 +159,8 @@ async def sync_user_orders(user: User, db: Session):
 
 def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
     """
-    Сохраняет заказ для пользователя.
+    Сохраняет или обновляет запись заказа в таблице Orders.
+    Возвращает True, если это был новый заказ, и False, если обновление старого.
     """
     posting_number = order_data.get('posting_number')
     if not posting_number:
@@ -154,12 +171,14 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
         status = order_data.get('status')
         created_at = order_data.get('created_at')
 
+        # Проверяем наличие заказа в базе
         existing = db.query(Order).filter(
             Order.user_id == user.id,
             Order.posting_number == posting_number
         ).first()
 
         if existing:
+            # Обновляем существующий (если сменился статус или данные)
             existing.order_id = order_id
             existing.status = status
             existing.updated_at = created_at
@@ -167,6 +186,7 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
             db.commit()
             return False
         else:
+            # Создаем новый
             new_order = Order(
                 user_id=user.id,
                 order_id=order_id,
@@ -189,7 +209,8 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
                           with_analytics: bool, with_financial: bool, with_legal: bool,
                           user_id: int, db: Session) -> dict:
     """
-    Синхронная функция для вызова из API (обычно через to_thread).
+    Синхронная обертка над API Ozon.
+    Используется для ручного запроса заказов за конкретный период.
     """
     try:
         user = db.query(User).filter(User.id == user_id).first()
@@ -216,6 +237,7 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
         current_offset = offset
 
         while True:
+            # Выполняем асинхронный запрос в синхронном контексте (используется asyncio.run)
             response = asyncio.run(ozon_fbo_list_async(
                 client_id=client_id,
                 api_key=api_key,
@@ -254,14 +276,16 @@ def fetch_and_save_orders(since: str, to: str, status: str, limit: int, offset: 
 
 async def run_enrichment_batch(posting_numbers: list[str], user_id: int, force_refresh: bool = False) -> int:
     """
-    Обогащение пачки постингов.
+    Запускает процесс обогащения (подгрузки деталей) для списка заказов.
+    Использует семафор для ограничения количества одновременных запросов к API.
     """
     sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
 
     async def _run_one(pn: str):
         async with sem:
-            async_db = SessionLocal()
+            async_db = SessionLocal() # Каждой задаче - своя сессия БД
             try:
+                # Если не форсируем обновление, проверяем, нет ли уже товаров этого заказа в базе
                 if not force_refresh:
                     exists = async_db.query(OrderProduct).filter(
                         OrderProduct.posting_number == pn,
@@ -275,71 +299,109 @@ async def run_enrichment_batch(posting_numbers: list[str], user_id: int, force_r
             finally:
                 async_db.close()
 
+    # Фильтруем пустые номера
     targets = [pn for pn in posting_numbers if valid_posting_number(pn)]
     if not targets: return 0
 
+    # Запускаем всё параллельно
     await asyncio.gather(*(_run_one(pn) for pn in targets), return_exceptions=True)
     return len(targets)
 
 
 async def initial_backfill_for_user(user: User, db: Session) -> dict:
     """
-    Первичная загрузка.
+    Процесс ПЕРВИЧНОЙ загрузки всей истории заказов пользователя (например, за последний год).
+    Разбивает большой период на маленькие окна (по 30 дней) для стабильности.
     """
-    sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
-    if not sync_status:
-        sync_status = SyncStatus(user_id=user.id)
-        db.add(sync_status)
+    # Безопасное получение ID (даже если объект отсоединен от сессии)
+    try:
+        user_id = user if isinstance(user, int) else user.__dict__.get('id')
+    except Exception as e:
+        logger.error(f"[BACKFILL] Фатальная ошибка извлечения user_id: {e}")
+        return {"error": "no user_id"}
+    
+    logger.info(f"=== [BACKFILL] ЗАПУСК ЗАДАЧИ ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id} ===")
+    
+    if not user_id:
+        return {"error": "no user_id"}
 
-    sync_status.is_syncing = True
-    sync_status.status_message = "Идет загрузка данных..."
-    sync_status.sync_started_at = _get_now_utc()
-    db.commit()
-
-    log_user_event(user.id, f"Начало первичной загрузки за {INITIAL_WINDOW_DAYS} дней")
+    # Создаем независимую сессию для долгой фоновой задачи
+    from db.database import SessionLocal
+    bg_db = SessionLocal()
 
     try:
+        # Инициализируем статус синхронизации в БД
+        sync_status = bg_db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+        if not sync_status:
+            sync_status = SyncStatus(user_id=user_id)
+            bg_db.add(sync_status)
+
+        sync_status.is_syncing = True
+        sync_status.status_message = "Подготовка базы к загрузке..."
+        sync_status.sync_started_at = _get_now_utc()
+        bg_db.commit()
+
+        log_user_event(user_id, f"Начало первичной загрузки за {INITIAL_WINDOW_DAYS} дней")
+
         now = _get_now_utc()
-        start_dt = now - timedelta(days=INITIAL_WINDOW_DAYS)
-        window_start = start_dt
+        window_start = now - timedelta(days=INITIAL_WINDOW_DAYS)
         total_saved = 0
 
+        # Цикл по временным окнам
         while window_start < now:
             window_end = min(window_start + timedelta(days=HISTORY_WINDOW_DAYS), now)
             since_iso = window_start.replace(microsecond=0).isoformat() + 'Z'
             to_iso = window_end.replace(microsecond=0).isoformat() + 'Z'
 
-            log_user_event(user.id, f"Загрузка окна: {since_iso} -> {to_iso}")
+            # Обновляем прогресс для фронтенда
+            sync_status.status_message = f"Загрузка: {window_start.strftime('%d.%m.%Y')} - {window_end.strftime('%d.%m.%Y')}..."
+            bg_db.commit()
+            
+            logger.info(f"[BACKFILL] Текущий прогресс: {sync_status.status_message}")
+            await asyncio.sleep(0.5) # Небольшая пауза для снижения нагрузки
 
+            # Выполняем запрос заказов (в отдельном потоке, чтобы не блокировать цикл событий)
             result = await asyncio.to_thread(
                 fetch_and_save_orders,
-                since_iso, to_iso, "", 50, 0, True, True, False, user.id, db
+                since_iso, to_iso, "", 50, 0, True, True, False, user_id, bg_db
             )
 
             orders = result.get("orders") or []
             total_saved += result.get("saved") or 0
 
+            # Обогащаем (подгружаем комиссии) для каждого окна сразу
             if ENRICH_ON_FETCH and orders:
                 pns = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
-                await run_enrichment_batch(pns, user.id)
+                if pns:
+                    sync_status.status_message = f"Загрузка комиссий для {len(pns)} заказов..."
+                    bg_db.commit()
+                    await run_enrichment_batch(pns, user_id)
+
+            sync_status.total_records_synced = total_saved
+            bg_db.commit()
 
             window_start = window_end + timedelta(seconds=1)
         
+        # Завершение
         sync_status.is_syncing = False
         sync_status.status_message = "completed"
         sync_status.sync_completed_at = _get_now_utc()
-        sync_status.total_records_synced = total_saved
-        db.commit()
+        bg_db.commit()
 
-        log_user_event(user.id, f"Первичная загрузка завершена успешно. Всего: {total_saved}")
+        log_user_event(user_id, f"Первичная загрузка завершена успешно. Всего: {total_saved}")
         return {"saved": total_saved}
 
     except Exception as e:
+        # Обработка ошибок синхронизации
         error_msg = f"Критическая ошибка первичной загрузки: {e}"
-        logger.error(f"Initial sync failed for user {user.id}: {e}")
-        log_user_event(user.id, error_msg, "error")
-
-        sync_status.is_syncing = False
-        sync_status.status_message = f"error: {str(e)[:50]}"
-        db.commit()
+        logger.error(f"[BACKFILL] Initial sync failed for user {user_id}: {e}")
+        try:
+            err_sync = bg_db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+            if err_sync:
+                err_sync.is_syncing = False
+                err_sync.status_message = f"error: {str(e)[:50]}"
+                bg_db.commit()
+        except: pass
         raise
+    finally:
+        bg_db.close()

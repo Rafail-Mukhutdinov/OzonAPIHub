@@ -34,11 +34,11 @@ pip install -r requirements.txt
 
 ```sql
 -- Создание БД и пользователя
-CREATE DATABASE ozondb;
-CREATE USER ozonuser WITH PASSWORD 'ozonpass';
-GRANT ALL PRIVILEGES ON DATABASE ozondb TO ozonuser;
-\c ozondb
-GRANT ALL ON SCHEMA public TO ozonuser;
+CREATE DATABASE ozon_saas;
+CREATE USER ozon_user WITH PASSWORD 'SecurePass2024!';
+GRANT ALL PRIVILEGES ON DATABASE ozon_saas TO ozon_user;
+\c ozon_saas
+GRANT ALL ON SCHEMA public TO ozon_user;
 ```
 
 ---

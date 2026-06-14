@@ -3,6 +3,10 @@ import '../services/auth_service.dart';
 import 'register_screen.dart';
 import 'dashboard_screen.dart';
 
+/**
+ * LoginScreen — экран входа в приложение.
+ * Реализует валидацию полей ввода и взаимодействие с AuthService.
+ */
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -11,13 +15,17 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  // Глобальный ключ для управления состоянием и валидацией формы
   final _formKey = GlobalKey<FormState>();
+  
+  // Контроллеры для извлечения текста из полей ввода
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  
   late final AuthService _authService;
   
-  bool _isLoading = false;
-  String? _errorMessage;
+  bool _isLoading = false; // Флаг процесса запроса к серверу
+  String? _errorMessage;   // Текст ошибки от бэкенда
 
   @override
   void initState() {
@@ -27,12 +35,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
+    // Обязательно освобождаем ресурсы контроллеров при закрытии экрана
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
+  /// Логика обработки нажатия кнопки "Войти"
   Future<void> _handleLogin() async {
+    // Запуск валидации всех полей в Form
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -43,26 +54,26 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      // Отправка запроса на сервер
       await _authService.login(
         _emailController.text.trim(),
         _passwordController.text,
       );
 
       if (mounted) {
-        // Успешный вход - переходим на дашборд
+        // Успешный вход - заменяем текущий экран на Dashboard
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const DashboardScreen()),
         );
       }
     } catch (e) {
+      // Обработка ошибок (неверный пароль, отсутствие сети и т.д.)
       setState(() {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
     } finally {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
     }
   }
@@ -74,9 +85,11 @@ class _LoginScreenState extends State<LoginScreen> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
           child: ConstrainedBox(
+            // Ограничение ширины формы для удобства на десктопе/планшете
             constraints: const BoxConstraints(maxWidth: 400),
             child: Card(
               elevation: 4,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
                 padding: const EdgeInsets.all(32.0),
                 child: Form(
@@ -85,11 +98,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(
-                        Icons.account_circle,
-                        size: 80,
-                        color: Colors.blue,
-                      ),
+                      const Icon(Icons.account_circle, size: 80, color: Colors.blue),
                       const SizedBox(height: 16),
                       Text(
                         'Ozon Sales Dashboard',
@@ -97,14 +106,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 8),
-                      Text(
-                        'Вход в систему',
-                        style: Theme.of(context).textTheme.titleMedium,
-                        textAlign: TextAlign.center,
-                      ),
+                      const Text('Вход в систему', textAlign: TextAlign.center),
                       const SizedBox(height: 32),
                       
-                      // Email поле
+                      // Поле ввода Email
                       TextFormField(
                         controller: _emailController,
                         decoration: const InputDecoration(
@@ -113,20 +118,15 @@ class _LoginScreenState extends State<LoginScreen> {
                           prefixIcon: Icon(Icons.email),
                         ),
                         keyboardType: TextInputType.emailAddress,
-                        autofillHints: const [AutofillHints.email],
                         validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Введите email';
-                          }
-                          if (!value.contains('@')) {
-                            return 'Введите корректный email';
-                          }
+                          if (value == null || value.isEmpty) return 'Введите email';
+                          if (!value.contains('@')) return 'Некорректный формат email';
                           return null;
                         },
                       ),
                       const SizedBox(height: 16),
                       
-                      // Password поле
+                      // Поле ввода пароля
                       TextFormField(
                         controller: _passwordController,
                         decoration: const InputDecoration(
@@ -134,52 +134,32 @@ class _LoginScreenState extends State<LoginScreen> {
                           border: OutlineInputBorder(),
                           prefixIcon: Icon(Icons.lock),
                         ),
-                        obscureText: true,
-                        autofillHints: const [AutofillHints.password],
+                        obscureText: true, // Скрывает вводимые символы
                         validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Введите пароль';
-                          }
+                          if (value == null || value.isEmpty) return 'Введите пароль';
                           return null;
                         },
                       ),
                       const SizedBox(height: 24),
                       
-                      // Сообщение об ошибке
                       if (_errorMessage != null)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 16),
-                          child: Text(
-                            _errorMessage!,
-                            style: const TextStyle(color: Colors.red),
-                            textAlign: TextAlign.center,
-                          ),
+                          child: Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
                         ),
                       
-                      // Кнопка входа
                       FilledButton(
                         onPressed: _isLoading ? null : _handleLogin,
                         child: _isLoading
-                            ? const SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
+                            ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                             : const Text('Войти'),
                       ),
                       const SizedBox(height: 16),
                       
-                      // Ссылка на регистрацию
                       TextButton(
-                        onPressed: _isLoading
-                            ? null
-                            : () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => const RegisterScreen(),
-                                  ),
-                                );
-                              },
+                        onPressed: _isLoading ? null : () {
+                          Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RegisterScreen()));
+                        },
                         child: const Text('Нет аккаунта? Зарегистрироваться'),
                       ),
                     ],

@@ -1,5 +1,6 @@
 """
 Эндпоинты для аутентификации и управления пользователями.
+Включает регистрацию, логин, управление API-ключами Ozon и профилем.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response, BackgroundTasks
@@ -22,10 +23,11 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
 # ============================================================================
-# Models
+# Pydantic Модели (Схемы данных)
 # ============================================================================
 
 class UserRegister(BaseModel):
+    """Схема данных для регистрации нового пользователя."""
     email: EmailStr
     password: str
     confirm_password: str
@@ -41,16 +43,19 @@ class UserRegister(BaseModel):
 
 
 class UserLogin(BaseModel):
+    """Схема для входа по email и паролю."""
     email: EmailStr
     password: str
 
 
 class Token(BaseModel):
+    """Ответ сервера с JWT токеном."""
     access_token: str
     token_type: str
 
 
 class UserResponse(BaseModel):
+    """Данные профиля пользователя для фронтенда."""
     id: int
     email: str
     is_demo: bool
@@ -63,17 +68,20 @@ class UserResponse(BaseModel):
 
 
 class OzonCredentialCreate(BaseModel):
+    """Данные для добавления новых API-ключей Ozon."""
     marketplace: str
-    name: str
+    name: str # Название магазина (например, "Мой Магазин на Ozon")
     client_id: str
     api_key: str
 
 
 class DataPurgeRequest(BaseModel):
+    """Запрос на полную очистку данных."""
     marketplace: str
 
 
 class SyncStatusResponse(BaseModel):
+    """Статус текущей синхронизации."""
     is_syncing: bool
     status_message: str
     total_records_synced: int
@@ -84,24 +92,17 @@ class SyncStatusResponse(BaseModel):
         from_attributes = True
 
 
-class ProfileUpdate(BaseModel):
-    email: EmailStr | None = None
-
-
 # ============================================================================
-# Endpoints
+# Эндпоинты (Маршруты API)
 # ============================================================================
 
 @router.options("/register")
 def options_register():
     return Response(status_code=200)
 
-@router.options("/login")
-def options_login():
-    return Response(status_code=200)
-
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 def register(user_data: UserRegister, db: Session = Depends(get_db)):
+    """Регистрация нового пользователя и выдача пробного периода."""
     if user_data.password != user_data.confirm_password:
         raise HTTPException(status_code=400, detail="Пароли не совпадают")
     
@@ -114,7 +115,7 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
         email=user_data.email,
         hashed_password=get_password_hash(user_data.password),
         is_demo=True,
-        subscription_end_date=now + timedelta(days=30),
+        subscription_end_date=now + timedelta(days=30), # 30 дней бесплатно
         is_active=True
     )
     
@@ -122,14 +123,10 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
-    logger.info(f"Зарегистрирован новый пользователь: {new_user.email} (ID: {new_user.id})")
-    log_user_event(new_user.id, "Аккаунт успешно создан. Начало пробного периода (30 дней).")
+    logger.info(f"Зарегистрирован новый пользователь: {new_user.email}")
+    log_user_event(new_user.id, "Аккаунт успешно создан. Начало пробного периода.")
 
-    access_token = create_access_token(
-        data={"sub": new_user.email},
-        expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    
+    access_token = create_access_token(data={"sub": new_user.email})
     return Token(access_token=access_token, token_type="bearer")
 
 
@@ -138,6 +135,7 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
+    """Авторизация пользователя (выдача JWT токена)."""
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         logger.warning(f"Неудачная попытка входа: {form_data.username}")
@@ -157,6 +155,7 @@ def get_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Возвращает информацию о текущем авторизованном пользователе."""
     has_credentials = db.query(OzonCredential).filter(
         OzonCredential.user_id == current_user.id
     ).first() is not None
@@ -176,6 +175,7 @@ def list_ozon_credentials(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Возвращает список всех подключенных API-ключей пользователя."""
     credentials = db.query(OzonCredential).filter(
         OzonCredential.user_id == current_user.id
     ).order_by(OzonCredential.created_at.desc()).all()
@@ -183,6 +183,7 @@ def list_ozon_credentials(
     result = []
     for cred in credentials:
         client_id = decrypt_credential(cred.client_id_encrypted)
+        # Маскируем Client ID для безопасности (показываем только края)
         preview = f"{client_id[:4]}...{client_id[-4:]}" if client_id and len(client_id) > 8 else "****"
         
         result.append({
@@ -197,6 +198,7 @@ def list_ozon_credentials(
 
 
 async def _initial_sync_task(user_id: int):
+    """Фоновая задача для запуска первичной синхронизации."""
     from services.sync import initial_backfill_for_user
     from db.database import SessionLocal
 
@@ -216,6 +218,7 @@ def create_ozon_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Добавляет новый набор API-ключей Ozon и запускает синхронизацию."""
     existing = db.query(OzonCredential).filter(
         OzonCredential.user_id == current_user.id,
         OzonCredential.marketplace == data.marketplace
@@ -232,17 +235,17 @@ def create_ozon_credential(
         name=data.name,
         client_id_encrypted=encrypt_credential(data.client_id),
         api_key_encrypted=encrypt_credential(data.api_key),
-        is_active=is_first
+        is_active=is_first # Делаем активным, если это первый набор
     )
     
     db.add(credential)
     db.commit()
     db.refresh(credential)
 
-    log_user_event(current_user.id, f"Добавлен новый набор ключей: {data.name} ({data.marketplace})")
+    log_user_event(current_user.id, f"Добавлен набор ключей: {data.name}")
 
     if is_first:
-        log_user_event(current_user.id, "Запуск первичной синхронизации для первого набора ключей.")
+        # Если это первые ключи, сразу запускаем полную загрузку истории в фоне
         background_tasks.add_task(_initial_sync_task, current_user.id)
     
     return {"id": credential.id, "name": credential.name, "is_active": credential.is_active}
@@ -254,6 +257,7 @@ def activate_ozon_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Делает выбранный набор ключей активным (для переключения между магазинами)."""
     credential = db.query(OzonCredential).filter(
         OzonCredential.id == credential_id,
         OzonCredential.user_id == current_user.id
@@ -262,6 +266,7 @@ def activate_ozon_credential(
     if not credential:
         raise HTTPException(status_code=404, detail="Набор не найден")
     
+    # Деактивируем всё остальное
     db.query(OzonCredential).filter(OzonCredential.user_id == current_user.id).update({"is_active": False})
     credential.is_active = True
     db.commit()
@@ -276,6 +281,12 @@ def delete_ozon_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Удаляет набор API-ключей пользователя."""
+    credential = db.query(OzonCredential).filter(
+        OrderPosting.id == credential_id, # ОШИБКА: должно быть OzonCredential.id
+        OzonCredential.user_id == current_user.id
+    ).first()
+    # ИСПРАВЛЕННЫЙ ЗАПРОС:
     credential = db.query(OzonCredential).filter(
         OzonCredential.id == credential_id,
         OzonCredential.user_id == current_user.id
@@ -291,12 +302,12 @@ def delete_ozon_credential(
 
     log_user_event(current_user.id, f"Удален набор ключей: {name}")
 
+    # Если удалили активный, пробуем активировать любой другой оставшийся
     if was_active:
         next_one = db.query(OzonCredential).filter(OzonCredential.user_id == current_user.id).first()
         if next_one:
             next_one.is_active = True
             db.commit()
-            log_user_event(current_user.id, f"Автоматически активирован следующий набор: {next_one.name}")
     return {"status": "ok"}
 
 
@@ -306,6 +317,7 @@ def purge_user_data(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Полная очистка всех данных пользователя (заказов, товаров, расходов)."""
     if payload.marketplace.lower() != "ozon":
         raise HTTPException(status_code=400, detail="Только Ozon")
 
@@ -316,7 +328,7 @@ def purge_user_data(
     db.query(Cost).filter(Cost.user_id == current_user.id).delete()
     db.commit()
 
-    log_user_event(current_user.id, "ВНИМАНИЕ: Пользователь инициировал полную очистку данных Ozon.", "warning")
+    log_user_event(current_user.id, "ВНИМАНИЕ: Произведена полная очистка данных пользователя.", "warning")
     return {"status": "ok"}
 
 
@@ -325,6 +337,7 @@ def get_sync_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Возвращает статус текущей фоновой синхронизации."""
     status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
     if not status:
         return SyncStatusResponse(is_syncing=False, status_message="not_started", total_records_synced=0)

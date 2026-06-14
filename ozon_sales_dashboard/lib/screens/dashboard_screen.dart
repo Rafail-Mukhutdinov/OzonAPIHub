@@ -9,8 +9,12 @@ import '../widgets/sales_table.dart';
 import '../widgets/sales_chart.dart';
 import 'login_screen.dart';
 import 'settings_screen.dart';
-import 'shipments_screen.dart'; // Добавляем импорт нового экрана
+import 'shipments_screen.dart';
 
+/**
+ * DashboardScreen — главный экран приложения.
+ * Здесь отображается аналитика продаж, таблицы с товарами и графики динамики.
+ */
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
   
@@ -21,63 +25,69 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   late final OzonApiClient api;
 
-  // Глобальный режим просмотра: 'delivered' (Финансы) или 'shipped' (Отгрузки)
+  // Режим просмотра: 
+  // 'delivered' — Финансы (анализ только доставленных и оплаченных заказов)
+  // 'shipped' — Отгрузки (анализ всех заказов в работе)
   String viewMode = 'delivered';
 
+  // Временной диапазон фильтрации (по умолчанию — последние 2 дня)
   DateTime since = DateTime.now().subtract(const Duration(days: 2));
   DateTime to = DateTime.now();
+  
   bool loading = false;
-  List<Map<String, dynamic>> items = [];
-  Map<String, dynamic>? totals;
+  List<Map<String, dynamic>> items = []; // Список товаров из отчета
+  Map<String, dynamic>? totals;        // Итоговые суммы (выручка, заказы)
   String? error;
-  String? selectedStatus;
-  int _loadSeq = 0;
+  String? selectedStatus;              // Выбранный фильтр по статусу (Чипы)
+  int _loadSeq = 0;                    // Счетчик запросов для предотвращения Race Condition
 
-  // Статус синхронизации (для отслеживания полной загрузки)
+  // Состояние синхронизации истории (Backfill)
   bool syncInProgress = false;
   bool userDismissedSync = false;
   String syncMessage = "";
   Timer? syncStatusTimer;
+  bool _wasSyncing = false; 
+  bool _isFirstCheck = true; 
+  bool _showSuccessBanner = false; 
 
-  // Для графика
-  List<String> selectedChartItems = []; // "offer_id|sku"
-  Map<String, List<Map<String, dynamic>>> chartDataByItem = {};
+  // Состояние графиков
+  List<String> selectedChartItems = []; // Список выбранных SKU для сравнения на графике
+  Map<String, List<Map<String, dynamic>>> chartDataByItem = {}; // Данные графиков по SKU
   bool chartLoading = false;
   String? chartError;
 
-  // Формат даты для API (UTC)
+  // Форматирование даты для бэкенда (ISO 8601 UTC)
   String _fmtApi(DateTime dt) =>
       DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(dt.toUtc());
 
-  // Формат даты для UI (Русский)
+  // Форматирование даты для пользователя
   String _fmtUi(DateTime dt) => DateFormat("d MMM y", "ru_RU").format(dt);
 
   @override
   void initState() {
     super.initState();
     
-    // Создаем API клиент с callback для обработки 401
+    // Инициализация API-клиента с привязкой к AuthProvider для разлогина
     api = OzonApiClient(
       onUnauthorized: _handleUnauthorized,
     );
     
-    // Загружаем данные безопасно
+    // Запускаем загрузку данных сразу после отрисовки экрана
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _load();
       _startSyncStatusCheck();
     });
   }
 
-  /// Запускает периодическую проверку статуса синхронизации (каждые 2 секунды)
+  /// Циклическая проверка прогресса загрузки истории заказов.
   void _startSyncStatusCheck() {
-    syncStatusTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    syncStatusTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _checkSyncStatus();
     });
-    // Первый раз сразу же
     _checkSyncStatus();
   }
 
-  /// Проверяет статус синхронизации данных
+  /// Опрашивает бэкенд о статусе фоновой задачи синхронизации.
   Future<void> _checkSyncStatus() async {
     if (!mounted) return;
     try {
@@ -85,172 +95,152 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted) return;
       
       setState(() {
-        syncInProgress = (status['is_syncing'] ?? false) && !userDismissedSync;
+        final isSyncing = status['is_syncing'] ?? false;
         syncMessage = status['status_message'] ?? '';
+        
+        // Управление логикой показа уведомлений о синхронизации
+        if (_isFirstCheck) {
+          _isFirstCheck = false;
+          if (isSyncing) {
+            userDismissedSync = false;
+            _wasSyncing = true;
+          } else {
+            userDismissedSync = true;
+          }
+        }
+
+        if (isSyncing) {
+          if (!_wasSyncing) {
+            _wasSyncing = true;
+            userDismissedSync = false; 
+          }
+          syncInProgress = !userDismissedSync;
+          _showSuccessBanner = false;
+        } else {
+          syncInProgress = false;
+          if (_wasSyncing) {
+            _wasSyncing = false; 
+            // Если загрузка успешно завершилась — обновляем таблицу и показываем успех
+            if (!syncMessage.toLowerCase().contains('error')) {
+              _showSuccessBanner = true;
+              userDismissedSync = false; 
+              _load(); // Авто-рефреш данных после синхронизации
+
+              // Скрываем плашку успеха через 6 секунд
+              Future.delayed(const Duration(seconds: 6), () {
+                if (mounted) setState(() => _showSuccessBanner = false);
+              });
+            }
+          }
+        }
       });
     } catch (e) {
-      // Ошибка при получении статуса - игнорируем
-      if (kDebugMode) {
-        print('Ошибка при проверке статуса синхронизации: $e');
-      }
+      if (kDebugMode) print('Sync check error: $e');
     }
   }
 
   @override
   void dispose() {
-    syncStatusTimer?.cancel();
+    syncStatusTimer?.cancel(); // Останавливаем таймер при закрытии экрана
     super.dispose();
   }
 
-  // Обработка разлогинивания при 401
+  /// Обработка ситуации, когда токен протух.
   void _handleUnauthorized() {
     if (!mounted) return;
-    
-    // Показываем сообщение и перенаправляем на экран входа
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Сессия истекла. Пожалуйста, войдите снова.'),
-        backgroundColor: Colors.red,
-      ),
+      const SnackBar(content: Text('Сессия истекла'), backgroundColor: Colors.red),
     );
-    
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (_) => const LoginScreen()),
     );
   }
 
-  // Выход из системы
+  /// Логика выхода из аккаунта.
   Future<void> _handleLogout() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Выход'),
-        content: const Text('Вы уверены, что хотите выйти?'),
+        content: const Text('Выйти из системы?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Выйти'),
-          ),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Выйти')),
         ],
       ),
     );
 
     if (confirmed == true && mounted) {
-      // Используем Provider для выхода
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      await authProvider.logout();
-      
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const LoginScreen()),
-        );
-      }
+      await Provider.of<AuthProvider>(context, listen: false).logout();
+      if (mounted) Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
     }
   }
 
-  // Загрузка таблицы и итогов
+  /// Загрузка данных аналитики (таблица и итоги).
   Future<void> _load() async {
     if (!mounted) return;
-    final int loadSeq = ++_loadSeq;
-    final String modeAtCall = viewMode;
-    final String? statusAtCall = selectedStatus;
-    final DateTime sinceAtCall = since;
-    final DateTime toAtCall = to;
+    final int loadSeq = ++_loadSeq; // Метка текущего запроса
     
     setState(() {
       loading = true;
       error = null;
     });
+
     try {
-      final qs = {'since': _fmtApi(since), 'to': _fmtApi(to)};
-      
+      // Вызываем соответствующий эндпоинт бэкенда
       final data = (viewMode == 'delivered')
-          ? await api.getSalesRange(
-              since: qs['since']!,
-              to: qs['to']!,
-              status: selectedStatus)
-          : await api.getSalesRaw(
-              since: qs['since']!,
-              to: qs['to']!,
-              status: selectedStatus);
+          ? await api.getSalesRange(since: _fmtApi(since), to: _fmtApi(to), status: selectedStatus)
+          : await api.getSalesRaw(since: _fmtApi(since), to: _fmtApi(to), status: selectedStatus);
 
       final list = (data['items'] as List).cast<Map<String, dynamic>>();
+      
+      // Если пришел ответ от "старого" запроса (пользователь уже нажал что-то другое) — игнорируем
       if (!mounted || loadSeq != _loadSeq) return;
-      if (modeAtCall != viewMode || statusAtCall != selectedStatus || sinceAtCall != since || toAtCall != to) return;
-      if (mounted) {
-        setState(() {
-          items = list;
-          totals = data;
-        });
-      }
+
+      setState(() {
+        items = list;
+        totals = data;
+      });
     } catch (e) {
-      if (mounted && loadSeq == _loadSeq) {
-        setState(() {
-          error = e.toString();
-        });
-      }
+      if (mounted && loadSeq == _loadSeq) setState(() => error = e.toString());
     } finally {
-      if (mounted && loadSeq == _loadSeq) {
-        setState(() {
-          loading = false;
-        });
-      }
+      if (mounted && loadSeq == _loadSeq) setState(() => loading = false);
     }
   }
 
-  // Загрузка графика
+  /// Загрузка данных для линейного графика конкретного SKU.
   Future<void> _loadChart(String offerId, String sku) async {
     final itemKey = '$offerId|$sku';
     setState(() {
       chartLoading = true;
-      chartError = null;
-      if (!selectedChartItems.contains(itemKey)) {
-        selectedChartItems.add(itemKey);
-      }
+      if (!selectedChartItems.contains(itemKey)) selectedChartItems.add(itemKey);
     });
     try {
-      final data = await api.getSalesBySkuMonthly(
-        offerId: offerId,
-        sku: sku,
-        monthsBack: 12,
-        mode: viewMode,
-      );
+      final data = await api.getSalesBySkuMonthly(offerId: offerId, sku: sku, mode: viewMode);
       final list = (data['data'] as List).cast<Map<String, dynamic>>();
-      setState(() {
-        chartDataByItem[itemKey] = list;
-      });
+      setState(() => chartDataByItem[itemKey] = list);
     } catch (e) {
-      setState(() {
-        chartError = e.toString();
-      });
+      setState(() => chartError = e.toString());
     } finally {
-      setState(() {
-        chartLoading = false;
-      });
+      setState(() => chartLoading = false);
     }
   }
 
-  // Переключение режима
+  /// Переключение вкладок "Финансы" / "Отгрузки".
   void _switchViewMode(String newMode) {
     if (viewMode == newMode) return;
     setState(() {
       viewMode = newMode;
-      selectedStatus = null;
+      selectedStatus = null; // Сбрасываем фильтр статуса при смене режима
       items = [];
       totals = null;
     });
-    
     _load();
     
+    // Обновляем графики для нового режима (delivered/shipped)
     for (var itemKey in selectedChartItems) {
       final parts = itemKey.split('|');
-      if (parts.length == 2) {
-        _loadChart(parts[0], parts[1]);
-      }
+      if (parts.length == 2) _loadChart(parts[0], parts[1]);
     }
   }
 
@@ -261,6 +251,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  /// Выбор даты через стандартный DatePicker.
   Future<void> _pickDate(BuildContext ctx, bool isSince) async {
     final init = isSince ? since : to;
     final picked = await showDatePicker(
@@ -278,9 +269,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           to = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
         }
       });
+      _load(); // Авто-обновление после смены даты
     }
   }
 
+  // Перевод статусов Ozon на русский
   String _statusRu(String code) {
     switch (code) {
       case 'awaiting_assembly': return 'Ожидает сборки';
@@ -299,34 +292,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(
         title: const Text('Ozon Dashboard'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.inventory),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const ShipmentsScreen()),
-              );
-            },
-            tooltip: 'Отгрузки',
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
-              );
-            },
-            tooltip: 'Настройки',
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _load,
-            tooltip: 'Обновить',
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: _handleLogout,
-            tooltip: 'Выход',
-          ),
+          IconButton(icon: const Icon(Icons.inventory), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ShipmentsScreen())), tooltip: 'Отгрузки'),
+          IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen())), tooltip: 'Настройки'),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _load, tooltip: 'Обновить'),
+          IconButton(icon: const Icon(Icons.logout), onPressed: _handleLogout, tooltip: 'Выход'),
         ],
       ),
       body: Padding(
@@ -334,7 +303,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Статус синхронизации (только если идет загрузка)
+            // Синий баннер: идет синхронизация истории
             if (syncInProgress)
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -344,40 +313,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     padding: const EdgeInsets.all(12),
                     child: Row(
                       children: [
-                        const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
+                        const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
                         const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            syncMessage,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: () {
-                            setState(() {
-                              userDismissedSync = true;
-                              syncInProgress = false;
-                            });
-                          },
-                        ),
+                        Expanded(child: Text(syncMessage, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
+                        IconButton(icon: const Icon(Icons.close, size: 20), onPressed: () => setState(() { userDismissedSync = true; syncInProgress = false; })),
                       ],
                     ),
                   ),
                 ),
               ),
             
-            // Если синхронизация завершена и было "Данные загружены" - показываем зеленое уведомление
-            if (!syncInProgress && syncMessage == "Данные загружены")
+            // Зеленый баннер: синхронизация завершена
+            if (_showSuccessBanner && !userDismissedSync)
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: Card(
@@ -388,227 +335,113 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       children: [
                         Icon(Icons.check_circle, color: Colors.green.shade700, size: 20),
                         const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'Данные загружены',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              color: Colors.green.shade700,
-                            ),
-                          ),
-                        ),
+                        Expanded(child: Text('Данные синхронизированы', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Colors.green.shade700))),
+                        IconButton(icon: Icon(Icons.close, color: Colors.green.shade700, size: 20), onPressed: () => setState(() { _showSuccessBanner = false; userDismissedSync = true; })),
                       ],
                     ),
                   ),
                 ),
               ),
             
-            // Переключатель режимов
+            // Переключатель режимов Финансы/Склад
             Center(
               child: SegmentedButton<String>(
                 segments: const [
-                  ButtonSegment(
-                    value: 'delivered',
-                    label: Text('Финансы (Доставлено)'),
-                    icon: Icon(Icons.paid),
-                  ),
-                  ButtonSegment(
-                    value: 'shipped',
-                    label: Text('Отгрузки (В работе)'),
-                    icon: Icon(Icons.local_shipping),
-                  ),
+                  ButtonSegment(value: 'delivered', label: Text('Финансы'), icon: Icon(Icons.paid)),
+                  ButtonSegment(value: 'shipped', label: Text('Склад'), icon: Icon(Icons.local_shipping)),
                 ],
                 selected: {viewMode},
-                onSelectionChanged: (Set<String> newSelection) {
-                  _switchViewMode(newSelection.first);
-                },
+                onSelectionChanged: (newSelection) => _switchViewMode(newSelection.first),
                 showSelectedIcon: false,
-                style: ButtonStyle(
-                  visualDensity: VisualDensity.compact,
-                ),
               ),
             ),
             const SizedBox(height: 16),
             
-            // Выбор дат
+            // Фильтры по датам
             Wrap(
-              spacing: 12,
-              runSpacing: 8,
+              spacing: 12, runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                OutlinedButton.icon(
-                  onPressed: () => _pickDate(context, true),
-                  icon: const Icon(Icons.calendar_today, size: 16),
-                  label: Text('С: ${_fmtUi(since)}'),
-                ),
+                OutlinedButton.icon(onPressed: () => _pickDate(context, true), icon: const Icon(Icons.calendar_today, size: 16), label: Text('С: ${_fmtUi(since)}')),
                 const Text('—'),
-                OutlinedButton.icon(
-                  onPressed: () => _pickDate(context, false),
-                  icon: const Icon(Icons.calendar_today, size: 16),
-                  label: Text('По: ${_fmtUi(to)}'),
-                ),
+                OutlinedButton.icon(onPressed: () => _pickDate(context, false), icon: const Icon(Icons.calendar_today, size: 16), label: Text('По: ${_fmtUi(to)}')),
                 ElevatedButton(onPressed: _load, child: const Text('Обновить')),
               ],
             ),
             
             const SizedBox(height: 12),
             
-            // Фильтр статусов
+            // Статус-фильтры (Chips)
             if (totals != null && totals!['by_status'] is List)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
+                  spacing: 6, runSpacing: 6,
                   children: [
-                    FilterChip(
-                      label: const Text('Все статусы'),
-                      selected: selectedStatus == null,
-                      onSelected: (_) {
-                        setState(() => selectedStatus = null);
-                        _load();
-                      },
-                    ),
-                    ...(totals!['by_status'] as List)
-                        .cast<Map<String, dynamic>>()
-                        .map(
-                          (s) => FilterChip(
-                            label: Text('${_statusRu('${s['status']}')}: ${s['count']}'),
-                            selected: selectedStatus == '${s['status']}',
-                            onSelected: (isSelected) {
-                              setState(() {
-                                selectedStatus = isSelected ? '${s['status']}' : null;
-                              });
-                              _load();
-                            },
-                          ),
-                        ).toList(),
+                    FilterChip(label: const Text('Все'), selected: selectedStatus == null, onSelected: (_) { setState(() => selectedStatus = null); _load(); }),
+                    ...(totals!['by_status'] as List).cast<Map<String, dynamic>>().map((s) => FilterChip(
+                      label: Text('${_statusRu('${s['status']}')}: ${s['count']}'),
+                      selected: selectedStatus == '${s['status']}',
+                      onSelected: (isSelected) { setState(() => selectedStatus = isSelected ? '${s['status']}' : null); _load(); },
+                    )).toList(),
                   ],
                 ),
               ),
 
             if (loading) const LinearProgressIndicator(),
+            
+            // Сообщения об ошибках
             if (error != null)
               Container(
+                margin: const EdgeInsets.symmetric(vertical: 8),
                 padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade50,
-                  border: Border.all(color: Colors.red.shade200),
-                  borderRadius: BorderRadius.circular(8),
-                ),
+                decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.shade200)),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Ошибка загрузки данных',
-                      style: TextStyle(
-                        color: Colors.red.shade900,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      error!,
-                      style: TextStyle(color: Colors.red.shade700),
-                    ),
-                    const SizedBox(height: 12),
-                    if (error!.contains('connection') || error!.contains('No credentials'))
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            '💡 Совет:',
-                            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text('1. Добавьте API ключ Ozon в Настройках (иконка ⚙️)'),
-                          const SizedBox(height: 4),
-                          const Text('2. Нажмите кнопку "Обновить" '),
-                          const SizedBox(height: 12),
-                          ElevatedButton.icon(
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => const SettingsScreen(),
-                                ),
-                              );
-                            },
-                            icon: const Icon(Icons.settings),
-                            label: const Text('Перейти в Настройки'),
-                          ),
-                        ],
-                      ),
+                    const Text('Ошибка загрузки данных', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                    const SizedBox(height: 4),
+                    Text(error!, style: const TextStyle(fontSize: 13)),
+                    if (error!.contains('credentials')) ...[
+                      const SizedBox(height: 8),
+                      TextButton.icon(onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen())), icon: const Icon(Icons.settings), label: const Text('Перейти в настройки'))
+                    ]
                   ],
                 ),
               ),
 
             const SizedBox(height: 12),
 
-            // Таблица и графики
+            // Основной контент: Таблица товаров и Графики
             Expanded(
               child: SingleChildScrollView(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SalesTable(
-                      items: items,
-                      delivered: viewMode == 'delivered',
-                      totals: totals,
-                    ),
+                    SalesTable(items: items, delivered: viewMode == 'delivered', totals: totals),
                     
                     const SizedBox(height: 32),
                     
                     if (items.isNotEmpty) ...[
-                      const Text(
-                        '📊 Динамика по месяцам',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        viewMode == 'delivered' 
-                          ? 'Режим: Финансы (Дата доставки)' 
-                          : 'Режим: Отгрузки (Дата обработки)',
-                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                      ),
+                      const Text('📊 Динамика продаж (12 мес)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 12),
                       
+                      // Выбор SKU для отображения на графике
                       Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                        spacing: 8, runSpacing: 8,
                         children: items.take(15).map((item) {
                           final offerId = '${item['offer_id'] ?? ''}';
                           final sku = '${item['sku'] ?? ''}';
                           final itemKey = '$offerId|$sku';
-                          final label = offerId.isNotEmpty ? offerId : sku;
-                          final isSelected = selectedChartItems.contains(itemKey);
-                          
                           return FilterChip(
-                            label: Text(label),
-                            selected: isSelected,
-                            onSelected: (v) {
-                              if (v) {
-                                _loadChart(offerId, sku);
-                              } else {
-                                _removeChartItem(itemKey);
-                              }
-                            },
+                            label: Text(offerId.isNotEmpty ? offerId : sku),
+                            selected: selectedChartItems.contains(itemKey),
+                            onSelected: (v) => v ? _loadChart(offerId, sku) : _removeChartItem(itemKey),
                           );
                         }).toList(),
                       ),
                       
-                      if (chartLoading)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 16),
-                          child: Center(child: CircularProgressIndicator()),
-                        ),
-                        
-                      if (chartError != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 16),
-                          child: Text('Ошибка графика: $chartError', 
-                            style: const TextStyle(color: Colors.red)),
-                        ),
+                      if (chartLoading) const Padding(padding: EdgeInsets.only(top: 16), child: Center(child: CircularProgressIndicator())),
                         
                       if (selectedChartItems.isNotEmpty && chartDataByItem.isNotEmpty && !chartLoading)
                         Padding(
