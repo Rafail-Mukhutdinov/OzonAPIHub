@@ -10,8 +10,10 @@ class OzonApiClient {
   static String getDefaultBaseUrl() {
     if (kIsWeb) {
       final host = Uri.base.host;
-      if (host.isNotEmpty && host != 'localhost') {
-        // Мы вернули бэкенд на порт 8080
+      if (host == 'localhost' || host == '127.0.0.1') {
+        return 'http://localhost:8080';
+      }
+      if (host.isNotEmpty) {
         return 'http://$host:8080';
       }
     }
@@ -38,9 +40,7 @@ class OzonApiClient {
         if (error.response?.statusCode == 401) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.remove('jwt_token');
-          if (onUnauthorized != null) {
-            onUnauthorized!();
-          }
+          if (onUnauthorized != null) onUnauthorized!();
         }
         return handler.next(error);
       },
