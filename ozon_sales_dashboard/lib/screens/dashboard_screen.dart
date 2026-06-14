@@ -54,25 +54,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
         start = activeDate.subtract(const Duration(days: 29));
       }
 
-      // ВЫЗЫВАЕМ НОВЫЙ ЭНДПОИНТ /sales_report
+      // 1. ТЕКУЩИЙ ПЕРИОД
       final reportResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
         'since': _getIso(start, false),
         'to': _getIso(end, true),
       });
 
-      final prevStart = start.subtract(Duration(days: selectedPeriod == 'today' ? 1 : (selectedPeriod == 'week' ? 7 : 30)));
-      final prevEnd = end.subtract(Duration(days: selectedPeriod == 'today' ? 1 : (selectedPeriod == 'week' ? 7 : 30)));
+      // 2. ПРЕДЫДУЩИЙ ПЕРИОД
+      final prevDays = selectedPeriod == 'today' ? 1 : (selectedPeriod == 'week' ? 7 : 30);
+      final prevStart = start.subtract(Duration(days: prevDays));
+      final prevEnd = end.subtract(Duration(days: prevDays));
       
       final prevResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
         'since': _getIso(prevStart, false),
         'to': _getIso(prevEnd, true),
       });
 
+      // 3. ГРАФИК (всегда 30 дней)
       final statsResponse = await api.dio.get('/analytics/daily_stats', queryParameters: {
         'since': _getIso(activeDate.subtract(const Duration(days: 29)), false),
         'to': _getIso(activeDate, true),
       });
 
+      if (!mounted) return;
       setState(() {
         items = (reportResponse.data['items'] as List).cast<Map<String, dynamic>>();
         totals = reportResponse.data;
@@ -81,7 +85,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         loading = false;
       });
     } catch (e) {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 
@@ -108,7 +112,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           selectedPeriod: selectedPeriod,
           activeDate: activeDate,
           onPeriodChanged: (period) {
-            setState(() => selectedPeriod = period);
+            setState(() {
+              selectedPeriod = period;
+              // Если переключили на неделю/месяц, возвращаем дату к "сегодня"
+              if (period != 'today') activeDate = DateTime.now();
+            });
             _loadAllData();
           },
           onDateChanged: (newDate) {

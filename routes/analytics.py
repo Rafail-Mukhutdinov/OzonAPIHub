@@ -46,15 +46,16 @@ async def daily_stats(
     result.sort(key=lambda x: x["date"])
     return {"data": result}
 
-# Мы возвращаем старое имя эндпоинта, чтобы фронтенд его нашел
+# ПОЛНЫЙ СПИСОК АЛИАСОВ ДЛЯ СОВМЕСТИМОСТИ
 @router.get("/sales_today_raw")
+@router.get("/sales_range")
 @router.get("/sales_report")
-async def sales_report_v2(
+async def sales_report_universal(
     since: str, to: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Универсальный отчет, который теперь отвечает и на старые, и на новые запросы."""
+    """Универсальный отчет, отвечающий на любые запросы аналитики."""
     raw_pns = db.query(Order.posting_number).filter(
         Order.user_id == current_user.id, Order.created_at >= since, Order.created_at <= to
     ).all()
@@ -65,7 +66,7 @@ async def sales_report_v2(
     all_pns = list(set([p[0] for p in raw_pns if p[0]] + [p[0] for p in norm_pns if p[0]]))
     if not all_pns: return {"items": [], "total_items": 0, "total_orders": 0, "total_amount_raw": 0}
 
-    # Докачка деталей
+    # Проверка и докачка деталей
     existing_pns = {p[0] for p in db.query(OrderProduct.posting_number).filter(
         OrderProduct.user_id == current_user.id, OrderProduct.posting_number.in_(all_pns)
     ).all()}
