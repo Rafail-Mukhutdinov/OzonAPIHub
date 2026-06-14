@@ -257,12 +257,13 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                 child: InkWell(
                   onTap: () => widget.onDrillDown(DateTime.parse(s['date'])),
                   borderRadius: BorderRadius.circular(4),
+                  splashColor: Colors.transparent, // Убираем всплеск
+                  highlightColor: Colors.transparent, // Убираем серый фон при нажатии
                   child: Container(
                     width: isMonth ? 22 : 44,
-                    // Задаем минимальную высоту всей области нажатия, чтобы легче было попасть
                     height: 130, 
                     alignment: Alignment.bottomCenter,
-                    padding: const EdgeInsets.only(bottom: 2), // Небольшой отступ снизу
+                    padding: const EdgeInsets.only(bottom: 2),
                     child: Container(
                       width: isMonth ? 14 : 36,
                       height: h,
