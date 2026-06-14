@@ -15,28 +15,20 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   late final OzonApiClient api;
   
-  // Состояние навигации
-  String selectedPeriod = 'today'; // 'today', 'week', 'month'
-  DateTime activeDate = DateTime.now(); // Для режима "Сегодня" со стрелками
+  String selectedPeriod = 'today'; 
+  DateTime activeDate = DateTime.now(); 
 
-  // Данные
   List<Map<String, dynamic>> items = [];
   Map<String, dynamic>? totals;
   Map<String, dynamic>? yesterdayTotals;
   List<Map<String, dynamic>> weeklyStats = [];
-  
   bool loading = false;
-  int _currentTabIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    api = OzonApiClient(onUnauthorized: _handleUnauthorized);
+    api = OzonApiClient(onUnauthorized: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen())));
     _loadAllData();
-  }
-
-  void _handleUnauthorized() {
-    if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
   }
 
   String _getIso(DateTime date, bool endOfDay) {
@@ -62,13 +54,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         start = activeDate.subtract(const Duration(days: 29));
       }
 
-      // 1. Основной отчет (карточки и список товаров)
+      // ВЫЗЫВАЕМ НОВЫЙ ЭНДПОИНТ /sales_report
       final reportResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
         'since': _getIso(start, false),
         'to': _getIso(end, true),
       });
 
-      // 2. Данные за ПРЕДЫДУЩИЙ аналогичный период (для сравнения %)
       final prevStart = start.subtract(Duration(days: selectedPeriod == 'today' ? 1 : (selectedPeriod == 'week' ? 7 : 30)));
       final prevEnd = end.subtract(Duration(days: selectedPeriod == 'today' ? 1 : (selectedPeriod == 'week' ? 7 : 30)));
       
@@ -77,7 +68,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'to': _getIso(prevEnd, true),
       });
 
-      // 3. Данные для графика (всегда берем 30 дней для плавности)
       final statsResponse = await api.dio.get('/analytics/daily_stats', queryParameters: {
         'since': _getIso(activeDate.subtract(const Duration(days: 29)), false),
         'to': _getIso(activeDate, true),
@@ -128,10 +118,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentTabIndex,
         selectedItemColor: Colors.black, unselectedItemColor: Colors.grey,
         type: BottomNavigationBarType.fixed,
-        onTap: (i) => setState(() => _currentTabIndex = i),
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: 'Главная'),
           BottomNavigationBarItem(icon: Icon(Icons.grid_view), label: 'Товары'),
