@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:dio/dio.dart';
 import '../services/api.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -21,7 +20,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _errorMessage;
   String _purgeMarketplace = 'ozon';
 
+<<<<<<< HEAD
   // Список поддерживаемых маркетплейсов (в будущем можно расширить)
+=======
+  // Используем наш централизованный API клиент
+  late final OzonApiClient _api;
+
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
   final List<Map<String, String>> _marketplaces = [
     {'value': 'ozon', 'label': 'Ozon'},
     {'value': 'wildberries', 'label': 'Wildberries'},
@@ -32,7 +37,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+<<<<<<< HEAD
     _loadCredentials(); // Загружаем список ключей при открытии экрана
+=======
+    _api = OzonApiClient(); // Инициализация клиента
+    _loadCredentials();
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
   }
 
   /// Получает список всех API-ключей пользователя с сервера.
@@ -43,6 +53,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
 
     try {
+<<<<<<< HEAD
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('jwt_token');
       
@@ -65,6 +76,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         });
       }
+=======
+      final response = await _api.dio.get('/auth/me/ozon-credentials');
+      setState(() {
+        _credentials = List<Map<String, dynamic>>.from(
+          response.data['credentials'] ?? []
+        );
+      });
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
     } catch (e) {
       setState(() => _errorMessage = 'Ошибка загрузки: $e');
     } finally {
@@ -84,6 +103,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _isLoading = true);
 
     try {
+<<<<<<< HEAD
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('jwt_token');
 
@@ -98,6 +118,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ключи добавлены'), backgroundColor: Colors.green));
         _loadCredentials(); // Обновляем список
+=======
+      // Используем метод из нашего OzonApiClient
+      await _api.addOzonCredential(
+        clientId: result['client_id']!,
+        apiKey: result['api_key']!,
+        marketplace: result['marketplace']!,
+        name: result['name']!,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ключи успешно добавлены'), backgroundColor: Colors.green),
+        );
+        _loadCredentials();
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
       }
     } catch (e) {
       setState(() => _errorMessage = 'Ошибка добавления: $e');
@@ -109,6 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// Делает выбранный набор ключей активным (текущим) для аналитики.
   Future<void> _activateCredential(int id) async {
     try {
+<<<<<<< HEAD
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('jwt_token');
 
@@ -125,11 +161,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
+=======
+      await _api.dio.put('/auth/me/ozon-credentials/$id/activate');
+      _loadCredentials();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
     }
   }
 
   /// Удаляет API-ключи из системы.
   Future<void> _deleteCredential(int id, String name) async {
+<<<<<<< HEAD
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -193,11 +236,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('База данных очищена')));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
+=======
+    try {
+      await _api.dio.delete('/auth/me/ozon-credentials/$id');
+      _loadCredentials();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
     }
   }
 
   /// Запускает процесс Backfill (загрузку истории за год) в фоновом режиме на сервере.
   Future<void> _runInitialSync() async {
+<<<<<<< HEAD
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -225,12 +276,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Загрузка истории запущена')));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
+=======
+    try {
+      await _api.dio.post('/sync/initial/force');
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Загрузка запущена')));
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+<<<<<<< HEAD
       appBar: AppBar(title: const Text('Настройки'), backgroundColor: Theme.of(context).colorScheme.inversePrimary),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -308,6 +367,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
         icon: const Icon(Icons.add),
         label: const Text('Подключить магазин'),
       ),
+=======
+      appBar: AppBar(title: const Text('Настройки API ключей')),
+      body: _isLoading
+        ? const Center(child: CircularProgressIndicator())
+        : ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              if (_errorMessage != null) Text(_errorMessage!, style: const TextStyle(color: Colors.red)),
+              ElevatedButton(onPressed: _runInitialSync, child: const Text('Запустить полную загрузку')),
+              const Divider(),
+              ..._credentials.map((c) => ListTile(
+                title: Text(c['name']),
+                subtitle: Text('ID: ${c['client_id_preview']}'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!(c['is_active'] ?? false)) IconButton(icon: const Icon(Icons.play_arrow), onPressed: () => _activateCredential(c['id'])),
+                    IconButton(icon: const Icon(Icons.delete), onPressed: () => _deleteCredential(c['id'], c['name'])),
+                  ],
+                ),
+              )),
+            ],
+          ),
+      floatingActionButton: FloatingActionButton(onPressed: _addCredential, child: const Icon(Icons.add)),
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
     );
   }
 }
@@ -321,10 +405,10 @@ class _AddCredentialDialog extends StatefulWidget {
 }
 
 class _AddCredentialDialogState extends State<_AddCredentialDialog> {
-  final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _clientIdController = TextEditingController();
   final _apiKeyController = TextEditingController();
+<<<<<<< HEAD
   
   @override
   Widget build(BuildContext context) {
@@ -357,6 +441,33 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
             });
           }
         }, child: const Text('Добавить')),
+=======
+  String _selectedMarketplace = 'ozon';
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Новый набор ключей'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(controller: _nameController, decoration: const InputDecoration(labelText: 'Название')),
+          TextField(controller: _clientIdController, decoration: const InputDecoration(labelText: 'Client ID')),
+          TextField(controller: _apiKeyController, decoration: const InputDecoration(labelText: 'API Key')),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, {
+            'marketplace': _selectedMarketplace,
+            'name': _nameController.text,
+            'client_id': _clientIdController.text,
+            'api_key': _apiKeyController.text,
+          }),
+          child: const Text('Добавить'),
+        ),
+>>>>>>> 6e05b8426d8a23501811c28cb1ed9d6be020bf8b
       ],
     );
   }

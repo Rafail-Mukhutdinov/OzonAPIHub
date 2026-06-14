@@ -15,7 +15,7 @@ load_dotenv()
 
 from fastapi import FastAPI, Depends
 from starlette.middleware.cors import CORSMiddleware
-from db.database import get_db, Order
+from db.database import get_db, Order, engine, Base
 from utils.rate_limit_middleware import setup_rate_limiting
 from services.sync import background_sync_loop
 
@@ -32,6 +32,10 @@ async def lifespan(app: FastAPI):
     Контекст-менеджер жизненного цикла приложения.
     Выполняет действия при запуске и завершении сервера.
     """
+    # Создаём все таблицы при запуске (автоматическая миграция для разработки)
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables initialized")
+
     # Состояние для отслеживания статистики последней синхронизации в памяти
     app.state.last_sync_new = None
     app.state.last_sync_recent = None
@@ -82,7 +86,7 @@ app = FastAPI(
 # Подключаем защиту от DDoS и спама (Rate Limiting) через slowapi
 setup_rate_limiting(app)
 
-# Настройка CORS для взаимодействия с фронтендом (Flutter Web / Android)
+# Настройка CORS для взаимодействия с фронтендом
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -90,10 +94,16 @@ app.add_middleware(
         "http://127.0.0.1:54321",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://localhost:8082",
+        "http://127.0.0.1:8082",
         "http://localhost",
         "http://127.0.0.1",
         "http://45.150.11.25",       # IP продакшен-сервера
         "http://45.150.11.25:8080",
+        "http://45.150.11.25:8081",
+        "http://45.150.11.25:8082",
     ],
     allow_origin_regex=r"http://localhost:\d+", # Разрешаем любые порты на localhost для разработки
     allow_credentials=True,

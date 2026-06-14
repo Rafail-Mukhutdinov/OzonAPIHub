@@ -17,20 +17,26 @@ def get_utc_now():
     """Возвращает текущее время в формате UTC без информации о временной зоне."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# Настройка подключения к PostgreSQL.
-# URL берется из переменной окружения DATABASE_URL или используется значение по умолчанию.
+# Настройка подключения к базе данных.
+# Используем SQLite для локального тестирования или PostgreSQL для продакшена.
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://ozonuser:ozonpass@localhost:5432/ozondb"
+    "sqlite:///./ozon_saas.db"
 )
+
+# Если URL всё ещё PostgreSQL, но мы хотим SQLite по умолчанию при отсутствии переменной
+if not os.getenv("DATABASE_URL") and "postgresql" in DATABASE_URL:
+    DATABASE_URL = "sqlite:///./ozon_saas.db"
 
 # Создание движка SQLAlchemy с оптимизированными параметрами пула соединений.
 engine = sa.create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,  # Проверка живое ли соединение перед использованием
-    pool_size=10,        # Базовое количество соединений в пуле
-    max_overflow=20,     # Максимальное количество дополнительных соединений
-    echo=False           # Установите True для логирования всех SQL-запросов
+    pool_pre_ping=True if not DATABASE_URL.startswith("sqlite") else False,
+    pool_size=10 if not DATABASE_URL.startswith("sqlite") else 5,
+    max_overflow=20 if not DATABASE_URL.startswith("sqlite") else 10,
+    echo=False,
+    # Для SQLite нужно разрешить работу с несколькими потоками
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 )
 
 # Создание фабрики сессий для взаимодействия с БД
