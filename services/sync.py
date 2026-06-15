@@ -19,8 +19,8 @@ from utils.logging_config import log_user_event
 
 logger = logging.getLogger("OzonAPIHub")
 
-# Настройки из .env
-RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '48'))
+# Настройки из .env (сокращаем стандартное окно, так как Gap Filling подстрахует)
+RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '24'))
 ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 'yes')
 ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '4'))
 INITIAL_WINDOW_DAYS = int(os.getenv('INITIAL_WINDOW_DAYS', '365'))
@@ -32,11 +32,10 @@ def _get_now_utc():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-async def sync_user_orders(user: User, db: Session):
+async def sync_user_orders(user: User, db: Session) -> bool:
     """
     Синхронизирует заказы для ОДНОГО пользователя.
-    Реализует механизм Smart Gap Filling: если сервер простаивал,
-    окно поиска расширяется до последней записи в БД.
+    Возвращает True, если были найдены новые заказы или изменения.
     """
     try:
         active_cred = db.query(OzonCredential).filter(
@@ -45,13 +44,12 @@ async def sync_user_orders(user: User, db: Session):
         ).first()
         
         if not active_cred:
-            return
+            return False
 
         # --- Smart Gap Filling LOGIC ---
         now = _get_now_utc()
         default_since = now - timedelta(hours=RECENT_WINDOW_HOURS)
 
-        # Ищем дату последнего заказа в базе
         last_order = db.query(Order).filter(Order.user_id == user.id).order_by(desc(Order.created_at)).first()
 
         since_dt = default_since
@@ -59,11 +57,9 @@ async def sync_user_orders(user: User, db: Session):
 
         if last_order and last_order.created_at:
             try:
-                # Озон присылает дату в ISO, например 2024-05-20T12:00:00Z
                 last_dt = datetime.fromisoformat(last_order.created_at.replace('Z', ''))
-                # Если последний заказ старше нашего стандартного окна (RECENT_WINDOW_HOURS)
                 if last_dt < default_since:
-                    since_dt = last_dt - timedelta(minutes=30) # Нахлест 30 мин для надежности
+                    since_dt = last_dt - timedelta(minutes=30)
                     is_gap_fill = True
                     logger.info(f"User {user.id}: Обнаружен пробел в данных. Последний заказ: {last_dt}. Расширяем окно.")
             except Exception as e:
@@ -75,15 +71,11 @@ async def sync_user_orders(user: User, db: Session):
         log_msg = f"Запуск синхронизации ({'GAP FILL' if is_gap_fill else 'ПЛАНОВАЯ'}). Окно: {since_iso} -> {to_iso}"
         log_user_event(user.id, log_msg)
 
-        # Дешифруем ключи доступа
         client_id = decrypt_credential(active_cred.client_id_encrypted)
         api_key = decrypt_credential(active_cred.api_key_encrypted)
         
         if not client_id or not api_key:
-            error_msg = "Ошибка расшифровки credentials. Синхронизация невозможна."
-            logger.error(f"User {user.id}: {error_msg}")
-            log_user_event(user.id, error_msg, "error")
-            return
+            return False
 
         filter_dict = {'since': since_iso, 'to': to_iso}
         
@@ -103,7 +95,6 @@ async def sync_user_orders(user: User, db: Session):
                 with_flags={"analytics_data": True, "financial_data": True}
             )
             
-            # Робастный парсинг ответа
             items = []
             if isinstance(data, dict):
                 result_obj = data.get("result")
@@ -134,15 +125,18 @@ async def sync_user_orders(user: User, db: Session):
                 break
             offset += limit
 
-        log_user_event(user.id, f"Синхронизация завершена. Получено: {total_fetched}, Новых: {total_saved}")
+        if total_fetched > 0:
+            log_user_event(user.id, f"Синхронизация завершена. Получено: {total_fetched}, Новых: {total_saved}")
 
         if ENRICH_ON_FETCH and new_postings:
             await run_enrichment_batch(list(new_postings), user.id)
 
+        return total_saved > 0
+
     except Exception as e:
         error_msg = f"Ошибка sync_user_orders: {e}"
         logger.error(f"User {user.id}: {error_msg}")
-        log_user_event(user.id, error_msg, "error")
+        return False
 
 
 def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
