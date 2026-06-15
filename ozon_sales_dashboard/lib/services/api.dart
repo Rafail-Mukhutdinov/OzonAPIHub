@@ -8,16 +8,22 @@ class OzonApiClient {
   final Function()? onUnauthorized;
 
   static String getDefaultBaseUrl() {
+    // Приоритет 1: Переменная окружения через --dart-define=API_BASE_URL=...
+    const String envUrl = String.fromEnvironment('API_BASE_URL');
+    if (envUrl.isNotEmpty) {
+      return envUrl;
+    }
+
     if (kIsWeb) {
       final host = Uri.base.host;
       if (host == 'localhost' || host == '127.0.0.1') {
-        return 'http://localhost:8080';
+        return 'http://localhost:8083';
       }
       if (host.isNotEmpty) {
-        return 'http://$host:8080';
+        return 'http://$host:8083';
       }
     }
-    return 'http://45.150.11.25:8080';
+    return 'http://45.150.11.25:8083';
   }
 
   OzonApiClient({String? baseUrl, this.onUnauthorized})

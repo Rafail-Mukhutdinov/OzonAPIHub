@@ -90,26 +90,20 @@ setup_rate_limiting(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:54321",    # Дефолтный порт Flutter Web
-        "http://127.0.0.1:54321",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:8081",
-        "http://127.0.0.1:8081",
-        "http://localhost:8082",
-        "http://127.0.0.1:8082",
         "http://localhost",
+        "http://localhost:8080",
+        "http://localhost:8083",
         "http://127.0.0.1",
-        "http://45.150.11.25",       # IP продакшен-сервера
-        "http://45.150.11.25:8080",
-        "http://45.150.11.25:8081",
-        "http://45.150.11.25:8082",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:8083",
+        "http://45.150.11.25",
+        "http://45.150.11.25:8083",
     ],
     allow_origin_regex=r"http://localhost:\d+", # Разрешаем любые порты на localhost для разработки
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_methods=["*"],
     allow_headers=["*"],
-    max_age=600 # Кеширование preflight-запросов на 10 минут
+    max_age=600
 )
 
 @app.get("/ping")

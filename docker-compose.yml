@@ -54,7 +54,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8080:8080"  # Возвращаем бэкенд на 8080
+      - "8083:8083"  # Переводим бэкенд на 8083
     env_file:
       - .env
     environment:

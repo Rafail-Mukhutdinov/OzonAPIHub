@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8080
+EXPOSE 8083
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh

@@ -12,4 +12,4 @@ if __name__ == "__main__":
     is_reload = os.getenv("DEBUG", "false").lower() in ("true", "1", "t")
 
     print(f"Запуск сервера (reload={is_reload})...")
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=is_reload)
+    uvicorn.run("main:app", host="0.0.0.0", port=8083, reload=is_reload)
