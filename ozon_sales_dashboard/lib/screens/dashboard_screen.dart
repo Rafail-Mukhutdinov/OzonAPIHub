@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'dart:async';
 import '../services/api.dart';
 import '../widgets/mobile_dashboard_view.dart';
+import '../widgets/sales_table.dart';
 import 'login_screen.dart';
 import 'settings_screen.dart';
 
@@ -15,9 +16,10 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   late final OzonApiClient api;
   
-  String selectedPeriod = 'today'; // 'today', 'week', 'month'
-  DateTime activeDate = DateTime.now(); // Конечная точка периода
-  DateTime? drillDownDate; // Конкретный день для деталей (если выбран на графике)
+  // ЕДИНОЕ СОСТОЯНИЕ ДЛЯ ВСЕХ ВЕРСИЙ
+  String selectedPeriod = 'today'; 
+  DateTime activeDate = DateTime.now(); 
+  DateTime? drillDownDate; 
 
   List<Map<String, dynamic>> items = [];
   Map<String, dynamic>? totals;
@@ -31,7 +33,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.initState();
     api = OzonApiClient(onUnauthorized: _handleUnauthorized);
     _loadAllData();
-    // ЗАПУСКАЕМ АВТО-ОБНОВЛЕНИЕ каждые 5 минут
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadAllData(isSilent: true));
   }
 
@@ -46,6 +47,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   String _getIso(DateTime date, bool endOfDay) {
+    // ВАЖНО: Приводим к UTC+3 (Москва) перед отправкой
     final d = endOfDay 
       ? DateTime(date.year, date.month, date.day, 23, 59, 59).subtract(const Duration(hours: 3))
       : DateTime(date.year, date.month, date.day, 0, 0, 0).subtract(const Duration(hours: 3));
@@ -57,39 +59,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (!isSilent) setState(() => loading = true);
 
     try {
-      // 1. ОПРЕДЕЛЯЕМ ПЕРИОД ДЛЯ ОТЧЕТА (КАРТОЧКИ И ТОВАРЫ)
       DateTime reportStart;
       DateTime reportEnd;
 
       if (drillDownDate != null) {
-        // Если выбран конкретный день на графике - смотрим только его
         reportStart = drillDownDate!;
         reportEnd = drillDownDate!;
       } else {
-        // Иначе смотрим весь выбранный период (день/неделя/месяц)
         reportEnd = activeDate;
         if (selectedPeriod == 'today') reportStart = activeDate;
         else if (selectedPeriod == 'week') reportStart = activeDate.subtract(const Duration(days: 6));
         else reportStart = activeDate.subtract(const Duration(days: 29));
       }
 
-      // Запрос основного отчета
+      // ЕДИНЫЙ ЗАПРОС ДЛЯ ВСЕХ Layout
       final reportResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
         'since': _getIso(reportStart, false),
         'to': _getIso(reportEnd, true),
       });
 
-      // 2. СРАВНЕНИЕ (всегда сравниваем с таким же периодом в прошлом)
       final diff = reportEnd.difference(reportStart).inDays + 1;
-      final prevStart = reportStart.subtract(Duration(days: diff));
-      final prevEnd = reportEnd.subtract(Duration(days: diff));
-      
       final prevResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
-        'since': _getIso(prevStart, false),
-        'to': _getIso(prevEnd, true),
+        'since': _getIso(reportStart.subtract(Duration(days: diff)), false),
+        'to': _getIso(reportEnd.subtract(Duration(days: diff)), true),
       });
 
-      // 3. ГРАФИК (всегда 30 дней от реального сегодня, чтобы не прыгал)
       final statsResponse = await api.dio.get('/analytics/daily_stats', queryParameters: {
         'since': _getIso(DateTime.now().subtract(const Duration(days: 29)), false),
         'to': _getIso(DateTime.now(), true),
@@ -110,6 +104,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // РЕШАЕМ: КАКОЙ LAYOUT ПОКАЗАТЬ, НО ДАННЫЕ ОДНИ И ТЕ ЖЕ
+        if (constraints.maxWidth < 800) {
+          return _buildMobileLayout();
+        }
+        return _buildDesktopLayout();
+      },
+    );
+  }
+
+  Widget _buildMobileLayout() {
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
       appBar: AppBar(
@@ -123,48 +129,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
       body: RefreshIndicator(
         onRefresh: () => _loadAllData(),
         child: MobileDashboardView(
-          items: items,
-          totals: totals,
-          yesterdayTotals: yesterdayTotals,
-          weeklyStats: weeklyStats,
-          isLoading: loading,
-          selectedPeriod: selectedPeriod,
-          activeDate: activeDate,
-          drillDownDate: drillDownDate,
-          onPeriodChanged: (period) {
-            setState(() {
-              selectedPeriod = period;
-              drillDownDate = null; // Сбрасываем детали при смене периода
-              activeDate = DateTime.now();
-            });
-            _loadAllData();
-          },
-          onDateChanged: (newDate) {
-            setState(() {
-              activeDate = newDate;
-              drillDownDate = null;
-            });
-            _loadAllData();
-          },
-          onDrillDown: (date) {
-            setState(() => drillDownDate = date);
-            _loadAllData();
-          },
-          onResetDrillDown: () {
-            setState(() => drillDownDate = null);
-            _loadAllData();
-          },
+          items: items, totals: totals, yesterdayTotals: yesterdayTotals, weeklyStats: weeklyStats,
+          isLoading: loading, selectedPeriod: selectedPeriod, activeDate: activeDate, drillDownDate: drillDownDate,
+          onPeriodChanged: (p) { setState(() { selectedPeriod = p; drillDownDate = null; activeDate = DateTime.now(); }); _loadAllData(); },
+          onDateChanged: (d) { setState(() { activeDate = d; drillDownDate = null; }); _loadAllData(); },
+          onDrillDown: (d) { setState(() => drillDownDate = d); _loadAllData(); },
+          onResetDrillDown: () { setState(() => drillDownDate = null); _loadAllData(); },
         ),
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        selectedItemColor: Colors.black, unselectedItemColor: Colors.grey,
-        type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: 'Главная'),
-          BottomNavigationBarItem(icon: Icon(Icons.grid_view), label: 'Товары'),
-          BottomNavigationBarItem(icon: Icon(Icons.warehouse_outlined), label: 'Склад'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'Профиль'),
+    );
+  }
+
+  Widget _buildDesktopLayout() {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Ozon Hub - Desktop'),
+        actions: [
+          IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()))),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: () => _loadAllData()),
         ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            // Для десктопа просто выводим кнопки управления и таблицу
+            if (loading) const LinearProgressIndicator(),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                ElevatedButton(onPressed: () { setState(() => selectedPeriod = 'today'); _loadAllData(); }, child: const Text('Сегодня')),
+                const SizedBox(width: 8),
+                ElevatedButton(onPressed: () { setState(() => selectedPeriod = 'week'); _loadAllData(); }, child: const Text('Неделя')),
+                const SizedBox(width: 8),
+                ElevatedButton(onPressed: () { setState(() => selectedPeriod = 'month'); _loadAllData(); }, child: const Text('Месяц')),
+              ],
+            ),
+            const SizedBox(height: 20),
+            SalesTable(items: items, delivered: true, totals: totals),
+          ],
+        ),
       ),
     );
   }
