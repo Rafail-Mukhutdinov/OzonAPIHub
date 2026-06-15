@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   # -----------------------------------------------------------------------
-  # Redis (Для Rate Limiting и Кеширования)
+  # Redis (Для Rate Limiting и Очереди задач ARQ)
   # -----------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -54,14 +52,37 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8083:8083"  # Переводим бэкенд на 8083
+      - "8083:8083"
     env_file:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-ozon_user}:${POSTGRES_PASSWORD:-SecurePass2024!}@db:5432/${POSTGRES_DB:-ozon_saas}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - REDIS_URL=redis://redis:6379/0
       - INIT_DB_ON_STARTUP=true
       - DEBUG=false
+    volumes:
+      - ./logs:/app/logs
+
+  # -----------------------------------------------------------------------
+  # Воркер (ARQ) - отвечает за фоновую синхронизацию
+  # -----------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ozon_worker
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-ozon_user}:${POSTGRES_PASSWORD:-SecurePass2024!}@db:5432/${POSTGRES_DB:-ozon_saas}
+      - REDIS_URL=redis://redis:6379/0
+    command: ["arq", "services.worker.WorkerSettings"]
     volumes:
       - ./logs:/app/logs
 
@@ -75,7 +96,7 @@ services:
     container_name: ozon_frontend
     restart: always
     ports:
-      - "80:80"    # Теперь сайт будет открываться просто по IP адресу
+      - "80:80"
 
 volumes:
   postgres_data:

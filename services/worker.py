@@ -6,13 +6,13 @@
 import asyncio
 import logging
 from arq import cron
+from arq.connections import RedisSettings
 from db.database import SessionLocal, User, SyncStatus
 from services.sync import sync_user_orders, initial_backfill_for_user
-from utils.logging_config import setup_logging
+import utils.logging_config
 import os
 
-# Настройка логирования для воркера
-setup_logging()
+# Используем уже настроенный логгер
 logger = logging.getLogger("OzonAPIHub.worker")
 
 async def sync_all_users_task(ctx):
@@ -31,11 +31,9 @@ async def sync_all_users_task(ctx):
             return
 
         for user in users:
-            # В будущем здесь можно будет запускать подзадачи для каждого пользователя
-            # Но для начала выполним последовательно внутри воркера
             await sync_user_orders(user, db)
     except Exception as e:
-        logger.error(f"Ошибка в задаче sync_all_users_task: {e}")
+        logger.error(f"Ошибка в задаче sync_all_users_task: {e}", exc_info=True)
     finally:
         db.close()
 
@@ -50,7 +48,7 @@ async def initial_backfill_task(ctx, user_id: int):
         else:
             logger.error(f"Пользователь {user_id} не найден для backfill")
     except Exception as e:
-        logger.error(f"Ошибка в задаче initial_backfill_task для {user_id}: {e}")
+        logger.error(f"Ошибка в задаче initial_backfill_task для {user_id}: {e}", exc_info=True)
     finally:
         db.close()
 
@@ -64,13 +62,16 @@ async def shutdown(ctx):
 
 class WorkerSettings:
     """Настройки воркера arq."""
-    redis_settings = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_settings = RedisSettings.from_dsn(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+
     on_startup = startup
     on_shutdown = shutdown
     functions = [sync_all_users_task, initial_backfill_task]
 
+    # Увеличиваем таймаут выполнения задачи до 15 минут (900 сек)
+    job_timeout = 900
+
     # Расписание для Трека Б (недавние заказы) - каждые 5 минут
-    # Можно будет сделать адаптивным в будущем
     cron_jobs = [
         cron(sync_all_users_task, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55})
     ]

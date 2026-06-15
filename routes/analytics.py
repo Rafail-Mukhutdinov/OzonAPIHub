@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from db.database import OrderPosting, OrderProduct, Order, get_db, User
 import asyncio
 import logging
-from services.sync import fetch_and_save_orders
+from services.sync import fetch_and_save_orders_async
 from services.enrichment import enrich_posting_from_ozon
 from utils.common import valid_posting_number
 from utils.auth import get_current_user
@@ -27,7 +27,7 @@ async def _ensure_data_for_range(db: Session, start_iso: str, end_iso: str, user
     has_orders = db.query(Order).filter(Order.user_id == user_id, Order.created_at >= start_iso, Order.created_at <= end_iso).count() > 0
     if not has_orders:
         try:
-            res = await asyncio.to_thread(fetch_and_save_orders, start_iso, end_iso, "", 50, 0, True, True, False, user_id, db)
+            res = await fetch_and_save_orders_async(start_iso, end_iso, "", 50, 0, user_id, db)
             orders = res.get("orders") or []
             pns = [o.get("posting_number") for o in orders if valid_posting_number(o.get("posting_number"))]
             if pns:

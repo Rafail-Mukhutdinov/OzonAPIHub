@@ -8,7 +8,6 @@ class OzonApiClient {
   final Function()? onUnauthorized;
 
   static String getDefaultBaseUrl() {
-    // Приоритет 1: Переменная окружения через --dart-define=API_BASE_URL=...
     const String envUrl = String.fromEnvironment('API_BASE_URL');
     if (envUrl.isNotEmpty) {
       return envUrl;
@@ -20,9 +19,11 @@ class OzonApiClient {
         return 'http://localhost:8083';
       }
       if (host.isNotEmpty) {
+        // Явно добавляем порт 8083, игнорируя порт из Uri.base
         return 'http://$host:8083';
       }
     }
+    // Для мобильных приложений (Android/iOS)
     return 'http://45.150.11.25:8083';
   }
 

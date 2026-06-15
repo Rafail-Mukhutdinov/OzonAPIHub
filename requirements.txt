@@ -13,6 +13,7 @@ psycopg2-binary==2.9.11  # Updated for Python 3.13 compatibility
 # Redis & Rate Limiting
 redis==5.0.1
 slowapi==0.1.9
+arq==0.26.1  # Distributed task queue
 
 # Security & Authentication
 cryptography==41.0.7

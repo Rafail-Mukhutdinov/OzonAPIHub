@@ -1,7 +1,7 @@
 """
 Главный модуль приложения OzonAPIHub.
 Здесь инициализируется FastAPI, подключаются маршруты (роутеры),
-настраивается middleware и запускаются фоновые задачи.
+настраивается middleware и запускаются фоновые задачи через воркеры.
 """
 
 import os
@@ -9,22 +9,23 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from arq import create_pool
+from arq.connections import RedisSettings
 
 # Загружаем переменные окружения из файла .env в самом начале работы
 load_dotenv()
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, BackgroundTasks
 from starlette.middleware.cors import CORSMiddleware
-from db.database import get_db, Order, engine, Base
+from db.database import get_db, Order, engine, Base, SessionLocal, SyncStatus
 from utils.rate_limit_middleware import setup_rate_limiting
-from services.sync import background_sync_loop
+from utils.auth import get_current_user
 
 # Инициализация кастомного логирования (см. utils/logging_config.py)
 import utils.logging_config
 logger = logging.getLogger("OzonAPIHub")
 
-# Интервал между циклами фоновой синхронизации (в секундах)
-SYNC_INTERVAL_SECONDS = int(os.getenv('SYNC_INTERVAL_SECONDS', '300'))
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,19 +33,19 @@ async def lifespan(app: FastAPI):
     Контекст-менеджер жизненного цикла приложения.
     Выполняет действия при запуске и завершении сервера.
     """
-    # Создаём все таблицы при запуске (автоматическая миграция для разработки)
+    # 1. Создаём все таблицы при запуске (автоматическая миграция для разработки)
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables initialized")
 
-    # Состояние для отслеживания статистики последней синхронизации в памяти
-    app.state.last_sync_new = None
-    app.state.last_sync_recent = None
-    app.state.last_sync_error = None
-
-    # Очистка "зависших" статусов синхронизации в БД.
-    # Это нужно, если сервер упал или был перезагружен во время активного процесса backfill.
+    # 2. Инициализация пула задач ARQ (Redis)
     try:
-        from db.database import SessionLocal, SyncStatus
+        app.state.arq_pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
+        logger.info("ARQ Task Pool initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize ARQ pool: {e}")
+
+    # 3. Очистка "зависших" статусов синхронизации в БД.
+    try:
         db = SessionLocal()
         try:
             stuck_syncs = db.query(SyncStatus).filter(SyncStatus.is_syncing == True).all()
@@ -59,34 +60,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Ошибка при сбросе зависших статусов: {e}")
 
-    # Запуск фонового бесконечного цикла синхронизации для всех активных пользователей
-    sync_task = asyncio.create_task(background_sync_loop(app, SYNC_INTERVAL_SECONDS))
-    app.state.sync_task = sync_task
-
-    logger.info("Application OzonAPIHub started")
+    logger.info("Application OzonAPIHub started (API only mode)")
 
     yield  # Здесь приложение начинает обрабатывать HTTP-запросы
 
     # Действия при остановке сервера
-    if sync_task:
-        sync_task.cancel()
-        try:
-            await sync_task
-        except asyncio.CancelledError:
-            logger.info("Background sync task cancelled")
+    if hasattr(app.state, 'arq_pool'):
+        await app.state.arq_pool.close()
+        logger.info("ARQ Task Pool closed")
 
 # Инициализация FastAPI приложения
 app = FastAPI(
     title="OzonAPIHub",
-    description="Сервис синхронизации и аналитики заказов Ozon FBO",
-    version="1.0.0",
-    lifespan=lifespan
+    description="Сервис синхронизации и аналитики заказов Ozon FBO с параллельной обработкой",
+    version="1.1.0",
+    lifespan=lifespan,
+    strict_slashes=False
 )
 
-# Подключаем защиту от DDoS и спама (Rate Limiting) через slowapi
+# Подключаем защиту от DDoS и спама (Rate Limiting)
 setup_rate_limiting(app)
 
-# Настройка CORS для взаимодействия с фронтендом
+# Настройка CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -99,7 +94,7 @@ app.add_middleware(
         "http://45.150.11.25",
         "http://45.150.11.25:8083",
     ],
-    allow_origin_regex=r"http://localhost:\d+", # Разрешаем любые порты на localhost для разработки
+    allow_origin_regex=r"http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,10 +103,9 @@ app.add_middleware(
 
 @app.get("/ping")
 async def ping():
-    """Простой эндпоинт для проверки доступности сервера (Health Check)."""
     return {"message": "pong"}
 
-# Импорты роутеров (маршрутов API)
+# Импорты роутеров
 from routes.analytics import router as analytics_router
 from routes.orders import router as orders_router
 from routes.sync_endpoints import router as sync_router
@@ -119,39 +113,34 @@ from routes.costs import router as costs_router
 from routes.enrichment_endpoints import router as enrichment_router
 from routes.auth_endpoints import router as auth_router
 
-from routes.auth_endpoints import get_current_user
-from fastapi import BackgroundTasks
-from db.database import SyncStatus
-from services.sync import initial_backfill_for_user
 from datetime import datetime, timezone
 
-# ПЕРЕХВАТ МАРШРУТОВ:
-# Мы переопределяем запуск первичной синхронизации здесь,
-# чтобы иметь прямой доступ к фоновым задачам (BackgroundTasks) FastAPI.
+# ПЕРЕХВАТ МАРШРУТОВ ДЛЯ ВОРКЕРОВ:
 @app.post("/sync/initial/force")
 @app.post("/sync/initial")
 async def override_sync_initial(
-    background_tasks: BackgroundTasks,
     user = Depends(get_current_user),
     db = Depends(get_db)
 ):
-    """Принудительный запуск полной загрузки истории заказов."""
+    """Принудительный запуск полной загрузки истории заказов через ARQ воркер."""
     sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
     if not sync_status:
         sync_status = SyncStatus(user_id=user.id)
         db.add(sync_status)
     
     sync_status.is_syncing = True
-    sync_status.status_message = "Инициализация фоновой задачи..."
+    sync_status.status_message = "Задача добавлена в очередь воркеров..."
     sync_status.sync_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
 
-    logger.info(f"Нажата кнопка загрузки для пользователя {user.id}. Старт...")
-    # Задача уходит в фон, эндпоинт отвечает мгновенно
-    background_tasks.add_task(initial_backfill_for_user, user.id, None)
-    return {"status": "ok", "message": "Загрузка запущена"}
+    logger.info(f"Добавление задачи Backfill в очередь для пользователя {user.id}")
 
-# Подключение всех модулей API к основному приложению
+    # Отправляем задачу в Redis для воркера
+    await app.state.arq_pool.enqueue_job('initial_backfill_task', user.id)
+
+    return {"status": "ok", "message": "Загрузка добавлена в очередь"}
+
+# Подключение всех модулей API
 app.include_router(analytics_router)
 app.include_router(orders_router)
 app.include_router(sync_router)
@@ -161,14 +150,8 @@ app.include_router(auth_router)
 
 @app.get("/stats")
 def stats(db = Depends(get_db)):
-    """Общая статистика сервера (количество записей, время последней синхронизации)."""
     total = db.query(Order).count()
-    min_created = db.query(Order.created_at).order_by(Order.created_at.asc()).first()
-    max_created = db.query(Order.created_at).order_by(Order.created_at.desc()).first()
     return {
         "total_rows": total,
-        "min_created_at": min_created[0] if min_created else None,
-        "max_created_at": max_created[0] if max_created else None,
-        "last_sync_new": getattr(app.state, 'last_sync_new', None),
-        "last_sync_error": getattr(app.state, 'last_sync_error', None),
+        "mode": "distributed_workers"
     }
