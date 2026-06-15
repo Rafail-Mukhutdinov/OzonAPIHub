@@ -33,7 +33,7 @@ def _get_headers(client_id: str, api_key: str) -> dict:
     }
 
 
-async def ozon_fbo_list_async(client_id: str, api_key: str, filter_dict: dict, limit: int, offset: int, with_flags: dict):
+async def ozon_fbo_list_async(client_id: str, api_key: str, filter_dict: dict, limit: int = 50, offset: int = 0, with_flags: dict = None):
     """
     Асинхронно получить список FBO постингов (отправлений со склада Ozon).
     Документация: https://docs.ozon.ru/api/seller/#operation/PostingAPI_GetFboPostingList
