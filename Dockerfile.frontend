@@ -13,8 +13,8 @@ RUN flutter doctor -v
 WORKDIR /app
 COPY ozon_sales_dashboard/ .
 
-# Сборка
-RUN flutter build web --release --dart-define=API_BASE_URL=http://localhost:8083
+# Сборка без жестко заданного API_BASE_URL, чтобы работала динамика в api.dart
+RUN flutter build web --release
 
 # ЭТАП 2: Nginx
 FROM nginx:alpine
