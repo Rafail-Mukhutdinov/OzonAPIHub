@@ -9,6 +9,7 @@ import logging
 import asyncio
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
+from sqlalchemy import desc
 from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal, SyncStatus
 from services.enrichment import enrich_posting_from_ozon
 from services.ozon import ozon_fbo_list_async
@@ -33,7 +34,9 @@ def _get_now_utc():
 
 async def sync_user_orders(user: User, db: Session):
     """
-    Синхронизирует заказы для ОДНОГО пользователя (проверяет только недавнее окно времени).
+    Синхронизирует заказы для ОДНОГО пользователя.
+    Реализует механизм Smart Gap Filling: если сервер простаивал,
+    окно поиска расширяется до последней записи в БД.
     """
     try:
         active_cred = db.query(OzonCredential).filter(
@@ -44,8 +47,35 @@ async def sync_user_orders(user: User, db: Session):
         if not active_cred:
             return
 
-        log_user_event(user.id, f"Запуск плановой синхронизации (окно {RECENT_WINDOW_HOURS}ч)")
+        # --- Smart Gap Filling LOGIC ---
+        now = _get_now_utc()
+        default_since = now - timedelta(hours=RECENT_WINDOW_HOURS)
 
+        # Ищем дату последнего заказа в базе
+        last_order = db.query(Order).filter(Order.user_id == user.id).order_by(desc(Order.created_at)).first()
+
+        since_dt = default_since
+        is_gap_fill = False
+
+        if last_order and last_order.created_at:
+            try:
+                # Озон присылает дату в ISO, например 2024-05-20T12:00:00Z
+                last_dt = datetime.fromisoformat(last_order.created_at.replace('Z', ''))
+                # Если последний заказ старше нашего стандартного окна (RECENT_WINDOW_HOURS)
+                if last_dt < default_since:
+                    since_dt = last_dt - timedelta(minutes=30) # Нахлест 30 мин для надежности
+                    is_gap_fill = True
+                    logger.info(f"User {user.id}: Обнаружен пробел в данных. Последний заказ: {last_dt}. Расширяем окно.")
+            except Exception as e:
+                logger.warning(f"User {user.id}: Ошибка парсинга даты последнего заказа: {e}")
+
+        since_iso = since_dt.replace(microsecond=0).isoformat() + 'Z'
+        to_iso = now.replace(microsecond=0).isoformat() + 'Z'
+
+        log_msg = f"Запуск синхронизации ({'GAP FILL' if is_gap_fill else 'ПЛАНОВАЯ'}). Окно: {since_iso} -> {to_iso}"
+        log_user_event(user.id, log_msg)
+
+        # Дешифруем ключи доступа
         client_id = decrypt_credential(active_cred.client_id_encrypted)
         api_key = decrypt_credential(active_cred.api_key_encrypted)
         
@@ -54,12 +84,7 @@ async def sync_user_orders(user: User, db: Session):
             logger.error(f"User {user.id}: {error_msg}")
             log_user_event(user.id, error_msg, "error")
             return
-        
-        now = _get_now_utc()
-        since_dt = now - timedelta(hours=RECENT_WINDOW_HOURS)
-        since_iso = since_dt.replace(microsecond=0).isoformat() + 'Z'
-        to_iso = now.replace(microsecond=0).isoformat() + 'Z'
-        
+
         filter_dict = {'since': since_iso, 'to': to_iso}
         
         total_saved = 0
