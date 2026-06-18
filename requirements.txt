@@ -21,6 +21,7 @@ passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.3.0
 python-multipart==0.0.6
 email-validator==2.3.0
+python-dateutil==2.9.0
 
 # Database migrations (опционально, но рекомендуется)
 alembic==1.13.1

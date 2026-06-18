@@ -15,12 +15,18 @@ async def enrich_date_range(user_id: int, date_str: str):
     Обогатить все постинги за конкретную дату (MSK)
     date_str: "2026-02-01"
     """
-    from dateutil import parser
-    from datetime import timedelta, timezone
+    from datetime import datetime, timedelta, timezone
 
-    # Парсим начало и конец дня в MSK (UTC+3)
-    start_msk = parser.parse(f"{date_str}T00:00:00+03:00")
-    end_msk = parser.parse(f"{date_str}T23:59:59+03:00")
+    # Парсим дату в MSK (UTC+3) без сторонних библиотек
+    try:
+        y, m, d = map(int, date_str.split('-'))
+        # Начало дня MSK (00:00:00+03:00)
+        start_msk = datetime(y, m, d, 0, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+        # Конец дня MSK (23:59:59+03:00)
+        end_msk = datetime(y, m, d, 23, 59, 59, tzinfo=timezone(timedelta(hours=3)))
+    except Exception as e:
+        print(f"Ошибка формата даты: {e}. Используйте ГГГГ-ММ-ДД")
+        return
 
     # Переводим в UTC для поиска в БД
     start_utc = start_msk.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
