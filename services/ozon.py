@@ -33,23 +33,25 @@ def _get_headers(client_id: str, api_key: str) -> dict:
     }
 
 
-async def ozon_fbo_list_async(client_id: str, api_key: str, filter_dict: dict, limit: int = 50, offset: int = 0, with_flags: dict = None):
+async def ozon_fbo_list_async(client_id: str, api_key: str, filter_dict: dict, limit: int = 50, offset: int = 0, with_flags: dict = None, sort_dir: str = "ASC"):
     """
-    Асинхронно получить список FBO постингов (отправлений со склада Ozon).
-    Документация: https://docs.ozon.ru/api/seller/#operation/PostingAPI_GetFboPostingList
+    Асинхронно получить список FBO постингов.
     """
     url = f"{BASE_URL}/v2/posting/fbo/list"
     body = {
-        "dir": "ASC",            # Сортировка по дате (от старых к новым)
-        "filter": filter_dict,    # Фильтры по датам и статусам
-        "limit": limit,           # Количество записей
-        "offset": offset,         # Смещение для пагинации
+        "dir": sort_dir,            # По умолчанию ASC (от старых к новым)
+        "filter": filter_dict,
+        "limit": limit,
+        "offset": offset,
         "translit": True,
-        # Запрашиваем аналитические и финансовые данные (комиссии, выплаты)
         "with": with_flags or {"analytics_data": True, "financial_data": True, "legal_info": False},
     }
     
     headers = _get_headers(client_id, api_key)
+
+    # Логируем начало запроса
+    if offset == 0:
+        logger.info(f"Ozon API: Запрос списка заказов ({sort_dir}, since={filter_dict.get('since')})")
 
     if LOG_OZON_REQUESTS:
         logger.debug(f"Ozon list request for client {client_id[:4]}...: {body}")

@@ -91,6 +91,14 @@ class SyncStatusResponse(BaseModel):
     sync_started_at: datetime | None
     sync_completed_at: datetime | None
 
+    # Поля Backfill
+    backfill_cursor: datetime | None = None
+    backfill_started_at: datetime | None = None
+    backfill_completed_at: datetime | None = None
+    backfill_from: datetime | None = None
+    backfill_to: datetime | None = None
+    backfill_is_complete: bool = False
+
 
 # ============================================================================
 # Эндпоинты (Маршруты API)

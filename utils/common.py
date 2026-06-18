@@ -4,6 +4,62 @@
 узкой специализации.
 """
 
+from datetime import datetime, timedelta, timezone
+from typing import Union
+
+def parse_ozon_datetime(value: Union[str, datetime, None]) -> Union[datetime, None]:
+    """
+    Универсальный парсинг даты из разных форматов Ozon API.
+    Поддерживает:
+    - 2025-06-15T00:00:00Z
+    - 2025-06-15T00:00:00.000Z
+    - 2025-06-15T00:00:00+03:00
+    - 2025-06-15 00:00:00
+    - datetime объекты (наивные считаются UTC)
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    try:
+        # Убираем Z и микросекунды для простого парсинга, если нужно
+        # Но fromisoformat в Python 3.11+ хорошо справляется с Z
+        clean_value = value.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(clean_value)
+        # Если дата наивная, считаем её UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        # Фоллбек на ручной парсинг простых форматов
+        formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(value.split('.')[0].split('+')[0].strip(), fmt)
+                return dt.replace(tzinfo=timezone.utc)
+            except:
+                continue
+    return None
+
+def to_msk(dt_or_str: Union[str, datetime, None], offset_hours: int = 3) -> Union[datetime, None]:
+    """Переводит UTC datetime или строку в местное время (по умолчанию MSK UTC+3)."""
+    dt = parse_ozon_datetime(dt_or_str)
+    if dt is None:
+        return None
+    return dt.astimezone(timezone(timedelta(hours=offset_hours))).replace(tzinfo=None)
+
+def to_msk_date(dt_or_str: Union[str, datetime, None], offset_hours: int = 3) -> str:
+    """Извлекает дату ГГГГ-ММ-ДД по местному времени."""
+    dt_local = to_msk(dt_or_str, offset_hours)
+    if dt_local is None:
+        return ""
+    return dt_local.strftime("%Y-%m-%d")
+
 def valid_posting_number(pn: str | None) -> bool:
     """
     Валидация номера отправления (posting_number).

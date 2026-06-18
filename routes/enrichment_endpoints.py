@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from db.database import Order, OrderPosting, get_db, User
 from services.enrichment import enrich_posting_from_ozon
+from services.sync import run_enrichment_batch
 from utils.common import valid_posting_number
 from utils.auth import get_current_user
 
@@ -45,9 +46,11 @@ async def enrich_posting(
     """
     try:
         # Вызываем логику обогащения, которая сходит в Ozon API
-        result = await enrich_posting_from_ozon(item.posting_number, current_user, db)
+        result = await enrich_posting_from_ozon(item.posting_number, current_user.id, db)
+        db.commit() # Делаем коммит для одиночного запроса
         return result
     except Exception as e:
+        db.rollback()
         logger.error(f"Ошибка обогащения {item.posting_number}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -85,18 +88,13 @@ async def enrich_order(
     # Выполняем поиск в потоке, так как SQLAlchemy здесь синхронна
     postings = await asyncio.to_thread(get_postings)
     
-    results = []
-    for pn in postings:
-        try:
-            res = await enrich_posting_from_ozon(pn, current_user, db)
-            results.append(res)
-        except Exception as e:
-            results.append({"posting_number": pn, "error": str(e)})
+    if postings:
+        await run_enrichment_batch(postings, current_user.id)
     
     return {
         "order_number": item.order_number,
         "count": len(postings),
-        "results": results
+        "status": "ok"
     }
 
 
@@ -108,7 +106,6 @@ async def enrich_recent(
 ):
     """
     Массовое обогащение последних заказов (например, за последние 48 часов).
-    Помогает "докачать" данные, если фоновая задача что-то пропустила.
     """
     since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
     since_iso = since_dt.isoformat() + 'Z'
@@ -130,15 +127,10 @@ async def enrich_recent(
 
     targets = await asyncio.to_thread(find_targets)
     
-    results = []
-    for pn in targets:
-        try:
-            res = await enrich_posting_from_ozon(pn, current_user, db)
-            results.append(res)
-        except Exception:
-            results.append({"posting_number": pn, "status": "error"})
+    if targets:
+        await run_enrichment_batch(targets, current_user.id)
     
-    return {"processed": len(targets), "results": results}
+    return {"processed": len(targets), "status": "ok"}
 
 
 @router.post("/enrich_changed_recent")
@@ -148,9 +140,7 @@ async def enrich_changed_recent(
     db: Session = Depends(get_db)
 ):
     """
-    Интеллектуальное обогащение: ищет заказы, у которых изменился статус
-    (например, с 'доставляется' на 'доставлено') и обновляет финансовые данные.
-    Это важно, так как комиссии могут измениться при финальной доставке.
+    Интеллектуальное обогащение: ищет заказы, у которых изменился статус.
     """
     since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
     since_iso = since_dt.isoformat() + 'Z'
@@ -166,25 +156,19 @@ async def enrich_changed_recent(
             pn = r.posting_number
             if not valid_posting_number(pn): continue
 
-            # Сравниваем статус в сырой таблице (куда всё качается быстро)
-            # со статусом в нормализованной таблице
-            row = db.query(OrderPosting).filter(
+            # Сравниваем статус в сырой таблице со статусом в нормализованной
+            row = db.query(OrderPosting.posting_number, OrderPosting.status).filter(
                 OrderPosting.posting_number == pn,
                 OrderPosting.user_id == current_user.id
             ).first()
 
-            if (row.status if row else None) != r.status:
+            if not row or row.status != r.status:
                 candidates.append(pn)
         return sorted(set(candidates))[:limit]
 
     targets = await asyncio.to_thread(find_changed)
     
-    results = []
-    for pn in targets:
-        try:
-            res = await enrich_posting_from_ozon(pn, current_user, db)
-            results.append(res)
-        except Exception:
-            results.append({"posting_number": pn, "status": "error"})
+    if targets:
+        await run_enrichment_batch(targets, current_user.id)
     
-    return {"processed": len(targets), "results": results}
+    return {"processed": len(targets), "status": "ok"}

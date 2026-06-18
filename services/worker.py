@@ -8,9 +8,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from arq import cron
 from arq.connections import RedisSettings
-from db.database import SessionLocal, User, SyncStatus, Order
-from sqlalchemy import desc
-from services.sync import sync_user_orders, initial_backfill_for_user
+from db.database import SessionLocal, User, SyncStatus, Order, OrderPosting
+from sqlalchemy import desc, func
+from services.sync import sync_user_orders, initial_backfill_for_user, get_latest_order_datetime
+from utils.common import to_msk, parse_ozon_datetime
 import utils.logging_config
 import os
 
@@ -22,7 +23,7 @@ def _get_now_utc():
 async def sync_all_users_task(ctx):
     """
     Задача по расписанию: синхронизация всех активных пользователей.
-    Реализует Adaptive Polling: частота зависит от времени последней продажи.
+    Реализует Adaptive Polling: частота зависит от времени последней продажи (МСК).
     """
     now = _get_now_utc()
     db = SessionLocal()
@@ -37,39 +38,39 @@ async def sync_all_users_task(ctx):
             return
 
         for user in users:
-            # --- ADAPTIVE POLLING LOGIC ---
             status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
 
-            # Определяем интервал на основе последней продажи
-            last_order = db.query(Order).filter(Order.user_id == user.id).order_by(desc(Order.created_at)).first()
+            # --- ADAPTIVE POLLING LOGIC ---
+            # Надежно ищем последний заказ в обеих таблицах
+            last_dt = get_latest_order_datetime(db, user.id)
 
-            interval_minutes = 15 # По умолчанию (Эко-режим)
+            interval_minutes = 15 # Эко: активности давно нет
 
-            if last_order and last_order.created_at:
+            if last_dt:
                 try:
-                    last_dt = datetime.fromisoformat(last_order.created_at.replace('Z', ''))
                     diff = now - last_dt
 
+                    # Сравниваем в MSK
+                    now_msk = to_msk(now)
+                    last_order_msk = to_msk(last_dt)
+
                     if diff < timedelta(hours=1):
-                        interval_minutes = 1  # Турбо: продажи были менее часа назад
-                    elif diff < timedelta(hours=24):
-                        interval_minutes = 5  # Стандарт: продажи были сегодня
-                except:
+                        interval_minutes = 1  # Турбо: продажа менее часа назад
+                    elif last_order_msk.date() == now_msk.date():
+                        interval_minutes = 5  # Стандарт: продажи были сегодня по МСК
+                except Exception as e:
+                    logger.warning(f"Error calculating adaptive interval for user {user.id}: {e}")
                     interval_minutes = 5
 
             # Проверяем, пришло ли время для синхронизации
             last_sync = status.updated_at if status and status.updated_at else (now - timedelta(days=1))
             if now - last_sync < timedelta(minutes=interval_minutes):
-                # Еще не время
                 continue
 
             logger.info(f"User {user.id}: Запуск адаптивной синхронизации (интервал {interval_minutes}м)")
-            # Сама функция синхронизации теперь возвращает True, если нашли новые заказы
             activity_found = await sync_user_orders(user, db)
 
-            # Если нашли новые заказы — принудительно обновим время в статусе,
-            # чтобы следующий запуск в "Турбо" был через минуту
-            if activity_found and status:
+            if status:
                 status.updated_at = _get_now_utc()
                 db.commit()
 
@@ -89,6 +90,9 @@ async def initial_backfill_task(ctx, user_id: int):
         db.close()
 
 async def startup(ctx):
+    from db.database import init_db
+    init_db()
+    logger.info("Database initialized and migrations applied by worker")
     logger.info("Воркер запущен. Режим: Adaptive Polling (1/5/15 мин)")
 
 async def shutdown(ctx):

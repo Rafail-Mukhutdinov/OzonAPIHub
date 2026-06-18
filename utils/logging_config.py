@@ -50,6 +50,10 @@ logging.basicConfig(
 # Главный объект логгера для импорта в другие модули
 logger = logging.getLogger("OzonAPIHub")
 
+# Отключаем лишний шум от сторонних библиотек (httpx, и т.д.)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 def get_user_logger(user_id: int):
     """
     Создает или возвращает логгер, привязанный к конкретному ID пользователя.

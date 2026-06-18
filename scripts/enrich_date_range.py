@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from db.database import SessionLocal, OrderPosting, User
+from db.database import SessionLocal, OrderPosting, User, Order
 from services.enrichment import enrich_posting_from_ozon
 
 async def enrich_date_range(user_id: int, date_str: str):
@@ -16,38 +16,58 @@ async def enrich_date_range(user_id: int, date_str: str):
     date_str: "2026-02-01"
     """
     from dateutil import parser
-    
-    # Парсим дату в MSK
-    target_date = parser.parse(date_str)
-    # Переводим в UTC: MSK = UTC+3, поэтому начало дня MSK это 21:00 UTC предыдущего дня
-    start_utc = parser.parse(f"{date_str}T00:00:00+03:00").isoformat().replace('+03:00', 'Z')
-    end_utc = parser.parse(f"{date_str}T23:59:59+03:00").isoformat().replace('+03:00', 'Z')
+    from datetime import timedelta, timezone
+
+    # Парсим начало и конец дня в MSK (UTC+3)
+    start_msk = parser.parse(f"{date_str}T00:00:00+03:00")
+    end_msk = parser.parse(f"{date_str}T23:59:59+03:00")
+
+    # Переводим в UTC для поиска в БД
+    start_utc = start_msk.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+    end_utc = end_msk.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
     
     print(f"Ищу постинги за {date_str} (MSK)")
     print(f"UTC range: {start_utc} to {end_utc}")
     
     db = SessionLocal()
     try:
-        # Находим все постинги за эту дату
-        postings = db.query(OrderPosting).filter(
+        # 1. Сначала ищем в нормализованной таблице
+        norm_postings = db.query(OrderPosting.posting_number).filter(
             OrderPosting.user_id == user_id,
             OrderPosting.created_at >= start_utc,
             OrderPosting.created_at <= end_utc
         ).all()
-        
+
+        # 2. Ищем в сырой таблице (чтобы найти те, что еще не нормализованы)
+        raw_postings = db.query(Order.posting_number).filter(
+            Order.user_id == user_id,
+            Order.created_at >= start_utc,
+            Order.created_at <= end_utc
+        ).all()
+
+        all_pns = sorted(set([p[0] for p in norm_postings] + [p[0] for p in raw_postings]))
+
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             print(f"User {user_id} not found")
             return
         
-        print(f"Found {len(postings)} postings")
+        print(f"Found {len(all_pns)} unique postings")
         
-        for i, posting in enumerate(postings, 1):
+        for i, pn in enumerate(all_pns, 1):
             try:
-                print(f"[{i}/{len(postings)}] Enriching {posting.posting_number}...", end="")
-                result = await enrich_posting_from_ozon(posting.posting_number, user, db)
-                print(f" ✓")
+                print(f"[{i}/{len(all_pns)}] Enriching {pn}...", end="")
+                # Передаем user_id напрямую в новую версию функции, если она была обновлена,
+                # или оставляем как было (зависит от версии enrichment.py)
+                result = await enrich_posting_from_ozon(pn, user_id, db)
+                if result.get("status") == "ok":
+                    db.commit()
+                    print(f" ✓")
+                else:
+                    db.rollback()
+                    print(f" ✗ {result.get('status')}")
             except Exception as e:
+                db.rollback()
                 print(f" ✗ Error: {e}")
                 
     finally:

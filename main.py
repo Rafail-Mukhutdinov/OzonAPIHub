@@ -15,9 +15,9 @@ from arq.connections import RedisSettings
 # Загружаем переменные окружения из файла .env в самом начале работы
 load_dotenv()
 
-from fastapi import FastAPI, Depends, BackgroundTasks
+from fastapi import FastAPI, Depends
 from starlette.middleware.cors import CORSMiddleware
-from db.database import get_db, Order, engine, Base, SessionLocal, SyncStatus
+from db.database import get_db, Order, engine, Base, SessionLocal, SyncStatus, init_db
 from utils.rate_limit_middleware import setup_rate_limiting
 from utils.auth import get_current_user
 
@@ -33,9 +33,9 @@ async def lifespan(app: FastAPI):
     Контекст-менеджер жизненного цикла приложения.
     Выполняет действия при запуске и завершении сервера.
     """
-    # 1. Создаём все таблицы при запуске (автоматическая миграция для разработки)
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables initialized")
+    # 1. Инициализируем БД и выполняем миграции
+    init_db()
+    logger.info("Database initialized and migrations applied")
 
     # 2. Инициализация пула задач ARQ (Redis)
     try:
@@ -112,33 +112,6 @@ from routes.sync_endpoints import router as sync_router
 from routes.costs import router as costs_router
 from routes.enrichment_endpoints import router as enrichment_router
 from routes.auth_endpoints import router as auth_router
-
-from datetime import datetime, timezone
-
-# ПЕРЕХВАТ МАРШРУТОВ ДЛЯ ВОРКЕРОВ:
-@app.post("/sync/initial/force")
-@app.post("/sync/initial")
-async def override_sync_initial(
-    user = Depends(get_current_user),
-    db = Depends(get_db)
-):
-    """Принудительный запуск полной загрузки истории заказов через ARQ воркер."""
-    sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
-    if not sync_status:
-        sync_status = SyncStatus(user_id=user.id)
-        db.add(sync_status)
-    
-    sync_status.is_syncing = True
-    sync_status.status_message = "Задача добавлена в очередь воркеров..."
-    sync_status.sync_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
-    db.commit()
-
-    logger.info(f"Добавление задачи Backfill в очередь для пользователя {user.id}")
-
-    # Отправляем задачу в Redis для воркера
-    await app.state.arq_pool.enqueue_job('initial_backfill_task', user.id)
-
-    return {"status": "ok", "message": "Загрузка добавлена в очередь"}
 
 # Подключение всех модулей API
 app.include_router(analytics_router)

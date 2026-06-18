@@ -17,17 +17,22 @@ def get_utc_now():
 # ВАЖНО: На сервере DATABASE_URL передается через docker-compose
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Фоллбек только для локальной разработки, если переменная не задана совсем
 if not DATABASE_URL:
-    DATABASE_URL = "postgresql://ozon_user:SecurePass2024!@localhost:5432/ozon_saas"
+    raise RuntimeError("DATABASE_URL is not set. Please configure DATABASE_URL in environment variables or .env file.")
 
-engine = sa.create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    echo=False
-)
+engine_kwargs = {
+    "pool_pre_ping": True,
+    "echo": False,
+}
+
+# pool_size и max_overflow не поддерживаются в SQLite (используется StaticPool)
+if DATABASE_URL.startswith("postgresql"):
+    engine_kwargs.update({
+        "pool_size": 10,
+        "max_overflow": 20,
+    })
+
+engine = sa.create_engine(DATABASE_URL, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -152,6 +157,15 @@ class SyncStatus(Base):
     sync_completed_at = Column(DateTime, nullable=True)
     total_records_synced = Column(Integer, default=0, nullable=False)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
+
+    # Поля для устойчивого Backfill
+    backfill_cursor = Column(DateTime, nullable=True)
+    backfill_started_at = Column(DateTime, nullable=True)
+    backfill_completed_at = Column(DateTime, nullable=True)
+    backfill_from = Column(DateTime, nullable=True)
+    backfill_to = Column(DateTime, nullable=True)
+    backfill_is_complete = Column(Boolean, default=False, nullable=False)
+
     user = relationship("User")
 
 def get_db():
@@ -161,3 +175,40 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+
+    import logging
+    db_logger = logging.getLogger("OzonAPIHub.database")
+
+    # Временная авто-миграция для новых полей SyncStatus
+    common_cols = [
+        ("backfill_cursor", "TIMESTAMP NULL"),
+        ("backfill_started_at", "TIMESTAMP NULL"),
+        ("backfill_completed_at", "TIMESTAMP NULL"),
+        ("backfill_from", "TIMESTAMP NULL"),
+        ("backfill_to", "TIMESTAMP NULL"),
+    ]
+
+    if engine.dialect.name == "postgresql":
+        postgres_cols = common_cols + [("backfill_is_complete", "BOOLEAN NOT NULL DEFAULT FALSE")]
+        with engine.begin() as conn:
+            for col_name, col_type in postgres_cols:
+                try:
+                    conn.execute(sa.text(f"ALTER TABLE sync_status ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+                except Exception:
+                    db_logger.exception("Migration error for sync_status.%s", col_name)
+    elif engine.dialect.name == "sqlite":
+        # SQLite не поддерживает ADD COLUMN IF NOT EXISTS напрямую
+        sqlite_cols = common_cols + [("backfill_is_complete", "BOOLEAN DEFAULT 0")]
+        with engine.connect() as conn:
+            # Проверяем наличие колонок
+            try:
+                existing_cols = [row[1] for row in conn.execute(sa.text("PRAGMA table_info(sync_status)")).fetchall()]
+                for col_name, col_type in sqlite_cols:
+                    if col_name not in existing_cols:
+                        try:
+                            conn.execute(sa.text(f"ALTER TABLE sync_status ADD COLUMN {col_name} {col_type}"))
+                            conn.commit()
+                        except Exception:
+                            db_logger.exception("SQLite Migration error for sync_status.%s", col_name)
+            except Exception:
+                db_logger.exception("Error checking sqlite columns")
