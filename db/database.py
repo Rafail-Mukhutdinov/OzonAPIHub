@@ -23,6 +23,8 @@ if not DATABASE_URL:
 engine_kwargs = {
     "pool_pre_ping": True,
     "echo": False,
+    "pool_recycle": 3600,
+    "pool_timeout": 30,
 }
 
 # pool_size и max_overflow не поддерживаются в SQLite (используется StaticPool)

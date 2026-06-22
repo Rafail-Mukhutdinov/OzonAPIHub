@@ -5,9 +5,12 @@
 """
 
 import os
+import logging
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet
 from typing import Optional
+
+logger = logging.getLogger("OzonAPIHub")
 
 # Загружаем переменные окружения, чтобы получить мастер-ключ ENCRYPTION_KEY
 load_dotenv()
@@ -63,7 +66,7 @@ def decrypt_credential(ciphertext: Optional[str]) -> Optional[str]:
         return decrypted.decode()
     except Exception as e:
         # Ошибка может возникнуть, если сменился ENCRYPTION_KEY в .env
-        print(f"КРИТИЧЕСКАЯ ОШИБКА РАСШИФРОВКИ: Возможно, мастер-ключ не совпадает. {e}")
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА РАСШИФРОВКИ: Возможно, мастер-ключ не совпадает. {e}")
         return None
 
 
