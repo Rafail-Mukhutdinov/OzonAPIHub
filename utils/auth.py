@@ -6,6 +6,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from dotenv import load_dotenv
 from jose import JWTError, jwt
 import bcrypt
 from fastapi import Depends, HTTPException, status
@@ -13,6 +14,9 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from db.database import get_db, User
 from utils.logging_config import logger
+
+# Загружаем переменные окружения из .env файла
+load_dotenv()
 
 # Настройки безопасности из переменных окружения
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
