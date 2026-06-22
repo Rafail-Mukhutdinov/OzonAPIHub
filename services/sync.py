@@ -229,19 +229,27 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
 async def run_enrichment_batch(pns: list[str], user_id: int):
     """
     Массовое обогащение.
-    Создает отдельную сессию на каждый запрос для предотвращения гонки состояний (Race Condition).
+    Оптимизировано: ключи Ozon получаются один раз, сессия на каждый заказ своя.
     """
     if not pns: return
 
     logger.info(f"User {user_id}: Запрос деталей по {len(pns)} заказам...")
 
-    # Проверяем существование пользователя в отдельной сессии
+    # Получаем ключи ОДИН раз на всю пачку
     check_db = SessionLocal()
+    client_id = None
+    api_key = None
     try:
-        user_exists = check_db.query(User).filter(User.id == user_id).first() is not None
-        if not user_exists:
-            logger.error(f"User {user_id} not found for enrichment")
+        cred = check_db.query(OzonCredential).filter(
+            OzonCredential.user_id == user_id,
+            OzonCredential.is_active == True
+        ).first()
+        if not cred:
+            logger.error(f"Credentials not found for user {user_id}")
             return
+
+        client_id = decrypt_credential(cred.client_id_encrypted)
+        api_key = decrypt_credential(cred.api_key_encrypted)
     finally:
         check_db.close()
 
@@ -254,7 +262,14 @@ async def run_enrichment_batch(pns: list[str], user_id: int):
             # Открываем СВОЮ сессию на каждую корутину
             db = SessionLocal()
             try:
-                res = await enrich_posting_from_ozon(pn, user_id, db)
+                # Передаем уже готовые ключи, чтобы не делать лишних SELECT к БД
+                res = await enrich_posting_from_ozon(
+                    posting_number=pn,
+                    user_id=user_id,
+                    db=db,
+                    client_id=client_id,
+                    api_key=api_key
+                )
                 if res.get("status") == "ok":
                     success_count += 1
                     db.commit()

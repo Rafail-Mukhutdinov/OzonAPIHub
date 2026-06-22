@@ -59,15 +59,20 @@ def recalc_order_header(db: Session, order_number: str, user_id: int):
     hdr.total_payout = total_payout
     hdr.total_commission = total_commission
 
-async def enrich_posting_from_ozon(posting_number: str, user_id: int, db: Session):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user: return {"status": "user_not_found"}
+async def enrich_posting_from_ozon(
+    posting_number: str,
+    user_id: int,
+    db: Session,
+    client_id: str = None,
+    api_key: str = None
+):
+    # Если ключи не переданы, ищем их в базе (для одиночных вызовов)
+    if not client_id or not api_key:
+        active_cred = db.query(OzonCredential).filter(OzonCredential.user_id == user_id, OzonCredential.is_active == True).first()
+        if not active_cred: return {"status": "no_credentials"}
 
-    active_cred = db.query(OzonCredential).filter(OzonCredential.user_id == user_id, OzonCredential.is_active == True).first()
-    if not active_cred: return {"status": "no_credentials"}
-    
-    client_id = decrypt_credential(active_cred.client_id_encrypted)
-    api_key = decrypt_credential(active_cred.api_key_encrypted)
+        client_id = decrypt_credential(active_cred.client_id_encrypted)
+        api_key = decrypt_credential(active_cred.api_key_encrypted)
 
     try:
         response = await ozon_fbo_get_async(client_id, api_key, posting_number)
@@ -163,7 +168,5 @@ async def enrich_posting_from_ozon(posting_number: str, user_id: int, db: Sessio
     if order_number:
         recalc_order_header(db, order_number, user_id)
 
-    # КРИТИЧНО: Сохраняем все изменения в БД
-    db.commit()
-
+    # Больше НЕ делаем здесь db.commit(), это ответственность вызывающего кода
     return {"status": "ok"}
