@@ -80,8 +80,8 @@ class Order(Base):
     order_id = Column(BigInteger, index=True)
     posting_number = Column(String(255), index=True)
     status = Column(String(100))
-    created_at = Column(String(100))
-    updated_at = Column(String(100))
+    created_at = Column(DateTime, index=True)
+    updated_at = Column(DateTime, index=True)
     data = Column(JSON)
     user = relationship("User", back_populates="orders")
     __table_args__ = (sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting'),)
@@ -91,8 +91,8 @@ class OrderHeader(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     order_number = Column(String(255), index=True)
-    first_created_at = Column(String(100))
-    last_delivery_at = Column(String(100))
+    first_created_at = Column(DateTime)
+    last_delivery_at = Column(DateTime)
     total_payout = Column(Integer)
     total_commission = Column(Integer)
     user = relationship("User", back_populates="order_headers")
@@ -105,9 +105,9 @@ class OrderPosting(Base):
     order_number = Column(String(255), index=True)
     posting_number = Column(String(255), index=True)
     status = Column(String(100))
-    created_at = Column(String(100))
-    in_process_at = Column(String(100))
-    fact_delivery_date = Column(String(100))
+    created_at = Column(DateTime, index=True)
+    in_process_at = Column(DateTime, index=True)
+    fact_delivery_date = Column(DateTime)
     substatus = Column(String(100))
     analytics_data = Column(JSON)
     financial_data = Column(JSON)
@@ -141,7 +141,7 @@ class Cost(Base):
     type = Column(String(50), index=True)
     amount = Column(Integer)
     currency = Column(String(10), default="RUB")
-    date = Column(String(100), index=True)
+    date = Column(DateTime, index=True)
     scope_order_number = Column(String(255), index=True, nullable=True)
     scope_posting_number = Column(String(255), index=True, nullable=True)
     scope_sku = Column(BigInteger, index=True, nullable=True)
@@ -180,6 +180,37 @@ def init_db():
 
     import logging
     db_logger = logging.getLogger("OzonAPIHub.database")
+
+    # МИГРАЦИЯ: Переход со String на DateTime для полей дат
+    # Для PostgreSQL используем ALTER TABLE ... TYPE TIMESTAMP
+    if engine.dialect.name == "postgresql":
+        columns_to_convert = [
+            ("orders", ["created_at", "updated_at"]),
+            ("order_headers", ["first_created_at", "last_delivery_at"]),
+            ("order_postings", ["created_at", "in_process_at", "fact_delivery_date"]),
+            ("costs", ["date"])
+        ]
+        with engine.begin() as conn:
+            for table, cols in columns_to_convert:
+                for col in cols:
+                    try:
+                        # Проверяем текущий тип колонки
+                        res = conn.execute(sa.text(
+                            "SELECT data_type FROM information_schema.columns "
+                            f"WHERE table_name='{table}' AND column_name='{col}'"
+                        )).fetchone()
+
+                        if res and res[0] == 'character varying':
+                            db_logger.info(f"Миграция {table}.{col}: String -> DateTime")
+                            conn.execute(sa.text(
+                                f"ALTER TABLE {table} ALTER COLUMN {col} TYPE TIMESTAMP "
+                                f"USING {col}::timestamp without time zone"
+                            ))
+                            # Создаем индекс, если его нет (после изменения типа)
+                            if col in ["created_at", "in_process_at", "date"]:
+                                conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_{table}_{col} ON {table}({col})"))
+                    except Exception:
+                        db_logger.exception("Ошибка при конвертации %s.%s", table, col)
 
     # Временная авто-миграция для новых полей SyncStatus
     common_cols = [

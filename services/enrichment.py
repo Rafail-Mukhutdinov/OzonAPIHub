@@ -38,17 +38,14 @@ def recalc_order_header(db: Session, order_number: str, user_id: int):
 
     for p in postings:
         if p.created_at:
-            dt_created = parse_ozon_datetime(p.created_at)
+            dt_created = p.created_at # Это уже объект datetime после изменения типа колонки
             if dt_created:
-                # Храним как ISO строку
-                dt_str = dt_created.isoformat().replace('+00:00', 'Z')
-                first_created = min(first_created, dt_str) if first_created else dt_str
+                first_created = min(first_created, dt_created) if first_created else dt_created
 
         if p.fact_delivery_date:
-            dt_delivery = parse_ozon_datetime(p.fact_delivery_date)
+            dt_delivery = p.fact_delivery_date
             if dt_delivery:
-                dt_str = dt_delivery.isoformat().replace('+00:00', 'Z')
-                last_delivery = max(last_delivery, dt_str) if last_delivery else dt_str
+                last_delivery = max(last_delivery, dt_delivery) if last_delivery else dt_delivery
 
     hdr = db.query(OrderHeader).filter(OrderHeader.order_number == order_number, OrderHeader.user_id == user_id).first()
     if not hdr:
@@ -101,16 +98,16 @@ async def enrich_posting_from_ozon(
     op.status = data.get("status")
     op.substatus = data.get("substatus")
 
-    # Нормализация дат при сохранении (всегда UTC с Z, без микросекунд)
-    def norm(raw):
+    # Конвертация дат в объекты datetime для БД
+    def to_dt(raw):
         dt = parse_ozon_datetime(raw)
         if dt:
-            return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-        return raw
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return None
 
-    op.created_at = norm(data.get("created_at"))
-    op.in_process_at = norm(data.get("in_process_at"))
-    op.fact_delivery_date = norm(data.get("fact_delivery_date"))
+    op.created_at = to_dt(data.get("created_at"))
+    op.in_process_at = to_dt(data.get("in_process_at"))
+    op.fact_delivery_date = to_dt(data.get("fact_delivery_date"))
 
     op.financial_data = data.get("financial_data")
     op.analytics_data = data.get("analytics_data")

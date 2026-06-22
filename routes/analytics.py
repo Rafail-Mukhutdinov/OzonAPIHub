@@ -34,32 +34,29 @@ def parse_msk_date(value: str, end_of_day: bool = False, tz_offset_hours: int = 
 
     return parse_ozon_datetime(trimmed)
 
-def _get_unified_postings(db: Session, user_id: int, since_utc: str, to_utc: str, include_cancelled: bool = True):
+def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc: datetime, include_cancelled: bool = True):
     """
     Собирает уникальные постинги из сырых (Order) и нормализованных (OrderPosting) таблиц.
     """
-    # Расширяем диапазон для поиска в БД по строкам дат
-    db_search_since = since_utc.split('T')[0]
-    db_search_to = (parse_ozon_datetime(to_utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+    # native datetime objects are now used for filtering
+    search_since = since_utc.replace(tzinfo=None)
+    search_to = to_utc.replace(tzinfo=None)
 
-    from sqlalchemy import or_
     # 1. Собираем данные из сырой таблицы
-    # Добавляем updated_at в поиск, чтобы найти заказы, которые могли быть созданы давно, но обновились
     raw_orders = db.query(Order.posting_number, Order.created_at, Order.status, Order.data).filter(
         Order.user_id == user_id,
         or_(
-            Order.created_at.between(db_search_since, db_search_to),
-            Order.updated_at.between(db_search_since, db_search_to)
+            Order.created_at.between(search_since, search_to),
+            Order.updated_at.between(search_since, search_to)
         )
     ).all()
 
     # 2. Собираем данные из нормализованной таблицы
-    # Ищем и по дате создания, и по дате обработки
     norm_orders = db.query(OrderPosting.posting_number, OrderPosting.created_at, OrderPosting.status, OrderPosting.in_process_at).filter(
         OrderPosting.user_id == user_id,
         or_(
-            OrderPosting.created_at.between(db_search_since, db_search_to),
-            OrderPosting.in_process_at.between(db_search_since, db_search_to)
+            OrderPosting.created_at.between(search_since, search_to),
+            OrderPosting.in_process_at.between(search_since, search_to)
         )
     ).all()
 
@@ -126,10 +123,10 @@ async def daily_stats(
     to_utc = to_dt.astimezone(timezone.utc)
 
     # Расширяем окно поиска на +/- 24 часа для безопасности
-    search_since = (since_utc - timedelta(hours=24)).isoformat().replace('+00:00', 'Z')
-    search_to = (to_utc + timedelta(hours=24)).isoformat().replace('+00:00', 'Z')
+    search_since_dt = since_utc - timedelta(hours=24)
+    search_to_dt = to_utc + timedelta(hours=24)
 
-    postings_map = _get_unified_postings(db, current_user.id, search_since, search_to, include_cancelled)
+    postings_map = _get_unified_postings(db, current_user.id, search_since_dt, search_to_dt, include_cancelled)
 
     if not postings_map:
         return {"data": []}
@@ -226,10 +223,10 @@ async def sales_report_universal(
     since_utc = since_dt.astimezone(timezone.utc)
     to_utc = to_dt.astimezone(timezone.utc)
 
-    search_since = (since_utc - timedelta(hours=24)).isoformat().replace('+00:00', 'Z')
-    search_to = (to_utc + timedelta(hours=24)).isoformat().replace('+00:00', 'Z')
+    search_since_dt = since_utc - timedelta(hours=24)
+    search_to_dt = to_utc + timedelta(hours=24)
 
-    postings_map = _get_unified_postings(db, current_user.id, search_since, search_to, include_cancelled)
+    postings_map = _get_unified_postings(db, current_user.id, search_since_dt, search_to_dt, include_cancelled)
 
     local_tz = timezone(timedelta(hours=tz_offset_hours))
     date_since_local = since_dt.astimezone(local_tz).date()

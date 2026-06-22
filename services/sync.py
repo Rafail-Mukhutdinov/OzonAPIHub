@@ -29,29 +29,17 @@ def _get_now_utc():
 
 def get_latest_order_datetime(db: Session, user_id: int) -> Union[datetime, None]:
     """
-    Надежно находит дату последнего заказа пользователя, обходя ограничения
-    лексикографического сравнения строк в БД.
-    Проверяет последние 1000 записей из Order и OrderPosting.
+    Находит дату последнего заказа пользователя, используя нативную агрегацию SQL.
     """
-    values = []
+    raw_max = db.query(func.max(Order.created_at)).filter(
+        Order.user_id == user_id
+    ).scalar()
 
-    # Берем последние по ID записи (обычно они самые свежие)
-    raw_values = db.query(Order.created_at).filter(
-        Order.user_id == user_id,
-        Order.created_at.isnot(None)
-    ).order_by(Order.id.desc()).limit(1000).all()
+    posting_max = db.query(func.max(OrderPosting.created_at)).filter(
+        OrderPosting.user_id == user_id
+    ).scalar()
 
-    posting_values = db.query(OrderPosting.created_at).filter(
-        OrderPosting.user_id == user_id,
-        OrderPosting.created_at.isnot(None)
-    ).order_by(OrderPosting.id.desc()).limit(1000).all()
-
-    for row in raw_values + posting_values:
-        dt = parse_ozon_datetime(row[0])
-        if dt:
-            # Приводим к UTC naive для консистентного сравнения
-            values.append(dt.astimezone(timezone.utc).replace(tzinfo=None))
-
+    values = [v for v in [raw_max, posting_max] if v is not None]
     return max(values) if values else None
 
 async def sync_user_orders(user: User, db: Session) -> bool:
@@ -165,23 +153,24 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
         existing = db.query(Order).filter(Order.user_id == user_id, Order.posting_number == posting_number).first()
         status = order_data.get('status')
 
-        # Нормализация даты перед сохранением
+        # Конвертация даты в объект datetime для БД
         raw_created_at = order_data.get('created_at')
         dt_created = parse_ozon_datetime(raw_created_at)
-        normalized_created_at = dt_created.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z') if dt_created else raw_created_at
+        if dt_created:
+            dt_created = dt_created.astimezone(timezone.utc).replace(tzinfo=None)
 
         if existing:
             if existing.status != status:
                 existing.status = status
-                existing.updated_at = normalized_created_at
+                existing.updated_at = dt_created
                 return True # Изменение статуса тоже считаем активностью
             return False
         new_order = Order(
             user_id=user_id,
             order_id=order_data.get('order_id'),
             posting_number=posting_number, status=status,
-            created_at=normalized_created_at,
-            updated_at=normalized_created_at,
+            created_at=dt_created,
+            updated_at=dt_created,
             data=order_data
         )
         db.add(new_order)
