@@ -297,6 +297,10 @@ async def initial_backfill_for_user(user: User, db: Session):
             logger.info(f"User {user_id}: Backfill already completed.")
             return
 
+        if sync_status.is_syncing:
+            logger.warning(f"User {user_id}: Backfill already in progress, skipping start.")
+            return
+
         now = _get_now_utc()
         start_limit = now - timedelta(days=365)
 
