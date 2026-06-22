@@ -14,7 +14,17 @@ from sqlalchemy.orm import Session
 from db.database import get_db, User
 
 # Настройки безопасности из переменных окружения
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-CHANGE-ME")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+
+if not JWT_SECRET_KEY:
+    raise RuntimeError(
+        "ОШИБКА БЕЗОПАСНОСТИ: Переменная окружения JWT_SECRET_KEY не установлена. "
+        "Приложение остановлено во избежание взлома. Пожалуйста, добавьте секретный ключ в .env файл."
+    )
+
+if len(JWT_SECRET_KEY) < 32:
+    print("ВНИМАНИЕ: Ваш JWT_SECRET_KEY слишком короткий (менее 32 символов). Рекомендуется использовать более длинный ключ.")
+
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
