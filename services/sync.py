@@ -229,50 +229,48 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
 async def run_enrichment_batch(pns: list[str], user_id: int):
     """
     Массовое обогащение.
-    Использует одну сессию БД для всей пачки заказов.
+    Создает отдельную сессию на каждый запрос для предотвращения гонки состояний (Race Condition).
     """
     if not pns: return
 
     logger.info(f"User {user_id}: Запрос деталей по {len(pns)} заказам...")
-    success_count = 0
 
-    # Открываем ОДНУ сессию на всю пачку
-    db = SessionLocal()
+    # Проверяем существование пользователя в отдельной сессии
+    check_db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
+        user_exists = check_db.query(User).filter(User.id == user_id).first() is not None
+        if not user_exists:
             logger.error(f"User {user_id} not found for enrichment")
             return
-
-        sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-
-        async def _enrich_one(pn):
-            nonlocal success_count
-            async with sem:
-                try:
-                    # Сама функция enrich_posting_from_ozon теперь НЕ делает коммитов
-                    res = await enrich_posting_from_ozon(pn, user_id, db)
-                    if res.get("status") == "ok":
-                        success_count += 1
-                        # Фиксируем изменения для этого заказа
-                        db.commit()
-                    else:
-                        db.rollback()
-                        logger.warning(f"User {user_id}: Ошибка обогащения {pn}: {res.get('status')} {res.get('detail', '')}")
-                except Exception as e:
-                    db.rollback()
-                    logger.error(f"User {user_id}: Критическая ошибка при обогащении {pn}: {e}")
-
-        # Выполняем асинхронно
-        await asyncio.gather(*(_enrich_one(p) for p in pns))
-
-        logger.info(f"User {user_id}: Обогащение завершено. Успешно: {success_count}/{len(pns)}.")
-
-    except Exception as e:
-        logger.error(f"Batch enrichment failed for user {user_id}: {e}")
-        db.rollback()
     finally:
-        db.close()
+        check_db.close()
+
+    success_count = 0
+    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+
+    async def _enrich_one(pn):
+        nonlocal success_count
+        async with sem:
+            # Открываем СВОЮ сессию на каждую корутину
+            db = SessionLocal()
+            try:
+                res = await enrich_posting_from_ozon(pn, user_id, db)
+                if res.get("status") == "ok":
+                    success_count += 1
+                    db.commit()
+                else:
+                    db.rollback()
+                    logger.warning(f"User {user_id}: Ошибка обогащения {pn}: {res.get('status')} {res.get('detail', '')}")
+            except Exception as e:
+                db.rollback()
+                logger.error(f"User {user_id}: Критическая ошибка при обогащении {pn}: {e}")
+            finally:
+                db.close()
+
+    # Выполняем асинхронно
+    await asyncio.gather(*(_enrich_one(p) for p in pns))
+
+    logger.info(f"User {user_id}: Обогащение завершено. Успешно: {success_count}/{len(pns)}.")
 
 async def initial_backfill_for_user(user: User, db: Session):
     """
