@@ -92,14 +92,14 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: sa_sa_sa = None # Добавляем request для записи в state
 ) -> User:
     """
     Главная зависимость (Dependency) для защищенных эндпоинтов.
-    1. Извлекает токен из запроса.
-    2. Проверяет его валидность и срок годности.
-    3. Ищет пользователя в БД по email из токена.
     """
+    from fastapi import Request # Импорт внутри для избежания циклов если нужно
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Не удалось проверить учетные данные (токен истек или неверен)",
@@ -107,7 +107,6 @@ async def get_current_user(
     )
     
     try:
-        # Декодируем токен
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
@@ -115,12 +114,14 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
     
-    # Ищем пользователя
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
     
-    # Проверка на блокировку аккаунта
+    # Сохраняем пользователя в state, чтобы Rate Limiter его увидел
+    if isinstance(request, Request):
+        request.state.user = user
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

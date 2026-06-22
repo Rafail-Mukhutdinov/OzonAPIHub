@@ -13,21 +13,28 @@ from fastapi import Request
 # В продакшене рекомендуется Redis, чтобы лимиты работали между рестартами сервера.
 REDIS_URL = os.getenv("REDIS_URL", "memory://")
 
+def get_real_ip(request: Request) -> str:
+    """
+    Извлекает реальный IP пользователя, даже если он за прокси (Nginx).
+    """
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        # Берем первый адрес в списке (самый первый клиент)
+        return forwarded.split(",")[0].strip()
+    return get_remote_address(request)
+
 def get_user_id_or_ip(request: Request) -> str:
     """
     Функция определения уникального ключа клиента.
-    1. Если пользователь авторизован, ключом будет его ID (user:123).
-    2. Если нет (регистрация/логин), ключом будет IP-адрес.
     """
-    if hasattr(request.state, "user") and request.state.user:
-        # Лимитируем по ID пользователя, чтобы смена IP не помогала обходить лимит
-        return f"user:{request.state.user.id}"
-    return get_remote_address(request)
+    user = getattr(request.state, "user", None)
+    if user:
+        return f"user:{user.id}"
+    return get_real_ip(request)
 
 # Инициализируем Limiter
 limiter = Limiter(
     key_func=get_user_id_or_ip,
     storage_uri=REDIS_URL,
-    # Лимит по умолчанию для всех эндпоинтов, если не указан специфичный
-    default_limits=[os.getenv("RATE_LIMIT_GLOBAL", "100/minute")]
+    default_limits=[os.getenv("RATE_LIMIT_GLOBAL", "200/minute")]
 )

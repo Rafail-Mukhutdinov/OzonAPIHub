@@ -18,6 +18,8 @@ from utils.auth import (
 )
 from utils.encryption import encrypt_credential, decrypt_credential
 from utils.logging_config import log_user_event, logger
+from utils.rate_limiter import limiter
+from fastapi import Request
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -113,7 +115,8 @@ def options_handler():
     return Response(status_code=200)
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-def register(user_data: UserRegister, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def register(request: Request, user_data: UserRegister, db: Session = Depends(get_db)):
     """Регистрация нового пользователя и выдача пробного периода."""
     if user_data.password != user_data.confirm_password:
         raise HTTPException(status_code=400, detail="Пароли не совпадают")
@@ -139,7 +142,8 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Авторизация пользователя (выдача JWT токена)."""
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
