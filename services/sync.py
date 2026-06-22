@@ -86,9 +86,6 @@ async def sync_user_orders(user: User, db: Session) -> bool:
 
         # Обновляем время последней проверки для адаптивного планировщика
         status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
-        if status:
-            status.updated_at = now
-            db.commit()
 
         client_id, api_key = decrypt_credential(active_cred.client_id_encrypted), decrypt_credential(active_cred.api_key_encrypted)
         if not client_id or not api_key: return False
@@ -132,7 +129,7 @@ async def sync_user_orders(user: User, db: Session) -> bool:
                     continue
 
                 pn = o.get('posting_number')
-                # Сохраняем в сырую таблицу (вернет True если новый или статус изменился)
+                # Сохраняем в сессию (коммит сделаем ниже пачкой)
                 is_active_change = save_order_for_user(db, user, o)
 
                 # Добавляем в очередь на обогащение если:
@@ -142,7 +139,10 @@ async def sync_user_orders(user: User, db: Session) -> bool:
                     total_saved += 1
                     if valid_posting_number(pn):
                         new_pns.add(pn)
-            
+
+            # BATCH COMMIT: Сохраняем всю страницу (обычно 50 заказов) за одну транзакцию
+            db.commit()
+
             if len(items) < limit: break
             offset += limit
 
@@ -174,7 +174,6 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
             if existing.status != status:
                 existing.status = status
                 existing.updated_at = normalized_created_at
-                db.commit()
                 return True # Изменение статуса тоже считаем активностью
             return False
         new_order = Order(
@@ -186,7 +185,6 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
             data=order_data
         )
         db.add(new_order)
-        db.commit()
         return True
     except Exception as e:
         logger.error(f"Error saving order {posting_number}: {e}")
@@ -221,6 +219,10 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
             if not isinstance(o, dict): continue
             if save_order_for_user(db, user, o): saved += 1
             valid_orders.append(o)
+
+        # BATCH COMMIT: Сохраняем все найденные заказы разом
+        db.commit()
+
         return {"saved": saved, "fetched": len(items), "orders": valid_orders}
     except Exception as e:
         logger.error(f"fetch_and_save_orders_async error: {e}")
