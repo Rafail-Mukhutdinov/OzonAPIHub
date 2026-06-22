@@ -20,6 +20,7 @@ from starlette.middleware.cors import CORSMiddleware
 from db.database import get_db, Order, engine, Base, SessionLocal, SyncStatus, init_db
 from utils.rate_limit_middleware import setup_rate_limiting
 from utils.auth import get_current_user
+from services.ozon import init_http_client, close_http_client
 
 # Инициализация кастомного логирования (см. utils/logging_config.py)
 import utils.logging_config
@@ -37,7 +38,10 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized and migrations applied")
 
-    # 2. Инициализация пула задач ARQ (Redis)
+    # 2. Инициализация пула соединений httpx для запросов к Ozon API (keep-alive)
+    app.state.http_client = init_http_client()
+
+    # 3. Инициализация пула задач ARQ (Redis)
     try:
         app.state.arq_pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
         logger.info("ARQ Task Pool initialized")
@@ -68,6 +72,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, 'arq_pool'):
         await app.state.arq_pool.close()
         logger.info("ARQ Task Pool closed")
+
+    # Закрываем пул соединений к Ozon API
+    await close_http_client()
 
 # Инициализация FastAPI приложения
 app = FastAPI(

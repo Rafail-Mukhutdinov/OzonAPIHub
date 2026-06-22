@@ -11,6 +11,7 @@ from arq.connections import RedisSettings
 from db.database import SessionLocal, User, SyncStatus, Order, OrderPosting
 from sqlalchemy import desc, func
 from services.sync import sync_user_orders, initial_backfill_for_user, get_latest_order_datetime
+from services.ozon import init_http_client, close_http_client
 from utils.common import to_msk, parse_ozon_datetime
 import utils.logging_config
 import os
@@ -93,10 +94,14 @@ async def startup(ctx):
     from db.database import init_db
     init_db()
     logger.info("Database initialized and migrations applied by worker")
+    # Инициализируем пул соединений к Ozon API для долгоживущего цикла воркера
+    init_http_client()
     logger.info("Воркер запущен. Режим: Adaptive Polling (1/5/15 мин)")
 
 async def shutdown(ctx):
     logger.info("Воркер останавливается...")
+    await close_http_client()
+    logger.info("HTTP client for Ozon API closed by worker")
 
 class WorkerSettings:
     """Настройки воркера arq."""
