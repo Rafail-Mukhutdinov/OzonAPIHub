@@ -6,7 +6,7 @@ import os
 import sqlalchemy as sa
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, BigInteger
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, BigInteger, Index
 from sqlalchemy.types import JSON
 from datetime import datetime, timezone
 
@@ -49,7 +49,8 @@ class User(Base):
     created_at = Column(DateTime, default=get_utc_now, nullable=False)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    
+    deleted_at = Column(DateTime, nullable=True) # Поле для Soft Delete
+
     ozon_credentials = relationship("OzonCredential", back_populates="user", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="user", cascade="all, delete-orphan")
     order_headers = relationship("OrderHeader", back_populates="user", cascade="all, delete-orphan")
@@ -84,7 +85,10 @@ class Order(Base):
     updated_at = Column(DateTime, index=True)
     data = Column(JSON)
     user = relationship("User", back_populates="orders")
-    __table_args__ = (sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting'),)
+    __table_args__ = (
+        sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting'),
+        Index('idx_order_user_created', 'user_id', 'created_at'), # Составной индекс для аналитики
+    )
 
 class OrderHeader(Base):
     __tablename__ = "order_headers"
@@ -113,7 +117,11 @@ class OrderPosting(Base):
     financial_data = Column(JSON)
     user = relationship("User", back_populates="order_postings")
     products = relationship("OrderProduct", back_populates="posting", cascade="all, delete-orphan")
-    __table_args__ = (sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting_number'),)
+    __table_args__ = (
+        sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting_number'),
+        Index('idx_posting_user_created', 'user_id', 'created_at'), # Составной индекс для аналитики
+        Index('idx_posting_user_in_process', 'user_id', 'in_process_at'), # Важно для B2B аналитики
+    )
 
 class OrderProduct(Base):
     __tablename__ = "order_products"
@@ -211,6 +219,15 @@ def init_db():
                                 conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_{table}_{col} ON {table}({col})"))
                     except Exception:
                         db_logger.exception("Ошибка при конвертации %s.%s", table, col)
+
+            # Создание составных индексов
+            try:
+                conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_order_user_created ON orders(user_id, created_at)"))
+                conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_posting_user_created ON order_postings(user_id, created_at)"))
+                conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_posting_user_in_process ON order_postings(user_id, in_process_at)"))
+                conn.execute(sa.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL"))
+            except Exception:
+                db_logger.exception("Ошибка при создании индексов или deleted_at")
 
     # Временная авто-миграция для новых полей SyncStatus
     common_cols = [
