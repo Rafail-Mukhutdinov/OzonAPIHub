@@ -234,9 +234,13 @@ async def create_ozon_credential(
 
         log_user_event(current_user.id, f"Добавлен новый магазин: {data.name}")
 
-        # Запускаем первичную синхронизацию через воркер (Redis), а не локально
+        # Запускаем первичную синхронизацию через воркер (Redis) с уникальным ID задачи
         if hasattr(request.app.state, "arq_pool"):
-            await request.app.state.arq_pool.enqueue_job("initial_backfill_task", current_user.id)
+            await request.app.state.arq_pool.enqueue_job(
+                "initial_backfill_task",
+                current_user.id,
+                _job_id=f"backfill_user_{current_user.id}"
+            )
 
         return {"status": "created"}
 
