@@ -36,7 +36,10 @@ async def sync_all_users_task(ctx):
         ).distinct().all()
 
         if not users:
+            logger.debug("sync_all_users_task: нет пользователей с активными credentials")
             return
+
+        logger.debug(f"sync_all_users_task: найдено {len(users)} пользователей для проверки")
 
         for user in users:
             status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
@@ -51,7 +54,7 @@ async def sync_all_users_task(ctx):
                 try:
                     diff = now - last_dt
 
-                    # Сравниваем в MSK
+                    # Сравниваем в MSК
                     now_msk = to_msk(now)
                     last_order_msk = to_msk(last_dt)
 
@@ -65,7 +68,12 @@ async def sync_all_users_task(ctx):
 
             # Проверяем, пришло ли время для синхронизации
             last_sync = status.updated_at if status and status.updated_at else (now - timedelta(days=1))
-            if now - last_sync < timedelta(minutes=interval_minutes):
+            elapsed = now - last_sync
+            if elapsed < timedelta(minutes=interval_minutes):
+                logger.debug(
+                    f"User {user.id}: пропущен (с последней синхронизации прошло "
+                    f"{int(elapsed.total_seconds())}с, интервал {interval_minutes}м)"
+                )
                 continue
 
             logger.info(f"User {user.id}: Запуск адаптивной синхронизации (интервал {interval_minutes}м)")
