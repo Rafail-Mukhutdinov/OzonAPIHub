@@ -153,45 +153,50 @@ async def daily_stats(
             if local_date_str not in valid_pns_by_date: valid_pns_by_date[local_date_str] = []
             valid_pns_by_date[local_date_str].append(pn)
 
+    # Пытаемся взять агрегированные данные по всем нужным постингам одним запросом
+    # Группируем по номеру постинга, чтобы потом сопоставить с датами
+    product_stats = db.query(
+        OrderProduct.posting_number,
+        func.sum(OrderProduct.quantity).label("q"),
+        func.sum(OrderProduct.price * OrderProduct.quantity).label("r")
+    ).filter(
+        OrderProduct.user_id == current_user.id,
+        OrderProduct.posting_number.in_(list(postings_map.keys()))
+    ).group_by(OrderProduct.posting_number).all()
+
+    # Создаем быстрый маппинг: номер постинга -> (кол-во, выручка)
+    stats_by_pn = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in product_stats}
+
+    # ФОЛЛБЕК для тех постингов, которых нет в нормализованной таблице товаров
+    missing_pns = set(postings_map.keys()) - set(stats_by_pn.keys())
+    if missing_pns:
+        raw_rows = db.query(Order.posting_number, Order.data).filter(
+            Order.user_id == current_user.id,
+            Order.posting_number.in_(list(missing_pns))
+        ).all()
+        for pn, data in raw_rows:
+            if data and isinstance(data, dict):
+                q_sum, r_sum = 0, 0
+                for p in data.get("products", []):
+                    q = int(p.get("quantity") or 0)
+                    pr = int(float(p.get("price") or 0))
+                    q_sum += q
+                    r_sum += (q * pr)
+                stats_by_pn[pn] = (q_sum, r_sum)
+
     result_data = []
     for local_date, pns in valid_pns_by_date.items():
-        # Пытаемся взять из OrderProduct
-        product_rows = db.query(
-            func.sum(OrderProduct.quantity).label("q"),
-            func.sum(OrderProduct.price * OrderProduct.quantity).label("r")
-        ).filter(
-            OrderProduct.user_id == current_user.id,
-            OrderProduct.posting_number.in_(pns)
-        ).first()
-
-        items_count = int(product_rows.q or 0)
-        revenue = int(product_rows.r or 0)
-
-        # ФОЛЛБЕК: Ищем постинги без товаров и берем данные из сырого JSON
-        pns_with_products = {r[0] for r in db.query(OrderProduct.posting_number).filter(
-            OrderProduct.user_id == current_user.id,
-            OrderProduct.posting_number.in_(pns)
-        ).all()}
-
-        missing_pns = set(pns) - pns_with_products
-        if missing_pns:
-            raw_data_rows = db.query(Order.data).filter(
-                Order.user_id == current_user.id,
-                Order.posting_number.in_(list(missing_pns))
-            ).all()
-            for row in raw_data_rows:
-                if row[0] and isinstance(row[0], dict):
-                    # Пробуем достать товары из JSON (формат v2/posting/fbo/list)
-                    for p in row[0].get("products", []):
-                        q = int(p.get("quantity") or 0)
-                        pr = int(float(p.get("price") or 0))
-                        items_count += q
-                        revenue += (q * pr)
+        day_items = 0
+        day_revenue = 0
+        for pn in pns:
+            q, r = stats_by_pn.get(pn, (0, 0))
+            day_items += q
+            day_revenue += r
 
         result_data.append({
             "date": local_date,
-            "items": items_count,
-            "revenue": revenue,
+            "items": day_items,
+            "revenue": day_revenue,
             "orders_count": len(pns)
         })
 
