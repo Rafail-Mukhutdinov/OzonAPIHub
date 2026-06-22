@@ -9,7 +9,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from jose import JWTError, jwt
 import bcrypt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from db.database import get_db, User
@@ -93,12 +93,11 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
-    request: sa_sa_sa = None # Добавляем request для записи в state
+    request: Request = None # Добавляем request для записи в state
 ) -> User:
     """
     Главная зависимость (Dependency) для защищенных эндпоинтов.
     """
-    from fastapi import Request # Импорт внутри для избежания циклов если нужно
 
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
