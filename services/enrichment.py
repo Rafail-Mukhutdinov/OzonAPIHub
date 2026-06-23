@@ -151,9 +151,15 @@ async def enrich_posting_from_ozon(
     if skus:
         try:
             prod_info = await ozon_product_info_list_async(client_id, api_key, skus)
-            # В API v3 список товаров все еще обернут в 'result'
-            res_data = prod_info.get("result", {})
-            items = res_data.get("items", []) if isinstance(res_data, dict) else []
+
+            # В API v3 список товаров обычно лежит прямо в корне в 'items'
+            # Проверяем оба варианта (корень и внутри 'result') для максимальной совместимости
+            items = prod_info.get("items")
+            if items is None and isinstance(prod_info.get("result"), dict):
+                items = prod_info.get("result", {}).get("items")
+
+            if not isinstance(items, list):
+                items = []
 
             for item in items:
                 s_id = item.get("sku")
@@ -162,6 +168,9 @@ async def enrich_posting_from_ozon(
                 img_url = item.get("primary_image") or (item.get("images", [])[0] if item.get("images") else None)
                 if img_url:
                     image_map[str(s_id)] = img_url
+
+            if image_map:
+                logger.debug(f"Найдено изображений: {len(image_map)} для SKU {skus}")
         except Exception as e:
             logger.warning(f"Не удалось получить изображения для SKU {skus}: {e}")
 
