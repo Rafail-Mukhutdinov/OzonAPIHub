@@ -63,7 +63,7 @@ class _CheckAuthScreenState extends State<CheckAuthScreen> {
             
             // Название приложения
             Text(
-              'Ozon Sales Dashboard',
+              'Sales Hub',
               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                 fontWeight: FontWeight.bold,
               ),

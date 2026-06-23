@@ -125,7 +125,7 @@ class SalesTable extends StatelessWidget {
                     delivered
                         ? 'К выплате: ${totals!['total_payout'] ?? '-'} ₽'
                         : 'Грязная сумма: ${totals!['total_amount_raw'] ?? '-'} ₽',
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue),
+                    style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).primaryColor),
                   ),
                 ],
               ),

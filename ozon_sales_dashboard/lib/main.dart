@@ -28,11 +28,27 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
       ],
       child: MaterialApp(
-        title: 'Ozon Sales Dashboard',
+        title: 'Sales Hub',
         // Настройка визуальной темы приложения (Material 3)
+        // Используем нейтральную профессиональную цветовую схему
         theme: ThemeData(
-          colorSchemeSeed: Colors.blue,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF2C3E50), // Темно-синий/грифельный
+            primary: const Color(0xFF2C3E50),
+            secondary: const Color(0xFF3498DB),
+          ),
           useMaterial3: true,
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Colors.white,
+            foregroundColor: Color(0xFF2C3E50),
+            elevation: 0,
+            centerTitle: false, // Более стандартно для дашбордов
+          ),
+          scaffoldBackgroundColor: const Color(0xFFF8F9FA),
+          cardTheme: const CardThemeData(
+            elevation: 2,
+            surfaceTintColor: Colors.white,
+          ),
         ),
         // Поддержка перевода стандартных виджетов (кнопки "OK", "Отмена", календари)
         localizationsDelegates: GlobalMaterialLocalizations.delegates,

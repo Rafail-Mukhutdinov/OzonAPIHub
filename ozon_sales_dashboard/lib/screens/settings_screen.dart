@@ -216,11 +216,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 
                 // Карточка-инструкция
                 Card(
-                  color: Colors.blue.shade50,
-                  child: const ListTile(
-                    leading: Icon(Icons.help_outline, color: Colors.blue),
-                    title: Text('Как подключить магазин?'),
-                    subtitle: Text('Создайте API-ключ в кабинете Ozon Seller (тип "Администратор") и скопируйте Client ID и Key сюда.'),
+                  color: Theme.of(context).primaryColor.withOpacity(0.05),
+                  child: ListTile(
+                    leading: Icon(Icons.help_outline, color: Theme.of(context).primaryColor),
+                    title: const Text('Как подключить магазин?'),
+                    subtitle: const Text('Создайте API-ключ в кабинете маркетплейса (для Ozon тип "Администратор") и скопируйте Client ID и Key сюда.'),
                   ),
                 ),
 
@@ -233,8 +233,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Column(
                     children: [
                       ListTile(
-                        leading: const Icon(Icons.sync, color: Colors.blue),
-                        title: const Text('Загрузить историю Ozon'),
+                        leading: Icon(Icons.sync, color: Theme.of(context).secondaryHeaderColor),
+                        title: const Text('Загрузить историю'),
                         subtitle: const Text('Скачать все заказы за последний год'),
                         trailing: ElevatedButton(onPressed: _runInitialSync, child: const Text('Старт')),
                       ),
@@ -272,7 +272,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            if (!isActive) IconButton(icon: const Icon(Icons.play_circle_outline, color: Colors.blue), 
+                            if (!isActive) IconButton(icon: Icon(Icons.play_circle_outline, color: Theme.of(context).primaryColor),
                               onPressed: () => _activateCredential(cred['id'])),
                             IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), 
                               onPressed: () => _deleteCredential(cred['id'], cred['name'])),

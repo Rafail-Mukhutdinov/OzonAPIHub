@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 import 'dashboard_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -44,13 +46,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
 
     try {
-      await _authService.register(
-        _emailController.text.trim(),
+      final email = _emailController.text.trim();
+      final token = await _authService.register(
+        email,
         _passwordController.text,
         _confirmPasswordController.text,
       );
 
       if (mounted) {
+        // Обновляем состояние провайдера
+        await Provider.of<AuthProvider>(context, listen: false).setToken(token, email: email);
+
         // Успешная регистрация - переходим на дашборд
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const DashboardScreen()),
@@ -90,10 +96,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.person_add,
                         size: 80,
-                        color: Colors.blue,
+                        color: Theme.of(context).primaryColor,
                       ),
                       const SizedBox(height: 16),
                       Text(
@@ -198,18 +204,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: Colors.blue.shade50,
+                          color: Theme.of(context).primaryColor.withOpacity(0.1),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
                           children: [
-                            Icon(Icons.info_outline, color: Colors.blue.shade700),
+                            Icon(Icons.info_outline, color: Theme.of(context).primaryColor),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
                                 'Пробный период: 30 дней',
                                 style: TextStyle(
-                                  color: Colors.blue.shade700,
+                                  color: Theme.of(context).primaryColor,
                                   fontSize: 12,
                                 ),
                               ),

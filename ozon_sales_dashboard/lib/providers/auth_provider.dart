@@ -11,7 +11,9 @@ import '../screens/dashboard_screen.dart';
  */
 class AuthProvider extends ChangeNotifier {
   static const String _tokenKey = 'jwt_token';
+  static const String _emailKey = 'user_email';
   String? _token;
+  String? _userEmail;
   bool _isAuthenticated = false;
   bool _isLoading = true;
 
@@ -19,6 +21,7 @@ class AuthProvider extends ChangeNotifier {
   bool get isAuthenticated => _isAuthenticated;
   bool get isLoading => _isLoading;
   String? get token => _token;
+  String? get userEmail => _userEmail;
 
   AuthProvider() {
     _initAuth(); // Проверяем сессию при запуске приложения
@@ -28,6 +31,7 @@ class AuthProvider extends ChangeNotifier {
   Future<void> _initAuth() async {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString(_tokenKey);
+    _userEmail = prefs.getString(_emailKey);
     // Считаем авторизованным, если токен есть и он не пустой
     _isAuthenticated = _token != null && _token!.isNotEmpty;
     _isLoading = false;
@@ -35,10 +39,14 @@ class AuthProvider extends ChangeNotifier {
   }
 
   /// Метод для сохранения токена после успешного входа (Login/Register).
-  Future<void> setToken(String token) async {
+  Future<void> setToken(String token, {String? email}) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
     _token = token;
+    if (email != null) {
+      await prefs.setString(_emailKey, email);
+      _userEmail = email;
+    }
     _isAuthenticated = true;
     notifyListeners();
   }
@@ -47,7 +55,9 @@ class AuthProvider extends ChangeNotifier {
   Future<void> logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
+    await prefs.remove(_emailKey);
     _token = null;
+    _userEmail = null;
     _isAuthenticated = false;
     notifyListeners();
   }

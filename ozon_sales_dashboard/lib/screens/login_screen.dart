@@ -3,6 +3,9 @@ import '../services/auth_service.dart';
 import 'register_screen.dart';
 import 'dashboard_screen.dart';
 
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
+
 /**
  * LoginScreen — экран входа в приложение.
  * Реализует валидацию полей ввода и взаимодействие с AuthService.
@@ -54,13 +57,17 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      final email = _emailController.text.trim();
       // Отправка запроса на сервер
-      await _authService.login(
-        _emailController.text.trim(),
+      final token = await _authService.login(
+        email,
         _passwordController.text,
       );
 
       if (mounted) {
+        // Обновляем состояние провайдера
+        await Provider.of<AuthProvider>(context, listen: false).setToken(token, email: email);
+
         // Успешный вход - заменяем текущий экран на Dashboard
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const DashboardScreen()),
@@ -98,10 +105,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(Icons.account_circle, size: 80, color: Colors.blue),
+                      Icon(Icons.account_circle, size: 80, color: Theme.of(context).primaryColor),
                       const SizedBox(height: 16),
                       Text(
-                        'Ozon Sales Dashboard',
+                        'Sales Hub',
                         style: Theme.of(context).textTheme.headlineSmall,
                         textAlign: TextAlign.center,
                       ),

@@ -18,68 +18,75 @@ class MobileStatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Убрали фиксированную ширину, чтобы виджет мог адаптироваться внутри Expanded или Row
     return Container(
-      padding: const EdgeInsets.all(12), // Немного уменьшили отступы для компактности
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
             offset: const Offset(0, 4),
           ),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 10, // Уменьшили шрифт заголовка
-                  color: Colors.grey[600],
-                  fontWeight: FontWeight.w500,
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).primaryColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
                 ),
+                child: Icon(icon, size: 16, color: Theme.of(context).primaryColor),
               ),
-              Icon(icon, size: 14, color: Colors.blueGrey[300]), // Добавили иконку в угол
+              Row(
+                children: [
+                  Icon(
+                    isPositive ? Icons.trending_up : Icons.trending_down,
+                    size: 14,
+                    color: isPositive ? const Color(0xFF2E7D32) : const Color(0xFFD32F2F),
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    change,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isPositive ? const Color(0xFF2E7D32) : const Color(0xFFD32F2F),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
+          const SizedBox(height: 12),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey[600],
+              fontWeight: FontWeight.w500,
+            ),
+          ),
           const SizedBox(height: 4),
-          FittedBox( // Гарантируем, что значение влезет в карточку
+          FittedBox(
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
             child: Text(
               value,
               style: const TextStyle(
-                fontSize: 16, // Немного уменьшили шрифт значения
-                fontWeight: FontWeight.bold,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF1A1C1E),
+                letterSpacing: -0.5,
               ),
             ),
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Icon(
-                isPositive ? Icons.trending_up : Icons.trending_down,
-                size: 12,
-                color: isPositive ? Colors.green : Colors.red,
-              ),
-              const SizedBox(width: 2),
-              Text(
-                change,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: isPositive ? Colors.green : Colors.red,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
           ),
         ],
       ),

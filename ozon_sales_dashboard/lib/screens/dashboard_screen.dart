@@ -4,8 +4,11 @@ import 'dart:async';
 import '../services/api.dart';
 import '../widgets/mobile_dashboard_view.dart';
 import '../widgets/sales_table.dart';
-import 'login_screen.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
+import 'shipments_screen.dart';
 import 'settings_screen.dart';
+import 'login_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -67,9 +70,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         reportEnd = drillDownDate!;
       } else {
         reportEnd = activeDate;
-        if (selectedPeriod == 'today') reportStart = activeDate;
-        else if (selectedPeriod == 'week') reportStart = activeDate.subtract(const Duration(days: 6));
-        else reportStart = activeDate.subtract(const Duration(days: 29));
+        if (selectedPeriod == 'today') {
+          reportStart = activeDate;
+        } else if (selectedPeriod == '15days') {
+          reportStart = activeDate.subtract(const Duration(days: 14));
+        } else {
+          // По умолчанию 30 дней
+          reportStart = activeDate.subtract(const Duration(days: 29));
+        }
       }
 
       // ЕДИНЫЙ ЗАПРОС ДЛЯ ВСЕХ Layout
@@ -115,17 +123,100 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildMobileLayout() {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
-      appBar: AppBar(
-        title: const Text('Ozon Hub', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white, elevation: 0,
+  void _handleLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Выход'),
+        content: const Text('Вы уверены, что хотите выйти из аккаунта?'),
         actions: [
-          IconButton(icon: const Icon(Icons.settings_outlined), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()))),
-          IconButton(icon: const Icon(Icons.refresh), onPressed: () => _loadAllData()),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Выйти', style: TextStyle(color: Colors.red))),
         ],
       ),
+    );
+
+    if (confirmed == true && mounted) {
+      await Provider.of<AuthProvider>(context, listen: false).logout();
+      if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+    }
+  }
+
+  Widget _buildDrawer() {
+    return Drawer(
+      child: Column(
+        children: [
+          DrawerHeader(
+            decoration: BoxDecoration(color: Theme.of(context).primaryColor),
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.hub_outlined, size: 48, color: Colors.white),
+                  const SizedBox(height: 12),
+                  Text(
+                    Provider.of<AuthProvider>(context, listen: false).userEmail ?? 'Sales Hub',
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.dashboard_outlined),
+            title: const Text('Дашборд'),
+            selected: true,
+            onTap: () => Navigator.pop(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.local_shipping_outlined),
+            title: const Text('Отгрузки'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ShipmentsScreen()));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('Настройки магазина'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+            },
+          ),
+          const Divider(),
+          const Spacer(),
+          ListTile(
+            leading: const Icon(Icons.logout, color: Colors.redAccent),
+            title: const Text('Выйти', style: TextStyle(color: Colors.redAccent)),
+            onTap: _handleLogout,
+          ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileLayout() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
+      appBar: AppBar(
+        title: const Text('Sales Hub', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: Icon(Icons.add_business_outlined, color: Theme.of(context).primaryColor),
+            tooltip: 'Добавить магазин',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _loadAllData(),
+          ),
+        ],
+      ),
+      drawer: _buildDrawer(),
       body: RefreshIndicator(
         onRefresh: () => _loadAllData(),
         child: MobileDashboardView(
@@ -143,7 +234,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildDesktopLayout() {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ozon Hub - Desktop'),
+        title: const Text('Sales Hub - Desktop'),
         actions: [
           IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()))),
           IconButton(icon: const Icon(Icons.refresh), onPressed: () => _loadAllData()),

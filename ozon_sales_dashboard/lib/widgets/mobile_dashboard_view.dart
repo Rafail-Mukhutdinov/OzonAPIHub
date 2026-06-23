@@ -76,12 +76,15 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             // 1. ПЕРИОДЫ
             Container(
               padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(12)),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE9ECEF),
+                borderRadius: BorderRadius.circular(12),
+              ),
               child: Row(
                 children: [
                   _buildPeriodBtn('Сегодня', 'today'),
-                  _buildPeriodBtn('Неделя', 'week'),
-                  _buildPeriodBtn('Месяц', 'month'),
+                  _buildPeriodBtn('15 дней', '15days'),
+                  _buildPeriodBtn('30 дней', 'month'),
                 ],
               ),
             ),
@@ -94,8 +97,23 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(widget.drillDownDate != null ? 'Детали за день:' : (widget.selectedPeriod == 'today' ? 'Выбранный день:' : 'Итоги периода:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    Text(widget.selectedPeriod == 'today' || widget.drillDownDate != null ? dateStr : 'За последние ${widget.selectedPeriod == 'week' ? "7" : "30"} дней', style: TextStyle(color: widget.drillDownDate != null ? Colors.blue : Colors.grey[600], fontSize: 14)),
+                    Text(
+                      widget.drillDownDate != null 
+                        ? 'Детали за день:' 
+                        : (widget.selectedPeriod == 'today' ? 'Выбранный день:' : 'Итоги периода:'), 
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: Color(0xFF1A1C1E)),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      widget.selectedPeriod == 'today' || widget.drillDownDate != null 
+                        ? dateStr 
+                        : 'За последние ${widget.selectedPeriod == '15days' ? "15" : "30"} дней', 
+                      style: TextStyle(
+                        color: widget.drillDownDate != null ? Theme.of(context).primaryColor : Colors.grey[600], 
+                        fontSize: 13,
+                        fontWeight: widget.drillDownDate != null ? FontWeight.bold : FontWeight.normal,
+                      ),
+                    ),
                   ],
                 ),
                 if (widget.drillDownDate != null)
@@ -206,9 +224,23 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
       child: GestureDetector(
         onTap: () => widget.onPeriodChanged(code),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          decoration: BoxDecoration(color: active ? Colors.white : Colors.transparent, borderRadius: BorderRadius.circular(10), boxShadow: active ? [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4)] : null),
-          child: Text(label, textAlign: TextAlign.center, style: TextStyle(fontSize: 13, fontWeight: active ? FontWeight.bold : FontWeight.normal, color: active ? Colors.black : Colors.grey[600])),
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: active ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            boxShadow: active 
+              ? [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 8, offset: const Offset(0, 2))] 
+              : null,
+          ),
+          child: Text(
+            label, 
+            textAlign: TextAlign.center, 
+            style: TextStyle(
+              fontSize: 12, 
+              fontWeight: active ? FontWeight.bold : FontWeight.w500, 
+              color: active ? Theme.of(context).primaryColor : const Color(0xFF6C757D),
+            ),
+          ),
         ),
       ),
     );
@@ -257,7 +289,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
             BoxBorder? border;
             if (isActive) {
-              border = Border.all(color: Colors.purple, width: 2.5);
+              border = Border.all(color: Theme.of(context).primaryColor, width: 2.5);
             }
 
             // УВЕЛИЧЕННАЯ ОБЛАСТЬ НАЖАТИЯ ДЛЯ ТЕЛЕФОНА (с InkWell для отклика)
