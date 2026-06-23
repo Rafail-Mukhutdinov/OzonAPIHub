@@ -146,10 +146,11 @@ async def enrich_posting_from_ozon(
             items = prod_info.get("items", [])
             for item in items:
                 s_id = item.get("sku")
-                # Берем первую картинку из списка
-                images = item.get("images", [])
-                if images:
-                    image_map[str(s_id)] = images[0]
+                # ПРИОРИТЕТ: сначала ищем главную картинку (primary_image),
+                # если её нет — берем первую из списка images
+                img_url = item.get("primary_image") or (item.get("images", [])[0] if item.get("images") else None)
+                if img_url:
+                    image_map[str(s_id)] = img_url
         except Exception as e:
             logger.warning(f"Не удалось получить изображения для SKU {skus}: {e}")
 
