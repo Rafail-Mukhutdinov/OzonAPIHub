@@ -70,26 +70,6 @@ def decrypt_credential(ciphertext: Optional[str]) -> Optional[str]:
         return None
 
 
-def get_user_ozon_headers(user) -> dict:
-    """
-    Вспомогательная функция (устарела, используется в legacy коде).
-    Генерирует заголовки для Ozon API, расшифровывая ключи пользователя на лету.
-    """
-    client_id = decrypt_credential(user.ozon_client_id)
-    api_key = decrypt_credential(user.ozon_api_key)
-    
-    if not client_id or not api_key:
-        raise ValueError(
-            f"Ozon credentials не настроены для пользователя {user.email}."
-        )
-    
-    return {
-        "Client-Id": client_id,
-        "Api-Key": api_key,
-        "Content-Type": "application/json",
-    }
-
-
 # Тестовый запуск модуля (для проверки работоспособности ключа)
 if __name__ == "__main__":
     test_val = "ozon-api-key-test-123"

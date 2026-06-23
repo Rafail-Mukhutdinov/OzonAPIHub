@@ -11,7 +11,9 @@ from sqlalchemy.types import JSON
 from datetime import datetime, timezone
 
 def get_utc_now():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    # Возвращаем aware datetime (с временной зоной UTC).
+    # Это предотвращает ошибки TypeError при сравнении дат в коде.
+    return datetime.now(timezone.utc)
 
 # Настройка подключения
 # ВАЖНО: На сервере DATABASE_URL передается через docker-compose

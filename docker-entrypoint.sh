@@ -3,7 +3,7 @@ set -e
 
 echo "OzonAPIHub backend entrypoint started"
 
-echo "DATABASE_URL=$DATABASE_URL"
+# DATABASE_URL больше не выводится в логи в целях безопасности (содержит пароль)
 
 if [ "$INIT_DB_ON_STARTUP" = "true" ]; then
   echo "INIT_DB_ON_STARTUP is enabled, initializing database..."

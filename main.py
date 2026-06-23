@@ -89,18 +89,26 @@ app = FastAPI(
 setup_rate_limiting(app)
 
 # Настройка CORS
+# Список разрешенных адресов берется из переменной окружения CORS_ORIGINS (через запятую)
+cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+
+# По умолчанию добавляем localhost и текущий IP для удобства разработки
+default_origins = [
+    "http://localhost",
+    "http://localhost:8080",
+    "http://localhost:8083",
+    "http://127.0.0.1",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:8083",
+    "http://45.150.11.25",
+    "http://45.150.11.25:8083",
+]
+final_origins = list(set(allowed_origins + default_origins))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost",
-        "http://localhost:8080",
-        "http://localhost:8083",
-        "http://127.0.0.1",
-        "http://127.0.0.1:8080",
-        "http://127.0.0.1:8083",
-        "http://45.150.11.25",
-        "http://45.150.11.25:8083",
-    ],
+    allow_origins=final_origins,
     allow_origin_regex=r"http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],

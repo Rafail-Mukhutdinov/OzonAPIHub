@@ -81,8 +81,9 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
     """
     Выполняет поиск пользователя в БД и проверку пароля.
     Возвращает объект User при успехе или None.
+    Проверяет, что пользователь не удален (Soft Delete).
     """
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter(User.email == email, User.deleted_at.is_(None)).first()
     if not user:
         return None
     if not verify_password(password, user.hashed_password):
@@ -113,7 +114,8 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
     
-    user = db.query(User).filter(User.email == email).first()
+    # Фильтруем по email и проверяем, что аккаунт не удален (Soft Delete)
+    user = db.query(User).filter(User.email == email, User.deleted_at.is_(None)).first()
     if user is None:
         raise credentials_exception
     

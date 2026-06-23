@@ -24,7 +24,9 @@ class OzonApiClient {
       }
     }
     // Для мобильных приложений (Android/iOS)
-    return 'http://45.150.11.25:8083';
+    // ВАЖНО: Используйте --dart-define=BASE_URL=ваша_ссылка при сборке.
+    // Если переменная не задана, используем значение по умолчанию.
+    return const String.fromEnvironment('BASE_URL', defaultValue: 'http://45.150.11.25:8083');
   }
 
   OzonApiClient({String? baseUrl, this.onUnauthorized})
