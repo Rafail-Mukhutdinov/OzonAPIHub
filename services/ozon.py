@@ -208,6 +208,26 @@ async def ozon_fbo_get_async(client_id: str, api_key: str, posting_number: str):
     )
 
 
+async def ozon_product_info_list_async(client_id: str, api_key: str, skus: list[int]):
+    """
+    Асинхронно получить информацию о товарах по списку SKU.
+    Используется для получения ссылок на изображения.
+    """
+    if not skus:
+        return {"result": {"items": []}}
+
+    url = f"{BASE_URL}/v2/product/info/list"
+    body = {
+        "sku": skus
+    }
+    headers = _get_headers(client_id, api_key)
+
+    return await _post_with_retry(
+        _get_client(), url, headers, body,
+        op_label=f"product/info/list count={len(skus)}"
+    )
+
+
 # Синхронные обёртки для вызова из старого кода или REPL.
 # ВАЖНО: asyncio.run() создаёт и уничтожает собственный цикл событий,
 # поэтому синглтон-клиент здесь НЕ переиспользуется — создаётся временный.

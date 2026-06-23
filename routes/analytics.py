@@ -248,7 +248,8 @@ async def sales_report_universal(
     rows = db.query(
         OrderProduct.offer_id, OrderProduct.sku, OrderProduct.name,
         func.sum(OrderProduct.quantity).label("q"),
-        func.sum(OrderProduct.price * OrderProduct.quantity).label("r")
+        func.sum(OrderProduct.price * OrderProduct.quantity).label("r"),
+        func.max(OrderProduct.image_url).label("img") # Берем любой URL картинки для этого SKU
     ).filter(
         OrderProduct.user_id == current_user.id,
         OrderProduct.posting_number.in_(final_postings)
@@ -259,7 +260,8 @@ async def sales_report_universal(
         key = (r.offer_id, r.sku)
         items_map[key] = {
             "offer_id": r.offer_id, "sku": r.sku, "name": r.name,
-            "quantity": int(r.q or 0), "amount_raw": int(r.r or 0)
+            "quantity": int(r.q or 0), "amount_raw": int(r.r or 0),
+            "image_url": r.img
         }
 
     # ФОЛЛБЕК

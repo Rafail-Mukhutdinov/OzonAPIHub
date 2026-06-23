@@ -164,12 +164,24 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                   final qty = item['quantity'] ?? 0;
                   final total = item['amount_raw'] ?? 0;
                   final avgItemPrice = qty > 0 ? total / qty : 0; // СРЕДНЯЯ ЦЕНА ТОВАРА
+                  final imageUrl = item['image_url'];
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.01), blurRadius: 5)]),
                     child: Row(children: [
-                        Container(width: 44, height: 44, decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.inventory_2_outlined, color: Colors.blueGrey, size: 20)),
+                        Container(
+                          width: 44, height: 44, 
+                          decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(8)), 
+                          clipBehavior: Clip.antiAlias,
+                          child: imageUrl != null && imageUrl.isNotEmpty
+                            ? Image.network(
+                                imageUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) => const Icon(Icons.inventory_2_outlined, color: Colors.blueGrey, size: 20),
+                              )
+                            : const Icon(Icons.inventory_2_outlined, color: Colors.blueGrey, size: 20),
+                        ),
                         const SizedBox(width: 12),
                         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             Text(item['name'] ?? 'Товар', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, height: 1.2)),

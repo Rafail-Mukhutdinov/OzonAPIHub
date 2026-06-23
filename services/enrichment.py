@@ -1,6 +1,6 @@
 import os
 import logging
-from services.ozon import ozon_fbo_get_async
+from services.ozon import ozon_fbo_get_async, ozon_product_info_list_async
 from sqlalchemy.orm import Session
 from db.database import OrderHeader, OrderPosting, OrderProduct, User, OzonCredential
 from utils.encryption import decrypt_credential
@@ -132,6 +132,26 @@ async def enrich_posting_from_ozon(
             if sku_key:
                 fin_map[sku_key] = f
 
+    # --- ПОЛУЧЕНИЕ ИЗОБРАЖЕНИЙ ТОВАРОВ ---
+    skus = []
+    for pr in products_data:
+        if isinstance(pr, dict) and pr.get("sku"):
+            skus.append(_to_int(pr.get("sku")))
+
+    image_map = {}
+    if skus:
+        try:
+            prod_info = await ozon_product_info_list_async(client_id, api_key, skus)
+            items = prod_info.get("result", {}).get("items", [])
+            for item in items:
+                s_id = item.get("sku")
+                # Берем первую картинку из списка
+                images = item.get("images", [])
+                if images:
+                    image_map[str(s_id)] = images[0]
+        except Exception as e:
+            logger.warning(f"Не удалось получить изображения для SKU {skus}: {e}")
+
     for pr in products_data:
         if not isinstance(pr, dict): continue
         sku = pr.get("sku")
@@ -159,6 +179,7 @@ async def enrich_posting_from_ozon(
             currency_code=pr.get("currency_code"),
             commission_amount=_to_int((f or {}).get("commission_amount")),
             payout=_to_int((f or {}).get("payout")),
+            image_url=image_map.get(str(sku))
         )
         db.add(obj)
     

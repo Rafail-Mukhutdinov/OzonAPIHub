@@ -140,6 +140,7 @@ class OrderProduct(Base):
     payout = Column(Integer)
     total_discount_value = Column(Integer)
     total_discount_percent = Column(Integer)
+    image_url = Column(String(1024), nullable=True)
     posting = relationship("OrderPosting", back_populates="products")
 
 class Cost(Base):
@@ -226,8 +227,9 @@ def init_db():
                 conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_posting_user_created ON order_postings(user_id, created_at)"))
                 conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_posting_user_in_process ON order_postings(user_id, in_process_at)"))
                 conn.execute(sa.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL"))
+                conn.execute(sa.text("ALTER TABLE order_products ADD COLUMN IF NOT EXISTS image_url VARCHAR(1024) NULL"))
             except Exception:
-                db_logger.exception("Ошибка при создании индексов или deleted_at")
+                db_logger.exception("Ошибка при создании индексов или новых колонок")
 
     # Временная авто-миграция для новых полей SyncStatus
     common_cols = [
@@ -248,7 +250,10 @@ def init_db():
                     db_logger.exception("Migration error for sync_status.%s", col_name)
     elif engine.dialect.name == "sqlite":
         # SQLite не поддерживает ADD COLUMN IF NOT EXISTS напрямую
-        sqlite_cols = common_cols + [("backfill_is_complete", "BOOLEAN DEFAULT 0")]
+        sqlite_cols = common_cols + [
+            ("backfill_is_complete", "BOOLEAN DEFAULT 0"),
+            ("image_url", "VARCHAR(1024) NULL")
+        ]
         with engine.connect() as conn:
             # Проверяем наличие колонок
             try:
