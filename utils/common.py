@@ -7,6 +7,13 @@
 from datetime import datetime, timedelta, timezone
 from typing import Union
 
+def get_now_utc() -> datetime:
+    """
+    Возвращает текущее время в UTC как наивный объект datetime (без tzinfo).
+    Это стандарт проекта для хранения дат в БД и их сравнения.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 def parse_ozon_datetime(value: Union[str, datetime, None]) -> Union[datetime, None]:
     """
     Универсальный парсинг даты из разных форматов Ozon API.

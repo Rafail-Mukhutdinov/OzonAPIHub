@@ -13,6 +13,7 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from db.database import get_db, User
+from utils.common import get_now_utc
 from utils.logging_config import logger
 
 # Загружаем переменные окружения из .env файла
@@ -150,7 +151,7 @@ def check_subscription(user: User) -> bool:
     if user.subscription_end_date is None:
         return False
     
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = get_now_utc()
     return user.subscription_end_date > now
 
 

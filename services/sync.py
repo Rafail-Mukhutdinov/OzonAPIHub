@@ -14,7 +14,7 @@ from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential,
 from services.enrichment import enrich_posting_from_ozon
 from services.ozon import ozon_fbo_list_async
 from utils.encryption import decrypt_credential
-from utils.common import valid_posting_number, to_msk, to_msk_date, parse_ozon_datetime
+from utils.common import valid_posting_number, to_msk, to_msk_date, parse_ozon_datetime, get_now_utc
 from utils.logging_config import log_user_event
 
 logger = logging.getLogger("OzonAPIHub")
@@ -25,7 +25,7 @@ ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 
 ENRICH_CONCURRENCY = 2 # Снизили параллельность для стабильности на локальной машине
 
 def _get_now_utc():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return get_now_utc()
 
 def get_latest_order_datetime(db: Session, user_id: int) -> Union[datetime, None]:
     """

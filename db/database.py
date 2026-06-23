@@ -9,11 +9,12 @@ from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, BigInteger, Index
 from sqlalchemy.types import JSON
 from datetime import datetime, timezone
+from utils.common import get_now_utc
 
 def get_utc_now():
-    # Возвращаем aware datetime (с временной зоной UTC).
-    # Это предотвращает ошибки TypeError при сравнении дат в коде.
-    return datetime.now(timezone.utc)
+    # Используем общую утилиту для единообразия во всем проекте.
+    # Возвращает наивный UTC datetime.
+    return get_now_utc()
 
 # Настройка подключения
 # ВАЖНО: На сервере DATABASE_URL передается через docker-compose

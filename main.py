@@ -93,7 +93,7 @@ setup_rate_limiting(app)
 cors_origins_raw = os.getenv("CORS_ORIGINS", "")
 allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
 
-# По умолчанию добавляем localhost и текущий IP для удобства разработки
+# По умолчанию добавляем localhost для удобства разработки
 default_origins = [
     "http://localhost",
     "http://localhost:8080",
@@ -101,8 +101,6 @@ default_origins = [
     "http://127.0.0.1",
     "http://127.0.0.1:8080",
     "http://127.0.0.1:8083",
-    "http://45.150.11.25",
-    "http://45.150.11.25:8083",
 ]
 final_origins = list(set(allowed_origins + default_origins))
 

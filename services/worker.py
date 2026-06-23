@@ -12,14 +12,14 @@ from db.database import SessionLocal, User, SyncStatus, Order, OrderPosting
 from sqlalchemy import desc, func
 from services.sync import sync_user_orders, initial_backfill_for_user, get_latest_order_datetime
 from services.ozon import init_http_client, close_http_client
-from utils.common import to_msk, parse_ozon_datetime
+from utils.common import to_msk, parse_ozon_datetime, get_now_utc
 import utils.logging_config
 import os
 
 logger = logging.getLogger("OzonAPIHub.worker")
 
 def _get_now_utc():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return get_now_utc()
 
 async def sync_all_users_task(ctx):
     """
