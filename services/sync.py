@@ -297,11 +297,12 @@ async def initial_backfill_for_user(user: User, db: Session):
             logger.info(f"User {user_id}: Backfill already completed.")
             return
 
-        if sync_status.is_syncing:
-            logger.warning(f"User {user_id}: Backfill already in progress, skipping start.")
-            return
+        # Убираем проверку if sync_status.is_syncing, так как она блокирует запуск задачи,
+        # которая сама же и установила этот флаг через API.
 
         now = _get_now_utc()
+        logger.info(f"User {user_id}: Starting/Resuming backfill process at {now}")
+
         start_limit = now - timedelta(days=365)
 
         # Инициализация границ, если это первый запуск
