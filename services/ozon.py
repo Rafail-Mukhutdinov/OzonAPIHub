@@ -214,9 +214,9 @@ async def ozon_product_info_list_async(client_id: str, api_key: str, skus: list[
     Используется для получения ссылок на изображения.
     """
     if not skus:
-        return {"result": {"items": []}}
+        return {"items": []}
 
-    url = f"{BASE_URL}/v2/product/info/list"
+    url = f"{BASE_URL}/v3/product/info/list"
     body = {
         "sku": skus
     }
@@ -224,7 +224,7 @@ async def ozon_product_info_list_async(client_id: str, api_key: str, skus: list[
 
     return await _post_with_retry(
         _get_client(), url, headers, body,
-        op_label=f"product/info/list count={len(skus)}"
+        op_label=f"product/info/list(v3) count={len(skus)}"
     )
 
 

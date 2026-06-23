@@ -142,7 +142,8 @@ async def enrich_posting_from_ozon(
     if skus:
         try:
             prod_info = await ozon_product_info_list_async(client_id, api_key, skus)
-            items = prod_info.get("result", {}).get("items", [])
+            # В API v3 список товаров лежит в корне в ключе 'items'
+            items = prod_info.get("items", [])
             for item in items:
                 s_id = item.get("sku")
                 # Берем первую картинку из списка
