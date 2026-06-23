@@ -144,55 +144,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildDrawer() {
     return Drawer(
-      child: Column(
-        children: [
-          DrawerHeader(
-            decoration: BoxDecoration(color: Theme.of(context).primaryColor),
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.hub_outlined, size: 48, color: Colors.white),
-                  const SizedBox(height: 12),
-                  Text(
-                    Provider.of<AuthProvider>(context, listen: false).userEmail ?? 'Sales Hub',
-                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                ],
+      child: SafeArea(
+        top: false, // DrawerHeader сам обрабатывает отступ статус-бара
+        child: Column(
+          children: [
+            DrawerHeader(
+              decoration: BoxDecoration(color: Theme.of(context).primaryColor),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.hub_outlined, size: 48, color: Colors.white),
+                    const SizedBox(height: 12),
+                    Text(
+                      Provider.of<AuthProvider>(context, listen: false).userEmail ?? 'Sales Hub',
+                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.dashboard_outlined),
-            title: const Text('Дашборд'),
-            selected: true,
-            onTap: () => Navigator.pop(context),
-          ),
-          ListTile(
-            leading: const Icon(Icons.local_shipping_outlined),
-            title: const Text('Отгрузки'),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ShipmentsScreen()));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.settings_outlined),
-            title: const Text('Настройки магазина'),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
-            },
-          ),
-          const Divider(),
-          const Spacer(),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.redAccent),
-            title: const Text('Выйти', style: TextStyle(color: Colors.redAccent)),
-            onTap: _handleLogout,
-          ),
-          const SizedBox(height: 20),
-        ],
+            ListTile(
+              leading: const Icon(Icons.dashboard_outlined),
+              title: const Text('Дашборд'),
+              selected: true,
+              onTap: () => Navigator.pop(context),
+            ),
+            ListTile(
+              leading: const Icon(Icons.local_shipping_outlined),
+              title: const Text('Отгрузки'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ShipmentsScreen()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('Настройки магазина'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+              },
+            ),
+            const Divider(),
+            const Spacer(),
+            ListTile(
+              leading: const Icon(Icons.logout, color: Colors.redAccent),
+              title: const Text('Выйти', style: TextStyle(color: Colors.redAccent)),
+              onTap: _handleLogout,
+            ),
+            const SizedBox(height: 8), // Небольшой отступ внутри SafeArea
+          ],
+        ),
       ),
     );
   }

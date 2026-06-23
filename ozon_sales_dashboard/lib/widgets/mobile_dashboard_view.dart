@@ -267,8 +267,11 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final values = stats.map((s) => (_isMoneyMode ? s['revenue'] : s['items']) as num).toList();
     final maxVal = values.isNotEmpty ? values.reduce((a, b) => a > b ? a : b) : 0;
     
+    // ОПРЕДЕЛЯЕМ "СЕГОДНЯ" ПО МОСКВЕ (UTC+3) ДЛЯ СИНХРОНИЗАЦИИ С ОЗОНОМ
+    final nowMoscow = DateTime.now().toUtc().add(const Duration(hours: 3));
+    final todayStr = DateFormat('yyyy-MM-dd').format(nowMoscow);
+    
     final activeDateStr = DateFormat('yyyy-MM-dd').format(widget.drillDownDate ?? widget.activeDate);
-    final todayDateStr = DateFormat('yyyy-MM-dd').format(DateTime.now().add(const Duration(hours: 3)));
 
     final chartContent = Column(
       children: [
@@ -279,17 +282,27 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             final val = (_isMoneyMode ? s['revenue'] : s['items']) as num;
             final double h = maxVal > 0 ? (val / maxVal * 120).toDouble().clamp(5.0, 120.0) : 5.0;
             
-            final bool isActive = s['date'] == activeDateStr;
-            final bool isToday = s['date'] == todayDateStr;
+            // Парсим дату от сервера (обычно yyyy-MM-dd)
+            final sDate = DateTime.parse(s['date']);
+            final sDateStr = DateFormat('yyyy-MM-dd').format(sDate);
+
+            final bool isActive = sDateStr == activeDateStr;
+            final bool isToday = sDateStr == todayStr;
             final bool isMax = (val == maxVal && maxVal > 0);
 
-            Color barColor = const Color(0xFF90CAF9);
-            if (isToday) barColor = const Color(0xFF4CAF50);
-            else if (isMax) barColor = Colors.red;
+            // ЛОГИКА ЦВЕТОВ:
+            Color barColor = const Color(0xFF90CAF9); // По умолчанию синий
+            if (isMax) {
+              barColor = Colors.red; // Рекорд - красный
+            } else if (isToday) {
+              barColor = const Color(0xFF4CAF50); // Сегодня (не рекорд) - зеленый
+            }
 
+            // ЛОГИКА ОБВОДКИ:
             BoxBorder? border;
-            if (isActive) {
-              border = Border.all(color: Theme.of(context).primaryColor, width: 2.5);
+            // Зеленая обводка если: это Сегодня+Рекорд ИЛИ на столбик нажали
+            if (isActive || (isToday && isMax)) {
+              border = Border.all(color: const Color(0xFF4CAF50), width: 2.5);
             }
 
             // УВЕЛИЧЕННАЯ ОБЛАСТЬ НАЖАТИЯ ДЛЯ ТЕЛЕФОНА (с InkWell для отклика)
