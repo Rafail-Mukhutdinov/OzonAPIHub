@@ -177,8 +177,6 @@ async def enrich_posting_from_ozon(
 
                 if img_url:
                     image_map[str(s_id)] = img_url
-                    # ВРЕМЕННЫЙ ЛОГ ДЛЯ ОТЛАДКИ (уже с чистой ссылкой)
-                    print(f" [DEBUG] SKU {s_id} -> IMG (cleaned): {img_url}")
 
             if image_map:
                 logger.debug(f"Найдено изображений: {len(image_map)} для SKU {skus}")
