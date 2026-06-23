@@ -67,39 +67,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (!isSilent) setState(() => loading = true);
 
     try {
-      DateTime reportStart;
-      DateTime reportEnd;
+      DateTime periodStart;
+      DateTime periodEnd;
 
-      if (drillDownDate != null) {
-        reportStart = drillDownDate!;
-        reportEnd = drillDownDate!;
-      } else if (selectedPeriod == 'custom' && customRange != null) {
-        reportStart = customRange!.start;
-        reportEnd = customRange!.end;
+      // 1. ОПРЕДЕЛЯЕМ ГРАНИЦЫ ОСНОВНОГО ПЕРИОДА
+      if (selectedPeriod == 'custom' && customRange != null) {
+        periodStart = customRange!.start;
+        periodEnd = customRange!.end;
       } else {
-        reportEnd = activeDate;
+        periodEnd = activeDate;
         if (selectedPeriod == 'today') {
-          reportStart = activeDate;
+          periodStart = activeDate;
         } else if (selectedPeriod == 'week') {
           if (weekMode == 'calendar') {
-            // С начала недели (понедельник) до activeDate
             int daysToSubtract = activeDate.weekday - 1;
-            reportStart = activeDate.subtract(Duration(days: daysToSubtract));
+            periodStart = activeDate.subtract(Duration(days: daysToSubtract));
           } else {
-            reportStart = activeDate.subtract(const Duration(days: 6));
+            periodStart = activeDate.subtract(const Duration(days: 6));
           }
         } else {
-          // Режим МЕСЯЦ
           if (monthMode == 'calendar') {
-            // С 1-го числа месяца до activeDate
-            reportStart = DateTime(activeDate.year, activeDate.month, 1);
+            periodStart = DateTime(activeDate.year, activeDate.month, 1);
           } else {
-            reportStart = activeDate.subtract(const Duration(days: 29));
+            periodStart = activeDate.subtract(const Duration(days: 29));
           }
         }
       }
 
-      // ЕДИНЫЙ ЗАПРОС ДЛЯ ВСЕХ Layout
+      // 2. ОПРЕДЕЛЯЕМ ДАТЫ ДЛЯ ОТЧЕТА (Цифры и Товары)
+      // Если есть drillDownDate, берем его. Если нет - весь период.
+      DateTime reportStart = drillDownDate ?? periodStart;
+      DateTime reportEnd = drillDownDate ?? periodEnd;
+
+      // ЕДИНЫЙ ЗАПРОС ДЛЯ ОТЧЕТА (Товары и итоги)
       final reportResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
         'since': _getIso(reportStart, false),
         'to': _getIso(reportEnd, true),
@@ -111,9 +111,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'to': _getIso(reportEnd.subtract(Duration(days: diff)), true),
       });
 
-      // ГРАФИК: Если "Сегодня", берем 7 дней для контекста. Иначе - ровно выбранный период.
-      DateTime statsStart = reportStart;
-      DateTime statsEnd = reportEnd;
+      // 3. ЗАПРОС ДЛЯ ГРАФИКА (Всегда за весь период)
+      DateTime statsStart = periodStart;
+      DateTime statsEnd = periodEnd;
       if (selectedPeriod == 'today') {
         statsStart = activeDate.subtract(const Duration(days: 6));
         statsEnd = activeDate;

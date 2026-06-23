@@ -171,9 +171,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      widget.selectedPeriod == 'today' || widget.drillDownDate != null 
-                        ? dateStr 
-                        : displayRangeText, 
+                      displayRangeText, 
                       style: TextStyle(
                         color: widget.drillDownDate != null ? Theme.of(context).primaryColor : Colors.grey[600], 
                         fontSize: 13,
@@ -183,7 +181,11 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                   ],
                 ),
                 if (widget.drillDownDate != null)
-                  TextButton.icon(onPressed: widget.onResetDrillDown, icon: const Icon(Icons.close, size: 16), label: const Text('Сброс', style: TextStyle(fontSize: 12)))
+                  TextButton.icon(
+                    onPressed: widget.onResetDrillDown, 
+                    icon: const Icon(Icons.close, size: 18, color: Colors.redAccent), 
+                    label: const Text('Сброс', style: TextStyle(fontSize: 13, color: Colors.redAccent, fontWeight: FontWeight.bold))
+                  )
                 else
                   Row(
                     children: [
