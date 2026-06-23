@@ -117,16 +117,24 @@ async def sync_user_orders(user: User, db: Session) -> bool:
                     continue
 
                 pn = o.get('posting_number')
-                # Сохраняем в сессию (коммит сделаем ниже пачкой)
-                is_active_change = save_order_for_user(db, user, o)
 
-                # Добавляем в очередь на обогащение если:
-                # - это новый заказ/изменение статуса
-                # - ИЛИ заказа нет в нормализованной таблице (был пропущен или ошибка)
-                if is_active_change or (pn not in existing_norm_pns):
-                    total_saved += 1
-                    if valid_posting_number(pn):
-                        new_pns.add(pn)
+                # Используем вложенную транзакцию (SAVEPOINT), чтобы ошибка в одном заказе
+                # не отменяла всю пачку успешно загруженных заказов на странице.
+                try:
+                    with db.begin_nested():
+                        # Сохраняем в сессию (коммит сделаем ниже пачкой)
+                        is_active_change = save_order_for_user(db, user, o)
+
+                        # Добавляем в очередь на обогащение если:
+                        # - это новый заказ/изменение статуса
+                        # - ИЛИ заказа нет в нормализованной таблице (был пропущен или ошибка)
+                        if is_active_change or (pn not in existing_norm_pns):
+                            total_saved += 1
+                            if valid_posting_number(pn):
+                                new_pns.add(pn)
+                except Exception as e:
+                    logger.error(f"User {user.id}: Пропуск заказа {pn} из-за ошибки: {e}")
+                    # Вложенная транзакция автоматически откатится здесь
 
             # BATCH COMMIT: Сохраняем всю страницу (обычно 50 заказов) за одну транзакцию
             db.commit()
@@ -177,8 +185,9 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
         return True
     except Exception as e:
         logger.error(f"Error saving order {posting_number}: {e}")
-        db.rollback()
-        return False
+        # ВАЖНО: Мы больше не делаем здесь db.rollback(), так как это ломает всю
+        # внешнюю транзакцию. Ошибку должен обработать вызывающий код через begin_nested().
+        raise
 
 async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit: int, offset: int, user_id: int, db: Session) -> dict:
     # Используется для API и Backfill
@@ -206,8 +215,14 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
         valid_orders = []
         for o in items:
             if not isinstance(o, dict): continue
-            if save_order_for_user(db, user, o): saved += 1
-            valid_orders.append(o)
+            pn = o.get('posting_number', 'unknown')
+            try:
+                with db.begin_nested():
+                    if save_order_for_user(db, user, o):
+                        saved += 1
+                valid_orders.append(o)
+            except Exception as e:
+                logger.error(f"Error saving order {pn} in fetch_and_save: {e}")
 
         # BATCH COMMIT: Сохраняем все найденные заказы разом
         db.commit()
