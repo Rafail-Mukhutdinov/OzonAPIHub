@@ -165,11 +165,20 @@ async def enrich_posting_from_ozon(
                 s_id = item.get("sku")
                 # ПРИОРИТЕТ: сначала ищем главную картинку (primary_image),
                 # если её нет — берем первую из списка images
-                img_url = item.get("primary_image") or (item.get("images", [])[0] if item.get("images") else None)
+                raw_img = item.get("primary_image") or (item.get("images", [])[0] if item.get("images") else None)
+
+                # Озон может вернуть ссылку как строку или как список из одной строки.
+                # Нам нужна именно строка.
+                img_url = None
+                if isinstance(raw_img, list) and raw_img:
+                    img_url = raw_img[0]
+                elif isinstance(raw_img, str):
+                    img_url = raw_img
+
                 if img_url:
                     image_map[str(s_id)] = img_url
-                    # ВРЕМЕННЫЙ ЛОГ ДЛЯ ОТЛАДКИ
-                    print(f" [DEBUG] SKU {s_id} -> IMG: {img_url}")
+                    # ВРЕМЕННЫЙ ЛОГ ДЛЯ ОТЛАДКИ (уже с чистой ссылкой)
+                    print(f" [DEBUG] SKU {s_id} -> IMG (cleaned): {img_url}")
 
             if image_map:
                 logger.debug(f"Найдено изображений: {len(image_map)} для SKU {skus}")
