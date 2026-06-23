@@ -90,11 +90,16 @@ async def sync_all_users_task(ctx):
 
 async def initial_backfill_task(ctx, user_id: int):
     """Задача: Полная загрузка истории для конкретного пользователя."""
+    logger.info(f"--- [WORKER] Получена задача initial_backfill_task для пользователя {user_id} ---")
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             await initial_backfill_for_user(user, db)
+        else:
+            logger.error(f"--- [WORKER] Пользователь {user_id} не найден в БД! ---")
+    except Exception as e:
+        logger.error(f"--- [WORKER] Ошибка в initial_backfill_task: {e} ---")
     finally:
         db.close()
 

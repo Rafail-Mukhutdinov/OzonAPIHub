@@ -284,6 +284,18 @@ async def initial_backfill_for_user(user: User, db: Session):
     Идет от настоящего в прошлое на 1 год.
     """
     user_id = user.id if hasattr(user, 'id') else user
+
+    # ПРОВЕРКА КЛЮЧЕЙ ПЕРЕД НАЧАЛОМ
+    cred = db.query(OzonCredential).filter(OzonCredential.user_id == user_id, OzonCredential.is_active == True).first()
+    if not cred:
+        logger.error(f"User {user_id}: Backfill aborted - No active Ozon Credentials found!")
+        status = db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+        if status:
+            status.is_syncing = False
+            status.status_message = "Ошибка: не настроены API ключи Ozon"
+            db.commit()
+        return
+
     bg_db = SessionLocal()
     try:
         sync_status = bg_db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
