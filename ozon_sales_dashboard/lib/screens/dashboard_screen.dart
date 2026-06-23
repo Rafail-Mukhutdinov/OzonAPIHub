@@ -111,9 +111,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'to': _getIso(reportEnd.subtract(Duration(days: diff)), true),
       });
 
+      // ГРАФИК: Если "Сегодня", берем 7 дней для контекста. Иначе - ровно выбранный период.
+      DateTime statsStart = reportStart;
+      DateTime statsEnd = reportEnd;
+      if (selectedPeriod == 'today') {
+        statsStart = activeDate.subtract(const Duration(days: 6));
+        statsEnd = activeDate;
+      }
+
       final statsResponse = await api.dio.get('/analytics/daily_stats', queryParameters: {
-        'since': _getIso(DateTime.now().subtract(const Duration(days: 29)), false),
-        'to': _getIso(DateTime.now(), true),
+        'since': _getIso(statsStart, false),
+        'to': _getIso(statsEnd, true),
       });
 
       if (!mounted) return;

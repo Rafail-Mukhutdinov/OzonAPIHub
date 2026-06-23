@@ -395,15 +395,15 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
   }
 
   Widget _buildChart(NumberFormat f) {
-    final bool isMonth = widget.selectedPeriod == 'month';
-    final stats = isMonth ? widget.weeklyStats : widget.weeklyStats.skip(widget.weeklyStats.length > 7 ? widget.weeklyStats.length - 7 : 0).toList();
+    final stats = widget.weeklyStats;
+    final bool isLongPeriod = stats.length > 10;
     
     if (stats.isEmpty) return const SizedBox(height: 120, child: Center(child: Text('Нет данных')));
 
     final values = stats.map((s) => (_isMoneyMode ? s['revenue'] : s['items']) as num).toList();
     final maxVal = values.isNotEmpty ? values.reduce((a, b) => a > b ? a : b) : 0;
     
-    // ОПРЕДЕЛЯЕМ "СЕГОДНЯ" ПО МОСКВЕ (UTC+3) ДЛЯ СИНХРОНИЗАЦИИ С ОЗОНОМ
+    // ОПРЕДЕЛЯЕМ "СЕГОДНЯ" ПО МОСКВЕ (UTC+3)
     final nowMoscow = DateTime.now().toUtc().add(const Duration(hours: 3));
     final todayStr = DateFormat('yyyy-MM-dd').format(nowMoscow);
     
@@ -412,13 +412,12 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final chartContent = Column(
       children: [
         Row(
-          mainAxisAlignment: isMonth ? MainAxisAlignment.start : MainAxisAlignment.spaceEvenly,
+          mainAxisAlignment: isLongPeriod ? MainAxisAlignment.start : MainAxisAlignment.spaceEvenly,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: stats.map((s) {
             final val = (_isMoneyMode ? s['revenue'] : s['items']) as num;
             final double h = maxVal > 0 ? (val / maxVal * 120).toDouble().clamp(5.0, 120.0) : 5.0;
             
-            // Парсим дату от сервера (обычно yyyy-MM-dd)
             final sDate = DateTime.parse(s['date']);
             final sDateStr = DateFormat('yyyy-MM-dd').format(sDate);
 
@@ -426,39 +425,35 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             final bool isToday = sDateStr == todayStr;
             final bool isMax = (val == maxVal && maxVal > 0);
 
-            // ЛОГИКА ЦВЕТОВ:
-            Color barColor = const Color(0xFF90CAF9); // По умолчанию синий
+            Color barColor = const Color(0xFF90CAF9); 
             if (isMax) {
-              barColor = Colors.red; // Рекорд - красный
+              barColor = Colors.red; 
             } else if (isToday) {
-              barColor = const Color(0xFF4CAF50); // Сегодня (не рекорд) - зеленый
+              barColor = const Color(0xFF4CAF50); 
             }
 
-            // ЛОГИКА ОБВОДКИ:
             BoxBorder? border;
-            // Зеленая обводка если: это Сегодня+Рекорд ИЛИ на столбик нажали
             if (isActive || (isToday && isMax)) {
               border = Border.all(color: const Color(0xFF4CAF50), width: 2.5);
             }
 
-            // УВЕЛИЧЕННАЯ ОБЛАСТЬ НАЖАТИЯ ДЛЯ ТЕЛЕФОНА (с InkWell для отклика)
             return Tooltip(
-              message: "${s['date']}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
+              message: "${DateFormat("d MMMM", "ru_RU").format(sDate)}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
               triggerMode: TooltipTriggerMode.tap,
               child: Material(
                 color: Colors.transparent,
                 child: InkWell(
-                  onTap: () => widget.onDrillDown(DateTime.parse(s['date'])),
+                  onTap: () => widget.onDrillDown(sDate),
                   borderRadius: BorderRadius.circular(4),
-                  splashColor: Colors.transparent, // Убираем всплеск
-                  highlightColor: Colors.transparent, // Убираем серый фон при нажатии
+                  splashColor: Colors.transparent,
+                  highlightColor: Colors.transparent,
                   child: Container(
-                    width: isMonth ? 22 : 44,
+                    width: isLongPeriod ? 26 : 44,
                     height: 130, 
                     alignment: Alignment.bottomCenter,
                     padding: const EdgeInsets.only(bottom: 2),
                     child: Container(
-                      width: isMonth ? 14 : 36,
+                      width: isLongPeriod ? 18 : 36,
                       height: h,
                       decoration: BoxDecoration(
                         color: barColor,
@@ -474,20 +469,20 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         ),
         const SizedBox(height: 12),
         Row(
-          mainAxisAlignment: isMonth ? MainAxisAlignment.start : MainAxisAlignment.spaceEvenly,
+          mainAxisAlignment: isLongPeriod ? MainAxisAlignment.start : MainAxisAlignment.spaceEvenly,
           children: stats.map((s) {
             final date = DateTime.parse(s['date']);
-            String label = isMonth ? date.day.toString() : "${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][date.weekday-1]}\n${date.day}";
+            String label = isLongPeriod ? date.day.toString() : "${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][date.weekday-1]}\n${date.day}";
             return SizedBox(
-              width: isMonth ? 22 : 44,
-              child: Center(child: Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 8, color: Colors.grey, height: 1.2))),
+              width: isLongPeriod ? 26 : 44,
+              child: Center(child: Text(label, textAlign: TextAlign.center, style: TextStyle(fontSize: isLongPeriod ? 9 : 8, color: Colors.grey, height: 1.2))),
             );
           }).toList(),
         )
       ],
     );
 
-    if (isMonth) {
+    if (isLongPeriod) {
       return SingleChildScrollView(scrollDirection: Axis.horizontal, reverse: true, child: chartContent);
     }
     return chartContent;
