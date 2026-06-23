@@ -49,8 +49,17 @@ def recalc_order_header(db: Session, order_number: str, user_id: int):
 
     hdr = db.query(OrderHeader).filter(OrderHeader.order_number == order_number, OrderHeader.user_id == user_id).first()
     if not hdr:
-        hdr = OrderHeader(order_number=order_number, user_id=user_id)
-        db.add(hdr)
+        # Проверяем также объекты, которые уже в сессии, но еще не в базе
+        for obj in db.new:
+            if isinstance(obj, OrderHeader) and obj.order_number == order_number and obj.user_id == user_id:
+                hdr = obj
+                break
+
+        if not hdr:
+            hdr = OrderHeader(order_number=order_number, user_id=user_id)
+            db.add(hdr)
+            db.flush() # Сразу отправляем в БД, чтобы избежать UniqueViolation при следующих вызовах
+
     hdr.first_created_at = first_created
     hdr.last_delivery_at = last_delivery
     hdr.total_payout = total_payout
@@ -142,8 +151,10 @@ async def enrich_posting_from_ozon(
     if skus:
         try:
             prod_info = await ozon_product_info_list_async(client_id, api_key, skus)
-            # В API v3 список товаров лежит в корне в ключе 'items'
-            items = prod_info.get("items", [])
+            # В API v3 список товаров все еще обернут в 'result'
+            res_data = prod_info.get("result", {})
+            items = res_data.get("items", []) if isinstance(res_data, dict) else []
+
             for item in items:
                 s_id = item.get("sku")
                 # ПРИОРИТЕТ: сначала ищем главную картинку (primary_image),
