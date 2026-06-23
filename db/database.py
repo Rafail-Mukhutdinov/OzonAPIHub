@@ -185,85 +185,9 @@ def get_db():
     finally: db.close()
 
 def init_db():
+    # Создаем таблицы, если их нет (только для новых инсталляций)
     Base.metadata.create_all(bind=engine)
 
-    import logging
-    db_logger = logging.getLogger("OzonAPIHub.database")
-
-    # МИГРАЦИЯ: Переход со String на DateTime для полей дат
-    # Для PostgreSQL используем ALTER TABLE ... TYPE TIMESTAMP
-    if engine.dialect.name == "postgresql":
-        columns_to_convert = [
-            ("orders", ["created_at", "updated_at"]),
-            ("order_headers", ["first_created_at", "last_delivery_at"]),
-            ("order_postings", ["created_at", "in_process_at", "fact_delivery_date"]),
-            ("costs", ["date"])
-        ]
-        with engine.begin() as conn:
-            for table, cols in columns_to_convert:
-                for col in cols:
-                    try:
-                        # Проверяем текущий тип колонки
-                        res = conn.execute(sa.text(
-                            "SELECT data_type FROM information_schema.columns "
-                            f"WHERE table_name='{table}' AND column_name='{col}'"
-                        )).fetchone()
-
-                        if res and res[0] == 'character varying':
-                            db_logger.info(f"Миграция {table}.{col}: String -> DateTime")
-                            conn.execute(sa.text(
-                                f"ALTER TABLE {table} ALTER COLUMN {col} TYPE TIMESTAMP "
-                                f"USING {col}::timestamp without time zone"
-                            ))
-                            # Создаем индекс, если его нет (после изменения типа)
-                            if col in ["created_at", "in_process_at", "date"]:
-                                conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_{table}_{col} ON {table}({col})"))
-                    except Exception:
-                        db_logger.exception("Ошибка при конвертации %s.%s", table, col)
-
-            # Создание составных индексов
-            try:
-                conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_order_user_created ON orders(user_id, created_at)"))
-                conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_posting_user_created ON order_postings(user_id, created_at)"))
-                conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_posting_user_in_process ON order_postings(user_id, in_process_at)"))
-                conn.execute(sa.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL"))
-                conn.execute(sa.text("ALTER TABLE order_products ADD COLUMN IF NOT EXISTS image_url VARCHAR(1024) NULL"))
-            except Exception:
-                db_logger.exception("Ошибка при создании индексов или новых колонок")
-
-    # Временная авто-миграция для новых полей SyncStatus
-    common_cols = [
-        ("backfill_cursor", "TIMESTAMP NULL"),
-        ("backfill_started_at", "TIMESTAMP NULL"),
-        ("backfill_completed_at", "TIMESTAMP NULL"),
-        ("backfill_from", "TIMESTAMP NULL"),
-        ("backfill_to", "TIMESTAMP NULL"),
-    ]
-
-    if engine.dialect.name == "postgresql":
-        postgres_cols = common_cols + [("backfill_is_complete", "BOOLEAN NOT NULL DEFAULT FALSE")]
-        with engine.begin() as conn:
-            for col_name, col_type in postgres_cols:
-                try:
-                    conn.execute(sa.text(f"ALTER TABLE sync_status ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
-                except Exception:
-                    db_logger.exception("Migration error for sync_status.%s", col_name)
-    elif engine.dialect.name == "sqlite":
-        # SQLite не поддерживает ADD COLUMN IF NOT EXISTS напрямую
-        sqlite_cols = common_cols + [
-            ("backfill_is_complete", "BOOLEAN DEFAULT 0"),
-            ("image_url", "VARCHAR(1024) NULL")
-        ]
-        with engine.connect() as conn:
-            # Проверяем наличие колонок
-            try:
-                existing_cols = [row[1] for row in conn.execute(sa.text("PRAGMA table_info(sync_status)")).fetchall()]
-                for col_name, col_type in sqlite_cols:
-                    if col_name not in existing_cols:
-                        try:
-                            conn.execute(sa.text(f"ALTER TABLE sync_status ADD COLUMN {col_name} {col_type}"))
-                            conn.commit()
-                        except Exception:
-                            db_logger.exception("SQLite Migration error for sync_status.%s", col_name)
-            except Exception:
-                db_logger.exception("Error checking sqlite columns")
+    # ПРИМЕЧАНИЕ: Вся логика миграций теперь перенесена в Alembic.
+    # Файлы миграций находятся в папке /alembic
+    pass
