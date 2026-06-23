@@ -110,11 +110,13 @@ async def run_initial_sync(
     logger.info(f"Добавление задачи Backfill в очередь для пользователя {current_user.id} (force={is_force})")
 
     try:
-        # Отправляем задачу в Redis для воркера с уникальным ID задачи
+        # Используем уникальный ID задачи, чтобы избежать блокировок в Redis при перезапусках
+        job_id = f"backfill_user_{current_user.id}_{int(datetime.now().timestamp())}" if is_force else f"backfill_user_{current_user.id}"
+
         await arq_pool.enqueue_job(
             'initial_backfill_task',
             current_user.id,
-            _job_id=f"backfill_user_{current_user.id}"
+            _job_id=job_id
         )
     except Exception as e:
         logger.error(f"Failed to enqueue job for user {current_user.id}: {e}")
