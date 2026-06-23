@@ -426,7 +426,9 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             final bool isActive = sDateStr == activeDateStr;
             final bool isToday = sDateStr == todayStr;
             final bool isMax = (val == maxVal && maxVal > 0);
+            final bool isWeekend = sDate.weekday == DateTime.saturday || sDate.weekday == DateTime.sunday;
 
+            // ЛОГИКА ЦВЕТОВ:
             Color barColor = const Color(0xFF90CAF9); 
             if (isMax) {
               barColor = Colors.red; 
@@ -442,25 +444,30 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             return Tooltip(
               message: "${DateFormat("d MMMM", "ru_RU").format(sDate)}\n${_isMoneyMode ? f.format(val) + ' ₽' : '$val шт'}",
               triggerMode: TooltipTriggerMode.tap,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () => widget.onDrillDown(sDate),
-                  borderRadius: BorderRadius.circular(4),
-                  splashColor: Colors.transparent,
-                  highlightColor: Colors.transparent,
-                  child: Container(
-                    width: isLongPeriod ? 26 : 44,
-                    height: 130, 
-                    alignment: Alignment.bottomCenter,
-                    padding: const EdgeInsets.only(bottom: 2),
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Colors.transparent, // Убрали подсветку фона за столбиком
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => widget.onDrillDown(sDate),
+                    borderRadius: BorderRadius.circular(4),
+                    splashColor: Colors.transparent,
+                    highlightColor: Colors.transparent,
                     child: Container(
-                      width: isLongPeriod ? 18 : 36,
-                      height: h,
-                      decoration: BoxDecoration(
-                        color: barColor,
-                        border: border,
-                        borderRadius: BorderRadius.circular(4),
+                      width: isLongPeriod ? 26 : 44,
+                      height: 130, 
+                      alignment: Alignment.bottomCenter,
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Container(
+                        width: isLongPeriod ? 18 : 36,
+                        height: h,
+                        decoration: BoxDecoration(
+                          color: barColor,
+                          border: border,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
                       ),
                     ),
                   ),
@@ -474,10 +481,28 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
           mainAxisAlignment: isLongPeriod ? MainAxisAlignment.start : MainAxisAlignment.spaceEvenly,
           children: stats.map((s) {
             final date = DateTime.parse(s['date']);
+            final bool isWeekend = date.weekday == DateTime.saturday || date.weekday == DateTime.sunday;
             String label = isLongPeriod ? date.day.toString() : "${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][date.weekday-1]}\n${date.day}";
-            return SizedBox(
+            return Container(
               width: isLongPeriod ? 26 : 44,
-              child: Center(child: Text(label, textAlign: TextAlign.center, style: TextStyle(fontSize: isLongPeriod ? 9 : 8, color: Colors.grey, height: 1.2))),
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              decoration: BoxDecoration(
+                // Оставили подсветку только для блока дат
+                color: isWeekend ? Colors.blue.withOpacity(0.1) : Colors.transparent,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Center(
+                child: Text(
+                  label, 
+                  textAlign: TextAlign.center, 
+                  style: TextStyle(
+                    fontSize: isLongPeriod ? 9 : 8, 
+                    color: isWeekend ? Colors.blue[700] : Colors.grey,
+                    fontWeight: isWeekend ? FontWeight.bold : FontWeight.normal,
+                    height: 1.2
+                  )
+                )
+              ),
             );
           }).toList(),
         )
