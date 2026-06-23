@@ -27,6 +27,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // РЕЖИМЫ ПЕРИОДОВ (сохраняются во время сессии)
   String weekMode = 'rolling'; // 'rolling' или 'calendar'
   String monthMode = 'calendar'; // 'calendar' (с 1-го числа) или 'rolling'
+  DateTimeRange? customRange; 
 
   List<Map<String, dynamic>> items = [];
   Map<String, dynamic>? totals;
@@ -72,6 +73,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (drillDownDate != null) {
         reportStart = drillDownDate!;
         reportEnd = drillDownDate!;
+      } else if (selectedPeriod == 'custom' && customRange != null) {
+        reportStart = customRange!.start;
+        reportEnd = customRange!.end;
       } else {
         reportEnd = activeDate;
         if (selectedPeriod == 'today') {
@@ -218,7 +222,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _handleDateStep(int step) {
     setState(() {
       drillDownDate = null;
-      if (selectedPeriod == 'month' && monthMode == 'calendar') {
+      if (selectedPeriod == 'custom' && customRange != null) {
+        // Сдвигаем ВЕСЬ произвольный период
+        customRange = DateTimeRange(
+          start: customRange!.start.add(Duration(days: step)),
+          end: customRange!.end.add(Duration(days: step)),
+        );
+        // Синхронизируем activeDate для корректной работы других механизмов
+        activeDate = customRange!.end;
+      } else if (selectedPeriod == 'month' && monthMode == 'calendar') {
         if (step < 0) {
           // Прыгаем в последний день ПРЕДЫДУЩЕГО месяца
           activeDate = DateTime(activeDate.year, activeDate.month, 1).subtract(const Duration(days: 1));
@@ -281,8 +293,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: MobileDashboardView(
           items: items, totals: totals, yesterdayTotals: yesterdayTotals, weeklyStats: weeklyStats,
           isLoading: loading, selectedPeriod: selectedPeriod, activeDate: activeDate, drillDownDate: drillDownDate,
-          weekMode: weekMode, monthMode: monthMode,
-          onPeriodChanged: (p) { setState(() { selectedPeriod = p; drillDownDate = null; activeDate = DateTime.now(); }); _loadAllData(); },
+          weekMode: weekMode, monthMode: monthMode, customRange: customRange,
+          onPeriodChanged: (p) { setState(() { selectedPeriod = p; drillDownDate = null; activeDate = DateTime.now(); customRange = null; }); _loadAllData(); },
           onDateChanged: (d) { 
             // Определяем, в какую сторону был сдвиг, чтобы вызвать нашу новую логику
             int step = d.isBefore(activeDate) ? -1 : 1;
@@ -294,6 +306,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
             setState(() {
               weekMode = wMode;
               monthMode = mMode;
+            });
+            _loadAllData();
+          },
+          onCustomRangeSelected: (range) {
+            setState(() {
+              selectedPeriod = 'custom';
+              customRange = range;
+              activeDate = range.end;
+              drillDownDate = null;
             });
             _loadAllData();
           },

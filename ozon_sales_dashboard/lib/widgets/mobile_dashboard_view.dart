@@ -12,10 +12,12 @@ class MobileDashboardView extends StatefulWidget {
   final String selectedPeriod;
   final String weekMode;
   final String monthMode;
+  final DateTimeRange? customRange;
   final DateTime activeDate;
   final DateTime? drillDownDate;
   final Function(String) onPeriodChanged;
   final Function(String, String) onSettingsChanged;
+  final Function(DateTimeRange) onCustomRangeSelected;
   final Function(DateTime) onDateChanged;
   final Function(DateTime) onDrillDown;
   final VoidCallback onResetDrillDown;
@@ -30,10 +32,12 @@ class MobileDashboardView extends StatefulWidget {
     required this.selectedPeriod,
     required this.weekMode,
     required this.monthMode,
+    this.customRange,
     required this.activeDate,
     this.drillDownDate,
     required this.onPeriodChanged,
     required this.onSettingsChanged,
+    required this.onCustomRangeSelected,
     required this.onDateChanged,
     required this.onDrillDown,
     required this.onResetDrillDown,
@@ -61,7 +65,11 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
     // --- РАСЧЕТ ДИАПАЗОНА ДАТ ДЛЯ ЗАГОЛОВКА ---
     DateTime rangeStart;
-    if (widget.selectedPeriod == 'today' || widget.drillDownDate != null) {
+    if (widget.drillDownDate != null) {
+      rangeStart = displayDate;
+    } else if (widget.selectedPeriod == 'custom' && widget.customRange != null) {
+      rangeStart = widget.customRange!.start;
+    } else if (widget.selectedPeriod == 'today') {
       rangeStart = displayDate;
     } else if (widget.selectedPeriod == 'week') {
       if (widget.weekMode == 'calendar') {
@@ -79,7 +87,9 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
     final String displayRangeText = widget.selectedPeriod == 'today' || widget.drillDownDate != null
         ? dateStr
-        : "${DateFormat("d MMMM", "ru_RU").format(rangeStart)} — ${DateFormat("d MMMM", "ru_RU").format(widget.activeDate)}";
+        : (widget.selectedPeriod == 'custom' && widget.customRange != null)
+          ? "${DateFormat("d MMMM", "ru_RU").format(widget.customRange!.start)} — ${DateFormat("d MMMM", "ru_RU").format(widget.customRange!.end)}"
+          : "${DateFormat("d MMMM", "ru_RU").format(rangeStart)} — ${DateFormat("d MMMM", "ru_RU").format(widget.activeDate)}";
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -122,6 +132,15 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                         _buildPeriodBtn('Месяц', 'month'),
                       ],
                     ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: _selectCustomRange,
+                  icon: Icon(Icons.calendar_month_outlined, color: widget.selectedPeriod == 'custom' ? Theme.of(context).primaryColor : const Color(0xFF6C757D)),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFFE9ECEF),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -325,7 +344,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             const SizedBox(height: 24),
             const Text('РЕЖИМ "НЕДЕЛЯ"', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
             ListTile(
-              title: const Text('С текущего понедельника'),
+              title: const Text('С понедельника'),
               leading: Radio<String>(value: 'calendar', groupValue: widget.weekMode, onChanged: (v) { widget.onSettingsChanged(v!, widget.monthMode); Navigator.pop(context); }),
             ),
             ListTile(
@@ -335,7 +354,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             const Divider(),
             const Text('РЕЖИМ "МЕСЯЦ"', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
             ListTile(
-              title: const Text('С 1-го числа текущего месяца'),
+              title: const Text('С 1-го числа месяца'),
               leading: Radio<String>(value: 'calendar', groupValue: widget.monthMode, onChanged: (v) { widget.onSettingsChanged(widget.weekMode, v!); Navigator.pop(context); }),
             ),
             ListTile(
@@ -347,6 +366,32 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         ),
       ),
     );
+  }
+
+  Future<void> _selectCustomRange() async {
+    final DateTimeRange? picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2023),
+      lastDate: DateTime.now(),
+      initialDateRange: widget.customRange,
+      locale: const Locale('ru', 'RU'),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: ColorScheme.light(
+              primary: Theme.of(context).primaryColor,
+              onPrimary: Colors.white,
+              onSurface: Colors.black,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      widget.onCustomRangeSelected(picked);
+    }
   }
 
   Widget _buildChart(NumberFormat f) {
