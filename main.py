@@ -89,26 +89,11 @@ app = FastAPI(
 setup_rate_limiting(app)
 
 # Настройка CORS
-# Позволяем браузеру обращаться к API с любого домена в режиме отладки или на сервере,
-# если не заданы строгие ограничения.
-cors_origins_raw = os.getenv("CORS_ORIGINS", "")
-allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
-
-default_origins = [
-    "http://localhost",
-    "http://localhost:8080",
-    "http://localhost:8083",
-    "http://127.0.0.1",
-    "http://127.0.0.1:8080",
-    "http://127.0.0.1:8083",
-]
-final_origins = list(set(allowed_origins + default_origins))
-
-# Используем regex для гибкости, если список origins пуст или для поддержки всех поддоменов
+# Для SaaS версии на сервере разрешаем все источники (Origins),
+# так как браузер может обращаться по IP или разным доменам.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=final_origins if final_origins else ["*"],
-    allow_origin_regex=r"https?://.*" if not final_origins else None,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
