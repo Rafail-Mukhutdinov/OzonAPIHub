@@ -10,9 +10,12 @@ class MobileDashboardView extends StatefulWidget {
   final List<Map<String, dynamic>> weeklyStats;
   final bool isLoading;
   final String selectedPeriod;
+  final String weekMode;
+  final String monthMode;
   final DateTime activeDate;
   final DateTime? drillDownDate;
   final Function(String) onPeriodChanged;
+  final Function(String, String) onSettingsChanged;
   final Function(DateTime) onDateChanged;
   final Function(DateTime) onDrillDown;
   final VoidCallback onResetDrillDown;
@@ -25,9 +28,12 @@ class MobileDashboardView extends StatefulWidget {
     required this.weeklyStats,
     required this.isLoading,
     required this.selectedPeriod,
+    required this.weekMode,
+    required this.monthMode,
     required this.activeDate,
     this.drillDownDate,
     required this.onPeriodChanged,
+    required this.onSettingsChanged,
     required this.onDateChanged,
     required this.onDrillDown,
     required this.onResetDrillDown,
@@ -53,6 +59,32 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final displayDate = widget.drillDownDate ?? widget.activeDate;
     final dateStr = DateFormat("EEEE, d MMMM", "ru_RU").format(displayDate);
 
+    // --- РАСЧЕТ ДИАПАЗОНА ДАТ ДЛЯ ЗАГОЛОВКА ---
+    DateTime rangeStart;
+    if (widget.selectedPeriod == 'today' || widget.drillDownDate != null) {
+      rangeStart = displayDate;
+    } else if (widget.selectedPeriod == 'week') {
+      if (widget.weekMode == 'calendar') {
+        rangeStart = widget.activeDate.subtract(Duration(days: widget.activeDate.weekday - 1));
+      } else {
+        rangeStart = widget.activeDate.subtract(const Duration(days: 6));
+      }
+    } else {
+      if (widget.monthMode == 'calendar') {
+        rangeStart = DateTime(widget.activeDate.year, widget.activeDate.month, 1);
+      } else {
+        rangeStart = widget.activeDate.subtract(const Duration(days: 29));
+      }
+    }
+
+    final String displayRangeText = widget.selectedPeriod == 'today' || widget.drillDownDate != null
+        ? dateStr
+        : "${DateFormat("d MMMM", "ru_RU").format(rangeStart)} — ${DateFormat("d MMMM", "ru_RU").format(widget.activeDate)}";
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final isAtMaxDate = !widget.activeDate.isBefore(today);
+
     // --- РАСЧЕТ ТЕКУЩИХ ПОКАЗАТЕЛЕЙ ---
     final revenueCurr = widget.items.fold<num>(0, (sum, item) => sum + (item['amount_raw'] ?? 0));
     final itemsCurr = widget.items.fold<num>(0, (sum, item) => sum + (item['quantity'] ?? 0));
@@ -74,19 +106,34 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // 1. ПЕРИОДЫ
-            Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE9ECEF),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  _buildPeriodBtn('Сегодня', 'today'),
-                  _buildPeriodBtn('15 дней', '15days'),
-                  _buildPeriodBtn('30 дней', 'month'),
-                ],
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE9ECEF),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        _buildPeriodBtn('Сегодня', 'today'),
+                        _buildPeriodBtn('Неделя', 'week'),
+                        _buildPeriodBtn('Месяц', 'month'),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: _showSettingsSheet,
+                  icon: const Icon(Icons.tune, color: Color(0xFF6C757D)),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFFE9ECEF),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 20),
 
@@ -107,7 +154,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                     Text(
                       widget.selectedPeriod == 'today' || widget.drillDownDate != null 
                         ? dateStr 
-                        : 'За последние ${widget.selectedPeriod == '15days' ? "15" : "30"} дней', 
+                        : displayRangeText, 
                       style: TextStyle(
                         color: widget.drillDownDate != null ? Theme.of(context).primaryColor : Colors.grey[600], 
                         fontSize: 13,
@@ -118,11 +165,17 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                 ),
                 if (widget.drillDownDate != null)
                   TextButton.icon(onPressed: widget.onResetDrillDown, icon: const Icon(Icons.close, size: 16), label: const Text('Сброс', style: TextStyle(fontSize: 12)))
-                else if (widget.selectedPeriod == 'today')
+                else
                   Row(
                     children: [
-                      IconButton(icon: const Icon(Icons.chevron_left), onPressed: () => widget.onDateChanged(widget.activeDate.subtract(const Duration(days: 1)))),
-                      IconButton(icon: const Icon(Icons.chevron_right), onPressed: widget.activeDate.day == DateTime.now().day && widget.activeDate.month == DateTime.now().month ? null : () => widget.onDateChanged(widget.activeDate.add(const Duration(days: 1)))),
+                      IconButton(
+                        icon: const Icon(Icons.chevron_left), 
+                        onPressed: () => widget.onDateChanged(widget.activeDate.subtract(const Duration(days: 1)))
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.chevron_right), 
+                        onPressed: isAtMaxDate ? null : () => widget.onDateChanged(widget.activeDate.add(const Duration(days: 1)))
+                      ),
                     ],
                   ),
               ],
@@ -254,6 +307,44 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(color: active ? Colors.white : Colors.transparent, borderRadius: BorderRadius.circular(8), boxShadow: active ? [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4)] : null),
         child: Text(label, style: TextStyle(fontSize: 12, fontWeight: active ? FontWeight.bold : FontWeight.normal, color: active ? Colors.black : Colors.grey)),
+      ),
+    );
+  }
+
+  void _showSettingsSheet() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Настройка периодов', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 24),
+            const Text('РЕЖИМ "НЕДЕЛЯ"', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+            ListTile(
+              title: const Text('С текущего понедельника'),
+              leading: Radio<String>(value: 'calendar', groupValue: widget.weekMode, onChanged: (v) { widget.onSettingsChanged(v!, widget.monthMode); Navigator.pop(context); }),
+            ),
+            ListTile(
+              title: const Text('Последние 7 дней'),
+              leading: Radio<String>(value: 'rolling', groupValue: widget.weekMode, onChanged: (v) { widget.onSettingsChanged(v!, widget.monthMode); Navigator.pop(context); }),
+            ),
+            const Divider(),
+            const Text('РЕЖИМ "МЕСЯЦ"', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+            ListTile(
+              title: const Text('С 1-го числа текущего месяца'),
+              leading: Radio<String>(value: 'calendar', groupValue: widget.monthMode, onChanged: (v) { widget.onSettingsChanged(widget.weekMode, v!); Navigator.pop(context); }),
+            ),
+            ListTile(
+              title: const Text('Последние 30 дней'),
+              leading: Radio<String>(value: 'rolling', groupValue: widget.monthMode, onChanged: (v) { widget.onSettingsChanged(widget.weekMode, v!); Navigator.pop(context); }),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
       ),
     );
   }

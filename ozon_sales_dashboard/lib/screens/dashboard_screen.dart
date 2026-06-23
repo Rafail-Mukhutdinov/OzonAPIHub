@@ -24,6 +24,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   DateTime activeDate = DateTime.now(); 
   DateTime? drillDownDate; 
 
+  // РЕЖИМЫ ПЕРИОДОВ (сохраняются во время сессии)
+  String weekMode = 'rolling'; // 'rolling' или 'calendar'
+  String monthMode = 'calendar'; // 'calendar' (с 1-го числа) или 'rolling'
+
   List<Map<String, dynamic>> items = [];
   Map<String, dynamic>? totals;
   Map<String, dynamic>? yesterdayTotals;
@@ -72,11 +76,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         reportEnd = activeDate;
         if (selectedPeriod == 'today') {
           reportStart = activeDate;
-        } else if (selectedPeriod == '15days') {
-          reportStart = activeDate.subtract(const Duration(days: 14));
+        } else if (selectedPeriod == 'week') {
+          if (weekMode == 'calendar') {
+            // С начала недели (понедельник) до activeDate
+            int daysToSubtract = activeDate.weekday - 1;
+            reportStart = activeDate.subtract(Duration(days: daysToSubtract));
+          } else {
+            reportStart = activeDate.subtract(const Duration(days: 6));
+          }
         } else {
-          // По умолчанию 30 дней
-          reportStart = activeDate.subtract(const Duration(days: 29));
+          // Режим МЕСЯЦ
+          if (monthMode == 'calendar') {
+            // С 1-го числа месяца до activeDate
+            reportStart = DateTime(activeDate.year, activeDate.month, 1);
+          } else {
+            reportStart = activeDate.subtract(const Duration(days: 29));
+          }
         }
       }
 
@@ -200,6 +215,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  void _handleDateStep(int step) {
+    setState(() {
+      drillDownDate = null;
+      if (selectedPeriod == 'month' && monthMode == 'calendar') {
+        if (step < 0) {
+          // Прыгаем в последний день ПРЕДЫДУЩЕГО месяца
+          activeDate = DateTime(activeDate.year, activeDate.month, 1).subtract(const Duration(days: 1));
+        } else {
+          // Прыгаем в следующий месяц
+          DateTime nextMonth = DateTime(activeDate.year, activeDate.month + 1, 1);
+          // Если следующий месяц — это текущий реальный месяц, ставим "сегодня"
+          DateTime now = DateTime.now();
+          if (nextMonth.year == now.year && nextMonth.month == now.month) {
+            activeDate = now;
+          } else {
+            // Иначе ставим последний день того месяца
+            activeDate = DateTime(nextMonth.year, nextMonth.month + 1, 0);
+          }
+        }
+      } else if (selectedPeriod == 'week' && weekMode == 'calendar') {
+        if (step < 0) {
+          // Находим воскресенье ПРЕДЫДУЩЕЙ недели
+          // DateTime.weekday: 1 (Пн) ... 7 (Вс)
+          // Если сегодня Вт(2), отнимаем 2 дня -> получаем Вс(21-е)
+          activeDate = activeDate.subtract(Duration(days: activeDate.weekday));
+        } else {
+          // Прыгаем на следующее воскресенье
+          activeDate = activeDate.add(Duration(days: 7 - activeDate.weekday + 7));
+          // Если улетели в будущее — обрезаем до сегодня
+          DateTime now = DateTime.now();
+          DateTime today = DateTime(now.year, now.month, now.day);
+          if (activeDate.isAfter(today)) activeDate = today;
+        }
+      } else {
+        // Обычный сдвиг на 1 день
+        activeDate = activeDate.add(Duration(days: step));
+      }
+    });
+    _loadAllData();
+  }
+
   Widget _buildMobileLayout() {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
@@ -225,10 +281,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: MobileDashboardView(
           items: items, totals: totals, yesterdayTotals: yesterdayTotals, weeklyStats: weeklyStats,
           isLoading: loading, selectedPeriod: selectedPeriod, activeDate: activeDate, drillDownDate: drillDownDate,
+          weekMode: weekMode, monthMode: monthMode,
           onPeriodChanged: (p) { setState(() { selectedPeriod = p; drillDownDate = null; activeDate = DateTime.now(); }); _loadAllData(); },
-          onDateChanged: (d) { setState(() { activeDate = d; drillDownDate = null; }); _loadAllData(); },
+          onDateChanged: (d) { 
+            // Определяем, в какую сторону был сдвиг, чтобы вызвать нашу новую логику
+            int step = d.isBefore(activeDate) ? -1 : 1;
+            _handleDateStep(step);
+          },
           onDrillDown: (d) { setState(() => drillDownDate = d); _loadAllData(); },
           onResetDrillDown: () { setState(() => drillDownDate = null); _loadAllData(); },
+          onSettingsChanged: (wMode, mMode) {
+            setState(() {
+              weekMode = wMode;
+              monthMode = mMode;
+            });
+            _loadAllData();
+          },
         ),
       ),
     );
