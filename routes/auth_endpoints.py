@@ -106,14 +106,6 @@ class SyncStatusResponse(BaseModel):
 # Эндпоинты (Маршруты API)
 # ============================================================================
 
-@router.options("/ozon-credentials")
-@router.options("/me/ozon-credentials")
-@router.options("/register")
-@router.options("/login")
-def options_handler():
-    """Обработчик preflight-запросов CORS."""
-    return Response(status_code=200)
-
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 def register(request: Request, user_data: UserRegister, db: Session = Depends(get_db)):
@@ -145,6 +137,7 @@ def register(request: Request, user_data: UserRegister, db: Session = Depends(ge
 @limiter.limit("10/minute")
 def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Авторизация пользователя (выдача JWT токена)."""
+    logger.info(f"Login attempt for user: {form_data.username}")
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
