@@ -34,6 +34,10 @@ def parse_msk_date(value: str, end_of_day: bool = False, tz_offset_hours: int = 
 
     return parse_ozon_datetime(trimmed)
 
+def is_cancelled(st):
+    status = (st or "").lower()
+    return any(x in status for x in ["cancelled", "отменен", "отменён", "canceled"])
+
 def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc: datetime, include_cancelled: bool = True):
     """
     Собирает уникальные постинги из сырых (Order) и нормализованных (OrderPosting) таблиц.
@@ -61,10 +65,6 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
     ).all()
 
     postings_map = {}
-
-    def is_cancelled(st):
-        status = (st or "").lower()
-        return any(x in status for x in ["cancelled", "отменен", "отменён", "canceled"])
 
     # Сначала заполняем из сырых
     for pn, cr, st, data in raw_orders:
@@ -310,11 +310,33 @@ async def sales_report_universal(
     total_commission = int(totals[1] or 0)
     profit = total_payout - total_commission
 
+    # Считаем отмены отдельно
+    def _is_cancelled_local(st):
+        status = (st or "").lower()
+        return any(x in status for x in ["cancelled", "отменен", "отменён", "canceled"])
+
+    cancelled_pns = [pn for pn in final_postings if _is_cancelled_local(postings_map.get(pn, {}).get("status"))]
+    total_cancelled_amount = 0
+    total_cancelled_count = 0
+
+    if cancelled_pns:
+        c_res = db.query(
+            func.sum(OrderProduct.quantity),
+            func.sum(OrderProduct.price * OrderProduct.quantity)
+        ).filter(
+            OrderProduct.user_id == current_user.id,
+            OrderProduct.posting_number.in_(cancelled_pns)
+        ).first()
+        total_cancelled_count = int(c_res[0] or 0)
+        total_cancelled_amount = int(c_res[1] or 0)
+
     return {
         "items": items,
         "total_items": sum(i["quantity"] for i in items),
         "total_orders": len(final_postings),
         "total_amount_raw": sum(i["amount_raw"] for i in items),
+        "total_cancelled_amount": total_cancelled_amount,
+        "total_cancelled_count": total_cancelled_count,
         "total_payout": total_payout,
         "total_commission": total_commission,
         "profit": profit

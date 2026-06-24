@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'mobile_stat_card.dart';
 
 class MobileDashboardView extends StatefulWidget {
@@ -49,6 +50,44 @@ class MobileDashboardView extends StatefulWidget {
 
 class _MobileDashboardViewState extends State<MobileDashboardView> {
   bool _isMoneyMode = true;
+  List<String> _metricsOrder = ['revenue', 'items', 'avgPrice', 'expenses', 'cancelled', 'storage'];
+  Set<String> _visibleMetrics = {'revenue', 'items', 'avgPrice'};
+  
+  final Map<String, Map<String, dynamic>> _allMetrics = {
+    'revenue': {'title': 'Выручка', 'icon': Icons.paid},
+    'items': {'title': 'Продано', 'icon': Icons.shopping_bag},
+    'avgPrice': {'title': 'Ср. цена', 'icon': Icons.analytics},
+    'expenses': {'title': 'Расходы', 'icon': Icons.account_balance_wallet},
+    'cancelled': {'title': 'Отмены', 'icon': Icons.cancel_presentation},
+    'storage': {'title': 'Хранение', 'icon': Icons.warehouse},
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMetricsSettings();
+  }
+
+  Future<void> _loadMetricsSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final order = prefs.getStringList('dashboard_metrics_order');
+    final visible = prefs.getStringList('dashboard_metrics_visible');
+    
+    setState(() {
+      if (order != null && order.isNotEmpty) {
+        _metricsOrder = order;
+      }
+      if (visible != null) {
+        _visibleMetrics = visible.toSet();
+      }
+    });
+  }
+
+  Future<void> _saveMetricsSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('dashboard_metrics_order', _metricsOrder);
+    await prefs.setStringList('dashboard_metrics_visible', _visibleMetrics.toList());
+  }
 
   String _calcChange(num current, num previous) {
     if (previous <= 0) return current > 0 ? "+100%" : "0%";
@@ -100,10 +139,16 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final itemsCurr = widget.items.fold<num>(0, (sum, item) => sum + (item['quantity'] ?? 0));
     final avgPriceCurr = itemsCurr > 0 ? revenueCurr / itemsCurr : 0;
 
+    final cancelledRevenueCurr = widget.totals?['total_cancelled_amount'] ?? 0;
+    final cancelledCountCurr = widget.totals?['total_cancelled_count'] ?? 0;
+
     // --- РАСЧЕТ ПРЕДЫДУЩИХ ПОКАЗАТЕЛЕЙ ---
     final revenuePrev = widget.yesterdayTotals?['total_amount_raw'] ?? 0;
     final itemsPrev = widget.yesterdayTotals?['total_items'] ?? 0;
     final avgPricePrev = itemsPrev > 0 ? revenuePrev / itemsPrev : 0;
+    
+    final cancelledRevenuePrev = widget.yesterdayTotals?['total_cancelled_amount'] ?? 0;
+    final cancelledCountPrev = widget.yesterdayTotals?['total_cancelled_count'] ?? 0;
 
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(
@@ -203,17 +248,58 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             ),
             const SizedBox(height: 24),
 
-            // 3. ПОКАЗАТЕЛИ (ТРИ В ОДНОМ РЯДУ)
-            const Text('ПОКАЗАТЕЛИ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, letterSpacing: 0.8, color: Colors.grey)),
-            const SizedBox(height: 12),
+            // 3. ПОКАЗАТЕЛИ (ГОРИЗОНТАЛЬНЫЙ СКРОЛЛ)
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Expanded(child: MobileStatCard(title: 'Выручка', value: '${f.format(revenueCurr)} ₽', change: _calcChange(revenueCurr, revenuePrev), isPositive: revenueCurr >= revenuePrev, icon: Icons.paid)),
-                const SizedBox(width: 8),
-                Expanded(child: MobileStatCard(title: 'Продано', value: '${f.format(itemsCurr)} шт', change: _calcChange(itemsCurr, itemsPrev), isPositive: itemsCurr >= itemsPrev, icon: Icons.shopping_bag)),
-                const SizedBox(width: 8),
-                Expanded(child: MobileStatCard(title: 'Ср. цена', value: '${f.format(avgPriceCurr.toInt())} ₽', change: _calcChange(avgPriceCurr, avgPricePrev), isPositive: avgPriceCurr >= avgPricePrev, icon: Icons.analytics)),
+                const Text('ПОКАЗАТЕЛИ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, letterSpacing: 0.8, color: Colors.grey)),
+                IconButton(
+                  onPressed: _showMetricsSettings,
+                  icon: const Icon(Icons.settings_outlined, size: 18, color: Colors.grey),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
               ],
+            ),
+            const SizedBox(height: 12),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              clipBehavior: Clip.none,
+              child: Row(
+                children: _metricsOrder.where((id) => _visibleMetrics.contains(id)).map((id) {
+                  final metric = _allMetrics[id]!;
+                  Widget card;
+                  
+                  if (id == 'revenue') {
+                    card = MobileStatCard(title: metric['title'], value: '${f.format(revenueCurr)} ₽', change: _calcChange(revenueCurr, revenuePrev), isPositive: revenueCurr >= revenuePrev, icon: metric['icon']);
+                  } else if (id == 'items') {
+                    card = MobileStatCard(title: metric['title'], value: '${f.format(itemsCurr)} шт', change: _calcChange(itemsCurr, itemsPrev), isPositive: itemsCurr >= itemsPrev, icon: metric['icon']);
+                  } else if (id == 'avgPrice') {
+                    card = MobileStatCard(title: metric['title'], value: '${f.format(avgPriceCurr.toInt())} ₽', change: _calcChange(avgPriceCurr, avgPricePrev), isPositive: avgPriceCurr >= avgPricePrev, icon: metric['icon']);
+                  } else if (id == 'expenses') {
+                    // Заглушка для расходов
+                    card = MobileStatCard(title: metric['title'], value: '0 ₽', change: '0%', isPositive: true, icon: metric['icon']);
+                  } else if (id == 'cancelled') {
+                    card = MobileStatCard(
+                      title: metric['title'], 
+                      value: '${f.format(cancelledRevenueCurr)} ₽', 
+                      change: '$cancelledCountCurr шт', // Показываем кол-во штук как доп. инфо
+                      isPositive: cancelledRevenueCurr <= cancelledRevenuePrev, // Позитивно, если отмен меньше
+                      icon: metric['icon']
+                    );
+                  } else {
+                    // Заглушка для хранения
+                    card = MobileStatCard(title: metric['title'], value: '0 ₽', change: '0%', isPositive: true, icon: metric['icon']);
+                  }
+
+                  return Container(
+                    width: 150,
+                    margin: const EdgeInsets.only(right: 12),
+                    child: card,
+                  );
+                }).toList(),
+              ),
             ),
 
             const SizedBox(height: 32),
@@ -328,6 +414,85 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(color: active ? Colors.white : Colors.transparent, borderRadius: BorderRadius.circular(8), boxShadow: active ? [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4)] : null),
         child: Text(label, style: TextStyle(fontSize: 12, fontWeight: active ? FontWeight.bold : FontWeight.normal, color: active ? Colors.black : Colors.grey)),
+      ),
+    );
+  }
+
+  void _showMetricsSettings() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          height: MediaQuery.of(context).size.height * 0.7,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Настройка показателей', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+                ],
+              ),
+              const Text('Перетаскивайте блоки для изменения порядка или отключайте ненужные', 
+                style: TextStyle(fontSize: 13, color: Colors.grey)),
+              const SizedBox(height: 20),
+              Expanded(
+                child: ReorderableListView(
+                  onReorder: (oldIndex, newIndex) {
+                    setState(() {
+                      if (newIndex > oldIndex) newIndex -= 1;
+                      final String item = _metricsOrder.removeAt(oldIndex);
+                      _metricsOrder.insert(newIndex, item);
+                      _saveMetricsSettings();
+                    });
+                    setModalState(() {});
+                  },
+                  children: _metricsOrder.map((id) {
+                    final metric = _allMetrics[id]!;
+                    final bool isVisible = _visibleMetrics.contains(id);
+                    return ListTile(
+                      key: ValueKey(id),
+                      leading: Icon(metric['icon'], color: isVisible ? Theme.of(context).primaryColor : Colors.grey),
+                      title: Text(metric['title'], style: TextStyle(
+                        fontWeight: isVisible ? FontWeight.bold : FontWeight.normal,
+                        color: isVisible ? Colors.black : Colors.grey
+                      )),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Switch(
+                            value: isVisible,
+                            onChanged: (val) {
+                              setState(() {
+                                if (val) {
+                                  _visibleMetrics.add(id);
+                                } else {
+                                  // Не даем скрыть все показатели
+                                  if (_visibleMetrics.length > 1) {
+                                    _visibleMetrics.remove(id);
+                                  }
+                                }
+                                _saveMetricsSettings();
+                              });
+                              setModalState(() {});
+                            },
+                          ),
+                          const Icon(Icons.drag_handle, color: Colors.grey),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
       ),
     );
   }
