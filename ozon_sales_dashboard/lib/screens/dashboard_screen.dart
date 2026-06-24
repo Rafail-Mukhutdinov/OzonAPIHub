@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'dart:async';
 import '../services/api.dart';
 import '../widgets/mobile_dashboard_view.dart';
+import '../widgets/expenses_widget.dart';
 import '../widgets/sales_table.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
@@ -99,10 +100,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       DateTime reportStart = drillDownDate ?? periodStart;
       DateTime reportEnd = drillDownDate ?? periodEnd;
 
+      final sinceStr = _getIso(reportStart, false);
+      final toStr = _getIso(reportEnd, true);
+
       // ЕДИНЫЙ ЗАПРОС ДЛЯ ОТЧЕТА (Товары и итоги)
       final reportResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
-        'since': _getIso(reportStart, false),
-        'to': _getIso(reportEnd, true),
+        'since': sinceStr,
+        'to': toStr,
       });
 
       final diff = reportEnd.difference(reportStart).inDays + 1;
@@ -128,6 +132,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       setState(() {
         items = (reportResponse.data['items'] as List).cast<Map<String, dynamic>>();
         totals = reportResponse.data;
+        // Сохраняем ISO строки для виджетов
+        totals!['current_since'] = sinceStr;
+        totals!['current_to'] = toStr;
+
         yesterdayTotals = prevResponse.data;
         weeklyStats = (statsResponse.data['data'] as List).cast<Map<String, dynamic>>();
         loading = false;
@@ -299,6 +307,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       body: RefreshIndicator(
         onRefresh: () => _loadAllData(),
         child: MobileDashboardView(
+          api: api,
+          getIso: _getIso,
+          sinceStr: (totals?['current_since'] as String?) ?? _getIso(DateTime.now(), false),
+          toStr: (totals?['current_to'] as String?) ?? _getIso(DateTime.now(), true),
           items: items, totals: totals, yesterdayTotals: yesterdayTotals, weeklyStats: weeklyStats,
           isLoading: loading, selectedPeriod: selectedPeriod, activeDate: activeDate, drillDownDate: drillDownDate,
           weekMode: weekMode, monthMode: monthMode, customRange: customRange,
@@ -355,6 +367,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(width: 8),
                 ElevatedButton(onPressed: () { setState(() => selectedPeriod = 'month'); _loadAllData(); }, child: const Text('Месяц')),
               ],
+            ),
+            const SizedBox(height: 20),
+            ExpensesWidget(
+              api: api, 
+              since: (totals?['current_since'] as String?) ?? _getIso(drillDownDate ?? activeDate, false),
+              to: (totals?['current_to'] as String?) ?? _getIso(drillDownDate ?? activeDate, true),
             ),
             const SizedBox(height: 20),
             SalesTable(items: items, delivered: true, totals: totals),

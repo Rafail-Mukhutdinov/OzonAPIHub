@@ -352,16 +352,21 @@ async def sales_report_universal(
         Cost.date <= to_utc.replace(tzinfo=None)
     ).group_by(Cost.type).all()
 
-    costs_dict = {t: abs(int(a or 0)) for t, a in costs_by_type}
+    costs_dict = {t: abs(float(a or 0)) for t, a in costs_by_type}
 
     total_advertising = costs_dict.get("advertising", 0) + costs_dict.get("adv", 0)
     total_storage = costs_dict.get("storage", 0)
 
-    # Все, что не реклама и не хранение из таблицы Cost, относим в прочие
-    other_costs_sum = sum(v for k, v in costs_dict.items() if k not in ["advertising", "adv", "storage"])
+    # Добавляем логистику из транзакций к логистике из заказов
+    total_logistics += costs_dict.get("logistics", 0)
 
-    total_expenses = total_commission + int(total_logistics) + sum(costs_dict.values())
-    profit = total_payout - total_commission # Упрощенно, потом уточним
+    total_acquiring = costs_dict.get("acquiring", 0)
+
+    # Всё остальное относим в прочие
+    other_costs_sum = sum(v for k, v in costs_dict.items() if k not in ["advertising", "adv", "storage", "logistics", "acquiring"])
+
+    total_expenses = total_commission + float(total_logistics) + total_advertising + total_storage + total_acquiring + other_costs_sum
+    profit = total_payout - total_expenses
 
     # Считаем отмены отдельно
     def _is_cancelled_local(st):
@@ -394,8 +399,172 @@ async def sales_report_universal(
         "total_advertising": total_advertising,
         "total_storage": total_storage,
         "total_logistics": int(total_logistics),
+        "total_acquiring": total_acquiring,
         "total_other": other_costs_sum,
         "total_payout": total_payout,
         "total_commission": total_commission,
         "profit": profit
+    }
+
+@router.get("/expenses_breakdown")
+async def expenses_breakdown(
+    since: str,
+    to: str,
+    tz_offset_hours: int = Query(3),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Детализация расходов по категориям с отдельными операциями.
+    """
+    since_dt = parse_msk_date(since, tz_offset_hours=tz_offset_hours)
+    to_dt = parse_msk_date(to, end_of_day=True, tz_offset_hours=tz_offset_hours)
+
+    if not since_dt or not to_dt:
+        raise HTTPException(status_code=400, detail="Некорректный формат даты")
+
+    since_utc = since_dt.astimezone(timezone.utc).replace(tzinfo=None)
+    to_utc = to_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+    # 1. Собираем постинги за период
+    search_since = since_utc - timedelta(hours=24)
+    search_to = to_utc + timedelta(hours=24)
+    postings_map = _get_unified_postings(db, current_user.id, search_since, search_to)
+
+    local_tz = timezone(timedelta(hours=tz_offset_hours))
+    date_since_local = since_dt.astimezone(local_tz).date()
+    date_to_local = to_dt.astimezone(local_tz).date()
+
+    final_postings = []
+    for pn, data in postings_map.items():
+        best_date = data.get("in_process_at") or data["created_at"]
+        dt_local = to_msk(best_date, tz_offset_hours)
+        if not dt_local:
+            continue
+        if date_since_local <= dt_local.date() <= date_to_local:
+            final_postings.append(pn)
+
+    # 2. Комиссия
+    totals = db.query(
+        func.coalesce(func.sum(OrderProduct.commission_amount), 0)
+    ).filter(
+        OrderProduct.user_id == current_user.id,
+        OrderProduct.posting_number.in_(final_postings)
+    ).first()
+    total_commission = abs(float(totals[0] or 0))
+
+    # 3. Логистика
+    total_logistics = 0
+    postings_data = db.query(OrderPosting.financial_data).filter(
+        OrderPosting.user_id == current_user.id,
+        OrderPosting.posting_number.in_(final_postings)
+    ).all()
+
+    for (f_data,) in postings_data:
+        if not f_data or not isinstance(f_data, dict): continue
+        def _get_val(v):
+            try: return abs(float(v or 0))
+            except: return 0
+
+        services = f_data.get("services", {})
+        if isinstance(services, dict):
+            for s_val in services.values(): total_logistics += _get_val(s_val)
+
+        products = f_data.get("products", [])
+        if isinstance(products, list):
+            for p in products:
+                if not isinstance(p, dict): continue
+                item_services = p.get("item_services", {})
+                if isinstance(item_services, dict):
+                    for s_val in item_services.values(): total_logistics += _get_val(s_val)
+
+    # 4. Расходы из Cost
+    cost_rows = db.query(Cost).filter(
+        Cost.user_id == current_user.id,
+        Cost.date >= since_utc,
+        Cost.date <= to_utc
+    ).order_by(Cost.date.desc()).all()
+
+    def _classify_cost(row: Cost) -> str:
+        t = (row.type or "").lower()
+        if t in ("advertising", "adv"): return "Реклама"
+        if t == "storage": return "Хранение"
+        if t == "logistics": return "Логистика (транзакции)"
+        if t == "acquiring": return "Эквайринг"
+
+        notes = (row.notes or "").lower()
+        if any(x in notes for x in ["эквайринг", "acquiring"]): return "Эквайринг"
+        if any(x in notes for x in ["штраф", "penalty"]): return "Штрафы и пени"
+        if any(x in notes for x in ["логистик", "доставк", "delivery"]): return "Логистика (транзакции)"
+        if any(x in notes for x in ["реклам", "promotion", "звёздные"]): return "Реклама"
+        if "хранен" in notes: return "Хранение"
+
+        return "Прочие расходы"
+
+    by_category = {
+        "Комиссия Ozon": total_commission,
+        "Логистика (FBO/FBS)": total_logistics,
+        "Реклама": 0.0,
+        "Хранение": 0.0,
+        "Эквайринг": 0.0,
+        "Штрафы и пени": 0.0,
+        "Логистика (транзакции)": 0.0,
+        "Прочие расходы": 0.0
+    }
+
+    ops_by_category = {}
+    for row in cost_rows:
+        cat = _classify_cost(row)
+        if cat not in by_category: by_category[cat] = 0.0
+        by_category[cat] += float(row.amount or 0)
+
+        if cat not in ops_by_category:
+            ops_by_category[cat] = {"total": 0.0, "items": []}
+        ops_by_category[cat]["total"] += float(row.amount or 0)
+        ops_by_category[cat]["items"].append({
+            "amount": float(row.amount or 0),
+            "date": row.date.isoformat() if row.date else None,
+            "notes": row.notes or "",
+        })
+
+    return {
+        "by_category": by_category,
+        "details": ops_by_category,
+        "total": sum(by_category.values())
+    }
+
+@router.get("/expenses_summary")
+async def expenses_summary(
+    since: str,
+    to: str,
+    tz_offset_hours: int = Query(3),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Возвращает сумму расходов за указанный период с разбивкой по категориям.
+    """
+    # Используем существующую логику детализации
+    res = await expenses_breakdown(since=since, to=to, tz_offset_hours=tz_offset_hours, db=db, current_user=current_user)
+
+    total = res["total"]
+    categories = []
+
+    for name, amount in res["by_category"].items():
+        if amount > 0:
+            percent = (amount / total * 100) if total > 0 else 0
+            categories.append({
+                "name": name,
+                "amount": amount,
+                "percent": round(percent, 1)
+            })
+
+    # Сортируем по сумме
+    categories.sort(key=lambda x: x["amount"], reverse=True)
+
+    return {
+        "since": since,
+        "to": to,
+        "total": total,
+        "categories": categories
     }

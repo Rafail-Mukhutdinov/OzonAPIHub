@@ -2,9 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/api.dart';
 import 'mobile_stat_card.dart';
+import 'expenses_widget.dart';
 
 class MobileDashboardView extends StatefulWidget {
+  final OzonApiClient api;
+  final String Function(DateTime, bool) getIso;
+  final String sinceStr;
+  final String toStr;
   final List<Map<String, dynamic>> items;
   final Map<String, dynamic>? totals;
   final Map<String, dynamic>? yesterdayTotals;
@@ -25,6 +31,10 @@ class MobileDashboardView extends StatefulWidget {
 
   const MobileDashboardView({
     super.key,
+    required this.api,
+    required this.getIso,
+    required this.sinceStr,
+    required this.toStr,
     required this.items,
     this.totals,
     this.yesterdayTotals,
@@ -327,6 +337,15 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             ),
 
             const SizedBox(height: 32),
+            
+            // НОВЫЙ ВИДЖЕТ РАСХОДОВ ЗА ПЕРИОД
+            ExpensesWidget(
+              api: widget.api, 
+              since: widget.sinceStr, 
+              to: widget.toStr,
+            ),
+
+            const SizedBox(height: 24),
 
             // 4. ГРАФИК
             Row(
@@ -527,6 +546,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final logistics = widget.totals?['total_logistics'] ?? 0;
     final advertising = widget.totals?['total_advertising'] ?? 0;
     final storage = widget.totals?['total_storage'] ?? 0;
+    final acquiring = widget.totals?['total_acquiring'] ?? 0;
     final other = widget.totals?['total_other'] ?? 0;
     final total = widget.totals?['total_expenses'] ?? 0;
 
@@ -546,6 +566,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             _buildExpenseRow('Логистика (FBO/FBS)', logistics, f),
             _buildExpenseRow('Реклама', advertising, f),
             _buildExpenseRow('Хранение', storage, f),
+            _buildExpenseRow('Эквайринг', acquiring, f),
             _buildExpenseRow('Прочие расходы', other, f),
             const Divider(height: 32),
             Row(
