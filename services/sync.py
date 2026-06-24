@@ -10,9 +10,9 @@ from typing import Union
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
-from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal, SyncStatus
+from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal, SyncStatus, Cost
 from services.enrichment import enrich_posting_from_ozon
-from services.ozon import ozon_fbo_list_async
+from services.ozon import ozon_fbo_list_async, ozon_transaction_list_async
 from utils.encryption import decrypt_credential
 from utils.common import valid_posting_number, to_msk, to_msk_date, parse_ozon_datetime, get_now_utc
 from utils.logging_config import log_user_event
@@ -146,6 +146,9 @@ async def sync_user_orders(user: User, db: Session) -> bool:
             log_user_event(user.id, f"Найдено новых заказов: {total_saved}. Запуск обогащения...")
             if ENRICH_ON_FETCH:
                 await run_enrichment_batch(list(new_pns), user.id)
+
+        # Запускаем синхронизацию транзакций (расходы: реклама, хранение)
+        await sync_ozon_transactions(user.id, db)
 
         return total_saved > 0
     except Exception as e:
@@ -292,6 +295,102 @@ async def run_enrichment_batch(pns: list[str], user_id: int):
     await asyncio.gather(*(_enrich_one(p) for p in pns))
 
     logger.info(f"User {user_id}: Обогащение завершено. Успешно: {success_count}/{len(pns)}.")
+
+async def sync_ozon_transactions(user_id: int, db: Session, days_back: int = 30):
+    """
+    Синхронизирует транзакции Ozon (реклама, хранение и т.д.) в таблицу Cost.
+    Позволяет получить точные данные по расходам, как в отчетах Ozon.
+    """
+    try:
+        active_cred = db.query(OzonCredential).filter(
+            OzonCredential.user_id == user_id,
+            OzonCredential.is_active == True
+        ).first()
+
+        if not active_cred: return 0
+
+        client_id = decrypt_credential(active_cred.client_id_encrypted)
+        api_key = decrypt_credential(active_cred.api_key_encrypted)
+
+        now = get_now_utc()
+        since_dt = now - timedelta(days=days_back)
+
+        # Формат для транзакций Ozon: 2021-11-01T00:00:00Z
+        from_iso = since_dt.replace(microsecond=0).isoformat() + 'Z'
+        to_iso = now.replace(microsecond=0).isoformat() + 'Z'
+
+        page = 1
+        total_synced = 0
+
+        while page <= 5: # Ограничим 5 страницами для начала
+            data = await ozon_transaction_list_async(client_id, api_key, from_iso, to_iso, page=page)
+            result = data.get("result", {})
+            operations = result.get("operations", [])
+
+            if not operations:
+                break
+
+            for op in operations:
+                amount = float(op.get("amount") or 0)
+
+                # Нас интересуют только расходы (отрицательные суммы)
+                if amount >= 0:
+                    continue
+
+                op_id = str(op.get("operation_id"))
+                op_date_raw = op.get("operation_date")
+                dt_op = parse_ozon_datetime(op_date_raw)
+                if dt_op:
+                    dt_op = dt_op.replace(tzinfo=None)
+
+                # Проверяем дубликат по ID операции в поле notes
+                check_tag = f"[ID:{op_id}]"
+                existing = db.query(Cost).filter(
+                    Cost.user_id == user_id,
+                    Cost.notes.contains(check_tag)
+                ).first()
+
+                if not existing:
+                    # Определяем категорию расхода
+                    category = "other"
+                    type_name = op.get("operation_type_name", "").lower()
+
+                    # Проверяем вложенные услуги
+                    services = op.get("services", [])
+                    service_names = " ".join([s.get("name", "").lower() for s in services])
+
+                    if "реклам" in type_name or "реклам" in service_names or "promotion" in service_names:
+                        category = "advertising"
+                    elif "хранен" in type_name or "storage" in service_names or "inventory" in service_names:
+                        category = "storage"
+                    elif "логистик" in type_name or "доставк" in type_name or "delivery" in type_name:
+                        category = "logistics"
+
+                    # Собираем доп. инфо
+                    notes = f"{op.get('operation_type_name')} {check_tag}"
+                    if services:
+                        notes += " | Услуги: " + ", ".join([f"{s.get('name')}: {s.get('price')}" for s in services])
+
+                    new_cost = Cost(
+                        user_id=user_id,
+                        type=category,
+                        amount=int(abs(amount)),
+                        date=dt_op,
+                        notes=notes
+                    )
+                    db.add(new_cost)
+                    total_synced += 1
+
+            db.commit()
+            if len(operations) < 1000:
+                break
+            page += 1
+            await asyncio.sleep(0.1)
+
+        return total_synced
+    except Exception as e:
+        logger.error(f"Error syncing transactions for user {user_id}: {e}")
+        return 0
 
 async def initial_backfill_for_user(user: User, db: Session):
     """

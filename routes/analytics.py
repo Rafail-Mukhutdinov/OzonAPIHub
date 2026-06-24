@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from datetime import datetime, timedelta, timezone
-from db.database import OrderPosting, OrderProduct, Order, get_db, User
+from db.database import OrderPosting, OrderProduct, Order, get_db, User, Cost
 import logging
 import json
 from utils.common import to_msk, parse_ozon_datetime
@@ -306,9 +306,62 @@ async def sales_report_universal(
         OrderProduct.posting_number.in_(final_postings)
     ).first()
 
-    total_payout = int(totals[0] or 0)
-    total_commission = int(totals[1] or 0)
-    profit = total_payout - total_commission
+    total_payout = abs(int(totals[0] or 0))
+    total_commission = abs(int(totals[1] or 0))
+
+    # Считаем логистику и другие услуги из financial_data постингов
+    total_logistics = 0
+    postings_data = db.query(OrderPosting.financial_data).filter(
+        OrderPosting.user_id == current_user.id,
+        OrderPosting.posting_number.in_(final_postings)
+    ).all()
+
+    for (f_data,) in postings_data:
+        if not f_data or not isinstance(f_data, dict):
+            continue
+
+        # Помогаем парсить суммы (могут быть строками)
+        def _get_val(v):
+            try: return abs(float(v or 0))
+            except: return 0
+
+        # 1. Проверяем услуги на уровне всего заказа (если есть)
+        services = f_data.get("services", {})
+        if isinstance(services, dict):
+            for s_val in services.values():
+                total_logistics += _get_val(s_val)
+
+        # 2. Проверяем услуги на уровне каждого товара (для FBO/FBS)
+        products = f_data.get("products", [])
+        if isinstance(products, list):
+            for p in products:
+                if not isinstance(p, dict): continue
+                # В Ozon API услуги лежат в item_services
+                item_services = p.get("item_services", {})
+                if isinstance(item_services, dict):
+                    for s_val in item_services.values():
+                        total_logistics += _get_val(s_val)
+
+    # Считаем дополнительные расходы (реклама, хранение) из таблицы Cost
+    costs_by_type = db.query(
+        Cost.type,
+        func.sum(Cost.amount)
+    ).filter(
+        Cost.user_id == current_user.id,
+        Cost.date >= since_utc.replace(tzinfo=None),
+        Cost.date <= to_utc.replace(tzinfo=None)
+    ).group_by(Cost.type).all()
+
+    costs_dict = {t: abs(int(a or 0)) for t, a in costs_by_type}
+
+    total_advertising = costs_dict.get("advertising", 0) + costs_dict.get("adv", 0)
+    total_storage = costs_dict.get("storage", 0)
+
+    # Все, что не реклама и не хранение из таблицы Cost, относим в прочие
+    other_costs_sum = sum(v for k, v in costs_dict.items() if k not in ["advertising", "adv", "storage"])
+
+    total_expenses = total_commission + int(total_logistics) + sum(costs_dict.values())
+    profit = total_payout - total_commission # Упрощенно, потом уточним
 
     # Считаем отмены отдельно
     def _is_cancelled_local(st):
@@ -337,6 +390,11 @@ async def sales_report_universal(
         "total_amount_raw": sum(i["amount_raw"] for i in items),
         "total_cancelled_amount": total_cancelled_amount,
         "total_cancelled_count": total_cancelled_count,
+        "total_expenses": total_expenses,
+        "total_advertising": total_advertising,
+        "total_storage": total_storage,
+        "total_logistics": int(total_logistics),
+        "total_other": other_costs_sum,
         "total_payout": total_payout,
         "total_commission": total_commission,
         "profit": profit

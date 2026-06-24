@@ -142,6 +142,11 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final cancelledRevenueCurr = widget.totals?['total_cancelled_amount'] ?? 0;
     final cancelledCountCurr = widget.totals?['total_cancelled_count'] ?? 0;
 
+    final expensesCurr = widget.totals?['total_expenses'] ?? 0;
+    final drrCurr = revenueCurr > 0 ? (expensesCurr / revenueCurr * 100).toInt() : 0;
+    
+    final storageCurr = widget.totals?['total_storage'] ?? 0;
+
     // --- РАСЧЕТ ПРЕДЫДУЩИХ ПОКАЗАТЕЛЕЙ ---
     final revenuePrev = widget.yesterdayTotals?['total_amount_raw'] ?? 0;
     final itemsPrev = widget.yesterdayTotals?['total_items'] ?? 0;
@@ -149,6 +154,9 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     
     final cancelledRevenuePrev = widget.yesterdayTotals?['total_cancelled_amount'] ?? 0;
     final cancelledCountPrev = widget.yesterdayTotals?['total_cancelled_count'] ?? 0;
+    
+    final expensesPrev = widget.yesterdayTotals?['total_expenses'] ?? 0;
+    final storagePrev = widget.yesterdayTotals?['total_storage'] ?? 0;
 
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(
@@ -278,8 +286,16 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                   } else if (id == 'avgPrice') {
                     card = MobileStatCard(title: metric['title'], value: '${f.format(avgPriceCurr.toInt())} ₽', change: _calcChange(avgPriceCurr, avgPricePrev), isPositive: avgPriceCurr >= avgPricePrev, icon: metric['icon']);
                   } else if (id == 'expenses') {
-                    // Заглушка для расходов
-                    card = MobileStatCard(title: metric['title'], value: '0 ₽', change: '0%', isPositive: true, icon: metric['icon']);
+                    card = GestureDetector(
+                      onTap: _showExpensesDetail,
+                      child: MobileStatCard(
+                        title: metric['title'], 
+                        value: '${f.format(expensesCurr)} ₽', 
+                        change: '$drrCurr%', // Показываем ДРР
+                        isPositive: expensesCurr <= expensesPrev, // Позитивно, если расходов меньше
+                        icon: metric['icon']
+                      ),
+                    );
                   } else if (id == 'cancelled') {
                     card = MobileStatCard(
                       title: metric['title'], 
@@ -288,8 +304,16 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                       isPositive: cancelledRevenueCurr <= cancelledRevenuePrev, // Позитивно, если отмен меньше
                       icon: metric['icon']
                     );
+                  } else if (id == 'storage') {
+                    card = MobileStatCard(
+                      title: metric['title'], 
+                      value: '${f.format(storageCurr)} ₽', 
+                      change: _calcChange(storageCurr, storagePrev), 
+                      isPositive: storageCurr <= storagePrev, 
+                      icon: metric['icon']
+                    );
                   } else {
-                    // Заглушка для хранения
+                    // Другие показатели
                     card = MobileStatCard(title: metric['title'], value: '0 ₽', change: '0%', isPositive: true, icon: metric['icon']);
                   }
 
@@ -493,6 +517,60 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  void _showExpensesDetail() {
+    final f = NumberFormat.decimalPattern('ru_RU');
+    final commission = widget.totals?['total_commission'] ?? 0;
+    final logistics = widget.totals?['total_logistics'] ?? 0;
+    final advertising = widget.totals?['total_advertising'] ?? 0;
+    final storage = widget.totals?['total_storage'] ?? 0;
+    final other = widget.totals?['total_other'] ?? 0;
+    final total = widget.totals?['total_expenses'] ?? 0;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Детализация расходов', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 24),
+            _buildExpenseRow('Комиссия Ozon', commission, f),
+            _buildExpenseRow('Логистика (FBO/FBS)', logistics, f),
+            _buildExpenseRow('Реклама', advertising, f),
+            _buildExpenseRow('Хранение', storage, f),
+            _buildExpenseRow('Прочие расходы', other, f),
+            const Divider(height: 32),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('ИТОГО РАСХОДОВ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text('${f.format(total)} ₽', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.redAccent)),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExpenseRow(String label, num value, NumberFormat f) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.grey, fontSize: 15)),
+          Text('- ${f.format(value.abs())} ₽', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: Colors.black87)),
+        ],
       ),
     );
   }
