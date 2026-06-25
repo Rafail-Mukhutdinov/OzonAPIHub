@@ -3,9 +3,9 @@
   <component name="PySourceRootDetectionService">
     <option name="sourcePathsSet">
       <set>
+        <option value="$PROJECT_DIR$/venv/Lib/site-packages" />
         <option value="$PROJECT_DIR$/venv/Lib/site-packages/websockets" />
         <option value="$PROJECT_DIR$/venv/Lib/site-packages/redis/commands" />
-        <option value="$PROJECT_DIR$/venv/Lib/site-packages" />
       </set>
     </option>
   </component>

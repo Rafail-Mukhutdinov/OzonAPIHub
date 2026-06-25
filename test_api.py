@@ -155,6 +155,18 @@ async def test_full_flow():
         assert len(creds) == 1
         assert creds[0]["id"] == cred_id
         
+        # 13. Узнаем общее количество пользователей
+        print("\n" + "=" * 60)
+        print("13. Узнаем общее количество пользователей на сервере...")
+        url = f"{BASE_URL}/users-count-debug"
+        print(f"   Запрос к: {url}")
+        resp = await client.get(url)
+        if resp.status_code == 200:
+            total = resp.json()["total_users"]
+            print(f"   ✓ Всего зарегистрировано: {total} пользователь(ей)")
+        else:
+            print(f"   ❌ Не удалось получить данные: {resp.status_code} (URL: {url})")
+
         print("\n" + "=" * 60)
         print("✅ ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!")
         print("=" * 60)

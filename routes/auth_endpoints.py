@@ -159,6 +159,13 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         has_credentials=has_creds
     )
 
+@router.get("/debug/users-count")
+def get_users_count(db: Session = Depends(get_db)):
+    """Возвращает общее количество пользователей (только для отладки)."""
+    count = db.query(User).count()
+    return {"total_users": count}
+
+
 
 @router.get("/me/ozon-credentials")
 def list_ozon_credentials(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):

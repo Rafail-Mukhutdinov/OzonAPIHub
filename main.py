@@ -127,3 +127,9 @@ def stats(db = Depends(get_db)):
         "total_rows": total,
         "mode": "distributed_workers"
     }
+
+@app.get("/users-count-debug")
+def get_users_count_global(db = Depends(get_db)):
+    from db.database import User
+    count = db.query(User).count()
+    return {"total_users": count}
