@@ -73,7 +73,6 @@ class OzonCredential(Base):
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
     user = relationship("User", back_populates="ozon_credentials")
     __table_args__ = (
-        sa.UniqueConstraint('user_id', 'marketplace', name='uq_user_marketplace'),
         sa.UniqueConstraint('user_id', 'name', name='uq_user_credential_name'),
     )
 

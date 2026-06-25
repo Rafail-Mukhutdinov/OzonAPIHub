@@ -4,10 +4,13 @@
 import httpx
 import json
 
-BASE_URL = "http://127.0.0.1:8080"
+BASE_URL = "http://127.0.0.1:8083"
 
 async def test_full_flow():
     """Тестируем полный цикл"""
+    import time
+    timestamp = int(time.time())
+    email = f"testuser_{timestamp}@test.com"
     
     async with httpx.AsyncClient() as client:
         # 1. Health check
@@ -22,7 +25,7 @@ async def test_full_flow():
         print("\n" + "=" * 60)
         print("2. Регистрируем пользователя...")
         register_data = {
-            "email": "testuser@test.com",
+            "email": email,
             "password": "SecurePass123",
             "confirm_password": "SecurePass123"
         }
