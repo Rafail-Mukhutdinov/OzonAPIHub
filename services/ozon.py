@@ -120,21 +120,28 @@ async def _post_with_retry(
             last_exc = e
             status = e.response.status_code
 
+            # Логируем тело ошибки для 4xx, чтобы понимать причины (например, 400 Bad Request)
+            error_detail = ""
+            try:
+                error_detail = f" | Body: {e.response.text}"
+            except:
+                pass
+
             # Ошибки авторизации не ретраим — повтор даст тот же результат
             if status == 401:
-                logger.error(f"Ozon Auth Failed ({op_label}): HTTP 401")
+                logger.error(f"Ozon Auth Failed ({op_label}): HTTP 401{error_detail}")
                 raise
 
             if status in _RETRY_STATUS_CODES and attempt < MAX_RETRIES:
                 backoff = RETRY_BACKOFF_SECONDS * (attempt + 1)
                 logger.warning(
-                    f"Ozon {op_label}: HTTP {status}, retry {attempt + 1}/{MAX_RETRIES} через {backoff:.1f}s"
+                    f"Ozon {op_label}: HTTP {status}, retry {attempt + 1}/{MAX_RETRIES} через {backoff:.1f}s{error_detail}"
                 )
                 await asyncio.sleep(backoff)
                 continue
 
             # Либо неретрябельный 4xx, либо исчерпаны попытки на ретрябельной ошибке
-            logger.error(f"Ozon {op_label}: HTTP {status} после {attempt + 1} попытк(и/ок), запрос отменён")
+            logger.error(f"Ozon {op_label}: HTTP {status} после {attempt + 1} попытк(и/ок), запрос отменён{error_detail}")
             raise
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_exc = e
@@ -172,8 +179,7 @@ async def ozon_fbo_list_async(
         "filter": filter_dict,
         "limit": limit,
         "offset": offset,
-        "translit": True,
-        "with": with_flags or {"analytics_data": True, "financial_data": True, "legal_info": False},
+        "with": with_flags or {"analytics_data": True, "financial_data": True},
     }
     headers = _get_headers(client_id, api_key)
 
@@ -239,8 +245,7 @@ def ozon_fbo_list(client_id: str, api_key: str, filter_dict: dict, limit: int, o
         "filter": filter_dict,
         "limit": limit,
         "offset": offset,
-        "translit": True,
-        "with": with_flags or {"analytics_data": True, "financial_data": True, "legal_info": False},
+        "with": with_flags or {"analytics_data": True, "financial_data": True},
     }
     headers = _get_headers(client_id, api_key)
 

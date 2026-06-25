@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
+import 'package:dio/dio.dart';
 import '../services/api.dart';
 import '../widgets/mobile_dashboard_view.dart';
 import '../widgets/expenses_widget.dart';
@@ -296,6 +297,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _loadAllData();
   }
 
+  Future<void> _handleManualSync() async {
+    if (loading) return;
+    
+    // Показываем индикатор в AppBar (через loading)
+    setState(() => loading = true);
+    
+    try {
+      final res = await api.triggerManualSync();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Синхронизация завершена! Найдено заказов: ${res['new_orders_found']}'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        _loadAllData();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => loading = false);
+        String msg = 'Ошибка синхронизации';
+        if (e is DioException && e.response?.statusCode == 429) {
+          msg = e.response?.data['detail'] ?? msg;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(msg),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    }
+  }
+
   Widget _buildMobileLayout() {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
@@ -311,7 +349,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: () => _loadAllData(),
+            onPressed: _handleManualSync,
           ),
         ],
       ),

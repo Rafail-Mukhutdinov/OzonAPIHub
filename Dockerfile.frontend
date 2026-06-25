@@ -13,6 +13,8 @@ RUN flutter doctor -v
 WORKDIR /app
 COPY ozon_sales_dashboard/ .
 
+RUN flutter pub get
+
 # Сборка без жестко заданного API_BASE_URL, чтобы работала динамика в api.dart
 RUN flutter build web --release
 

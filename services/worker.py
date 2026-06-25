@@ -122,7 +122,7 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     functions = [sync_all_users_task, initial_backfill_task]
-    job_timeout = 900
+    job_timeout = 3600 # Увеличили до 1 часа для тяжелых задач типа Backfill
 
     # Крон запускается КАЖДУЮ МИНУТУ, но логика внутри решит,
     # нужно ли делать реальный запрос к Ozon для конкретного пользователя.

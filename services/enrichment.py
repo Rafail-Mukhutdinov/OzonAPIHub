@@ -176,12 +176,15 @@ async def enrich_posting_from_ozon(
                     img_url = raw_img
 
                 if img_url:
+                    # Санитарная проверка: Ozon иногда возвращает // вместо https://
+                    if isinstance(img_url, str) and img_url.startswith("//"):
+                        img_url = "https:" + img_url
                     image_map[str(s_id)] = img_url
 
             if image_map:
-                logger.debug(f"Найдено изображений: {len(image_map)} для SKU {skus}")
+                logger.info(f"User {user_id}: Успешно получено {len(image_map)} изображений для SKU.")
         except Exception as e:
-            logger.warning(f"Не удалось получить изображения для SKU {skus}: {e}")
+            logger.error(f"User {user_id}: Критическая ошибка при получении изображений Ozon: {e}")
 
     for pr in products_data:
         if not isinstance(pr, dict): continue

@@ -171,6 +171,41 @@ async def test_full_flow():
         else:
             print(f"   ❌ Не удалось получить данные: {resp.status_code} (URL: {url})")
 
+        # 14. Проверяем получение списка заказов (пустой для нового юзера)
+        print("\n" + "=" * 60)
+        print("14. Проверяем получение списка заказов (/orders)...")
+        resp = await client.get(f"{BASE_URL}/orders", headers=headers)
+        print(f"   Статус: {resp.status_code}")
+        assert resp.status_code == 200
+        data = resp.json()
+        print(f"   ✓ Получено заказов: {len(data['items'])} (всего в БД: {data['total']})")
+        assert "items" in data
+        assert isinstance(data["items"], list)
+
+        # 15. Проверяем получение аналитики
+        print("\n" + "=" * 60)
+        print("15. Проверяем получение аналитики (/analytics/daily_stats)...")
+        # Сегодняшняя дата
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        resp = await client.get(f"{BASE_URL}/analytics/daily_stats?since={today}&to={today}", headers=headers)
+        print(f"   Статус: {resp.status_code}")
+        assert resp.status_code == 200
+        stats = resp.json()
+        print(f"   ✓ Получено дней в статистике: {len(stats['data'])}")
+        assert isinstance(stats["data"], list)
+
+        # 16. Проверяем сводку по расходам
+        print("\n" + "=" * 60)
+        print("16. Проверяем сводку по расходам (/analytics/expenses_summary)...")
+        resp = await client.get(f"{BASE_URL}/analytics/expenses_summary?since={today}&to={today}", headers=headers)
+        print(f"   Статус: {resp.status_code}")
+        assert resp.status_code == 200
+        expenses = resp.json()
+        print(f"   ✓ Всего расходов: {expenses.get('total', 0)}")
+        assert "total" in expenses
+        assert "categories" in expenses
+
         print("\n" + "=" * 60)
         print("✅ ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!")
         print("=" * 60)

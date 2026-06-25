@@ -279,18 +279,47 @@ async def sales_report_universal(
         for row in raw_rows:
             if row[0] and isinstance(row[0], dict):
                 for p in row[0].get("products", []):
-                    oid, sku = p.get("offer_id"), p.get("sku")
+                    oid = p.get("offer_id")
+                    try:
+                        sku = int(p.get("sku") or 0)
+                    except (ValueError, TypeError):
+                        sku = 0
+                        
                     qty = int(p.get("quantity") or 0)
                     pr = int(float(p.get("price") or 0))
                     key = (oid, sku)
+                    
                     if key in items_map:
                         items_map[key]["quantity"] += qty
                         items_map[key]["amount_raw"] += (qty * pr)
                     else:
                         items_map[key] = {
-                            "offer_id": oid, "sku": sku, "name": p.get("name"),
-                            "quantity": qty, "amount_raw": qty * pr
+                            "offer_id": oid,
+                            "sku": sku,
+                            "name": p.get("name") or "Товар",
+                            "quantity": qty,
+                            "amount_raw": qty * pr,
+                            "image_url": None
                         }
+
+    # Попытка восстановить отсутствующие image_url из других заказов того же SKU
+    skus_needing_img = [v["sku"] for v in items_map.values() if not v.get("image_url")]
+    if skus_needing_img:
+        # Ищем в БД по всем заказам пользователя любые картинки для этих SKU
+        img_rows = db.query(
+            OrderProduct.sku, 
+            func.max(OrderProduct.image_url).label("img")
+        ).filter(
+            OrderProduct.user_id == current_user.id,
+            OrderProduct.sku.in_(skus_needing_img),
+            OrderProduct.image_url != None,
+            OrderProduct.image_url != ""
+        ).group_by(OrderProduct.sku).all()
+        
+        sku_img_map = {r.sku: r.img for r in img_rows}
+        for it in items_map.values():
+            if not it.get("image_url") and it["sku"] in sku_img_map:
+                it["image_url"] = sku_img_map[it["sku"]]
 
     items = list(items_map.values())
     items.sort(key=lambda x: -x["quantity"])

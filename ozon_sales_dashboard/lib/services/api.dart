@@ -153,11 +153,22 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
-  Future<Map<String, dynamic>> getExpensesSummary({required String since, required String to}) async {
-    final resp = await dio.get('/analytics/expenses_summary', queryParameters: {
-      'since': since,
-      'to': to,
-    });
+  Future<Map<String, dynamic>> getExpensesSummary({
+    required String since,
+    required String to,
+  }) async {
+    final resp = await dio.get(
+      '/analytics/expenses_summary',
+      queryParameters: {
+        'since': since,
+        'to': to,
+      },
+    );
+    return _toJson(resp);
+  }
+
+  Future<Map<String, dynamic>> triggerManualSync() async {
+    final resp = await dio.post('/sync/manual');
     return _toJson(resp);
   }
 

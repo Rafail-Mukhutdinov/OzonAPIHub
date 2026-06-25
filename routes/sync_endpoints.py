@@ -6,9 +6,10 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from db.database import get_db, User, SyncStatus
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from utils.auth import get_current_user
 from utils.common import parse_ozon_datetime
+from services.sync import sync_user_orders
 
 logger = logging.getLogger("OzonAPIHub")
 
@@ -51,6 +52,7 @@ def get_sync_status(
         "status_message": status.status_message,
         "sync_started_at": status.sync_started_at,
         "sync_completed_at": status.sync_completed_at,
+        "last_sync_at": status.updated_at,
         "total_records_synced": status.total_records_synced,
         "backfill_cursor": status.backfill_cursor,
         "backfill_started_at": status.backfill_started_at,
@@ -59,6 +61,64 @@ def get_sync_status(
         "backfill_to": status.backfill_to,
         "backfill_is_complete": status.backfill_is_complete
     }
+
+@router.post("/manual")
+async def trigger_manual_sync(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Запускает принудительную синхронизацию для пользователя.
+    Ограничение: не чаще чем раз в 5 минут (300 секунд).
+    """
+    status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
+    
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cooldown = timedelta(minutes=5)
+    
+    if status and status.updated_at:
+        elapsed = now - status.updated_at
+        if elapsed < cooldown:
+            remaining = cooldown - elapsed
+            seconds = int(remaining.total_seconds())
+            minutes = seconds // 60
+            secs = seconds % 60
+            raise HTTPException(
+                status_code=429, 
+                detail=f"Слишком часто. Подождите еще {minutes:01d} мин. {secs:02d} сек."
+            )
+
+    # Если статуса еще нет, создаем
+    if not status:
+        status = SyncStatus(user_id=current_user.id, status_message="manual_sync_started")
+        db.add(status)
+    
+    status.is_syncing = True
+    status.sync_started_at = now
+    db.commit()
+
+    try:
+        # Запускаем синхронизацию (это блокирующий вызов для этого HTTP запроса, 
+        # но так как это легкая синхронизация за последние дни, это нормально)
+        found_new = await sync_user_orders(current_user, db)
+        
+        status.is_syncing = False
+        status.sync_completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        status.updated_at = status.sync_completed_at
+        status.status_message = "ok"
+        db.commit()
+        
+        return {
+            "status": "ok", 
+            "new_orders_found": found_new,
+            "last_sync_at": status.updated_at
+        }
+    except Exception as e:
+        status.is_syncing = False
+        status.status_message = f"error: {str(e)}"
+        db.commit()
+        logger.error(f"Manual sync error for user {current_user.id}: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка при синхронизации")
 
 
 @router.post("/initial")

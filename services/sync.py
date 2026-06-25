@@ -64,6 +64,11 @@ async def sync_user_orders(user: User, db: Session) -> bool:
             # Если заказов нет, берем за последние 30 дней
             since_dt = now - timedelta(days=30)
 
+        # ЗАЩИТА: Ozon API возвращает 400, если since > to. 
+        # Такое бывает при рассинхроне времени или если последний заказ из "будущего".
+        if since_dt >= now:
+            since_dt = now - timedelta(seconds=10)
+
         # Убеждаемся, что окно не слишком большое для регулярной синхронизации
         if since_dt < now - timedelta(days=60):
             since_dt = now - timedelta(days=60)
@@ -444,13 +449,16 @@ async def initial_backfill_for_user(user: User, db: Session):
         bg_db.commit()
 
         # Продолжаем с курсора
-        current_end = sync_status.backfill_cursor
+        current_end = sync_status.backfill_cursor or now
 
-        while current_end > sync_status.backfill_from:
+        while current_end > start_limit:
             # Окно загрузки - 30 дней
-            current_start = max(current_end - timedelta(days=30), sync_status.backfill_from)
+            current_start = current_end - timedelta(days=30)
+            if current_start < start_limit:
+                current_start = start_limit
 
             sync_status.status_message = f"Backfill: загрузка окна {current_start.strftime('%Y-%m-%d')} — {current_end.strftime('%Y-%m-%d')}"
+            sync_status.is_syncing = True
             bg_db.commit()
 
             logger.info(f"User {user_id}: {sync_status.status_message}")
@@ -459,6 +467,7 @@ async def initial_backfill_for_user(user: User, db: Session):
             window_offset = 0
             window_limit = 1000 # Увеличили до максимума для скорости
             total_in_window = 0
+            empty_pages_count = 0
 
             while True:
                 # Форматируем даты для API без микросекунд
@@ -482,15 +491,22 @@ async def initial_backfill_for_user(user: User, db: Session):
                 if ENRICH_ON_FETCH and res.get("orders"):
                     pns = [o.get("posting_number") for o in res["orders"] if isinstance(o, dict) and valid_posting_number(o.get("posting_number"))]
                     if pns:
-                        logger.info(f"User {user_id}: Загружено {total_in_window} заказов в текущем окне...")
-                        await run_enrichment_batch(pns, user_id)
+                        logger.info(f"User {user_id}: Загружено {total_in_window} заказов в текущем окне. Запуск обогащения...")
+                        # Разбиваем на подпачки по 50 для стабильности, если пришло 1000
+                        for i in range(0, len(pns), 50):
+                            await run_enrichment_batch(pns[i:i+50], user_id)
 
-                if fetched_count < window_limit:
-                    # Больше нет данных в этом окне
+                if fetched_count == 0:
+                    empty_pages_count += 1
+                else:
+                    empty_pages_count = 0
+
+                # Если получили меньше лимита или 3 пустых страницы подряд (защита от зацикливания Озона)
+                if fetched_count < window_limit or empty_pages_count >= 3:
                     break
 
                 window_offset += window_limit
-                await asyncio.sleep(0.5) # Пауза между страницами
+                await asyncio.sleep(0.3) # Пауза между страницами
 
             # Сохраняем прогресс ТОЛЬКО после успешного завершения всего окна
             sync_status.backfill_cursor = current_start
@@ -509,11 +525,23 @@ async def initial_backfill_for_user(user: User, db: Session):
         sync_status.is_syncing = False
         bg_db.commit()
 
-    except Exception as e:
-        logger.error(f"User {user_id}: Backfill fatal error: {e}", exc_info=True)
-        if sync_status:
-            sync_status.is_syncing = False
-            sync_status.status_message = f"Backfill error: {str(e)[:50]}"
-            bg_db.commit()
+    except (Exception, asyncio.CancelledError) as e:
+        logger.error(f"User {user_id}: Backfill interrupted or failed: {e}")
+        # Пытаемся сохранить статус ошибки, если это возможно
+        try:
+            # Нам нужна новая сессия, так как старая могла быть прервана
+            fail_db = SessionLocal()
+            try:
+                st = fail_db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+                if st:
+                    st.is_syncing = False
+                    st.status_message = f"Interrupted: {str(e)[:50]}"
+                    fail_db.commit()
+            finally:
+                fail_db.close()
+        except:
+            pass
+        if isinstance(e, asyncio.CancelledError):
+            raise
     finally:
         bg_db.close()
