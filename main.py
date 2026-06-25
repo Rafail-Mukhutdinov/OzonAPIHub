@@ -17,7 +17,7 @@ load_dotenv()
 
 from fastapi import FastAPI, Depends
 from starlette.middleware.cors import CORSMiddleware
-from db.database import get_db, Order, engine, Base, SessionLocal, SyncStatus, init_db
+from db.database import get_db, Order, User, engine, Base, SessionLocal, SyncStatus, init_db
 from utils.rate_limit_middleware import setup_rate_limiting
 from utils.auth import get_current_user
 from services.ozon import init_http_client, close_http_client
@@ -129,7 +129,11 @@ def stats(db = Depends(get_db)):
     }
 
 @app.get("/users-count-debug")
-def get_users_count_global(db = Depends(get_db)):
+def get_users_count_global(current_user: User = Depends(get_current_user), db = Depends(get_db)):
+    if not current_user.is_admin:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Только для администраторов")
+
     from db.database import User
     count = db.query(User).count()
     return {"total_users": count}

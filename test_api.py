@@ -50,7 +50,9 @@ async def test_full_flow():
         user = resp.json()
         print(f"   ✓ Email: {user['email']}")
         print(f"   ✓ Is Active: {user['is_active']}")
+        print(f"   ✓ Is Admin: {user['is_admin']}")
         print(f"   ✓ Has Credentials: {user['has_credentials']}")
+        assert user['is_admin'] == False, "New user should not be an admin"
         assert user['has_credentials'] == False, "Should not have credentials yet"
         
         # 4. Добавляем первый набор ключей
@@ -159,11 +161,13 @@ async def test_full_flow():
         print("\n" + "=" * 60)
         print("13. Узнаем общее количество пользователей на сервере...")
         url = f"{BASE_URL}/users-count-debug"
-        print(f"   Запрос к: {url}")
-        resp = await client.get(url)
+        print(f"   Запрос к: {url} (с токеном)")
+        resp = await client.get(url, headers=headers)
         if resp.status_code == 200:
             total = resp.json()["total_users"]
             print(f"   ✓ Всего зарегистрировано: {total} пользователь(ей)")
+        elif resp.status_code == 403:
+            print(f"   🔒 Доступ запрещен (403): Сервер защищен, обычный юзер не видит статистику.")
         else:
             print(f"   ❌ Не удалось получить данные: {resp.status_code} (URL: {url})")
 

@@ -73,6 +73,7 @@ class UserResponse(BaseModel):
     id: int
     email: str
     is_demo: bool
+    is_admin: bool
     subscription_end_date: datetime | None
     is_active: bool
     has_credentials: bool
@@ -154,6 +155,7 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         id=current_user.id,
         email=current_user.email,
         is_demo=current_user.is_demo,
+        is_admin=current_user.is_admin,
         subscription_end_date=current_user.subscription_end_date,
         is_active=current_user.is_active,
         has_credentials=has_creds
