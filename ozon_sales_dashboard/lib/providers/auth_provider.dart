@@ -12,8 +12,10 @@ import '../screens/dashboard_screen.dart';
 class AuthProvider extends ChangeNotifier {
   static const String _tokenKey = 'jwt_token';
   static const String _emailKey = 'user_email';
+  static const String _isAdminKey = 'is_admin';
   String? _token;
   String? _userEmail;
+  bool _isAdmin = false;
   bool _isAuthenticated = false;
   bool _isLoading = true;
 
@@ -22,6 +24,7 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get token => _token;
   String? get userEmail => _userEmail;
+  bool get isAdmin => _isAdmin;
 
   AuthProvider() {
     _initAuth(); // Проверяем сессию при запуске приложения
@@ -32,6 +35,7 @@ class AuthProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString(_tokenKey);
     _userEmail = prefs.getString(_emailKey);
+    _isAdmin = prefs.getBool(_isAdminKey) ?? false;
     // Считаем авторизованным, если токен есть и он не пустой
     _isAuthenticated = _token != null && _token!.isNotEmpty;
     _isLoading = false;
@@ -39,13 +43,17 @@ class AuthProvider extends ChangeNotifier {
   }
 
   /// Метод для сохранения токена после успешного входа (Login/Register).
-  Future<void> setToken(String token, {String? email}) async {
+  Future<void> setToken(String token, {String? email, bool? isAdmin}) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
     _token = token;
     if (email != null) {
       await prefs.setString(_emailKey, email);
       _userEmail = email;
+    }
+    if (isAdmin != null) {
+      await prefs.setBool(_isAdminKey, isAdmin);
+      _isAdmin = isAdmin;
     }
     _isAuthenticated = true;
     notifyListeners();
@@ -56,8 +64,10 @@ class AuthProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
     await prefs.remove(_emailKey);
+    await prefs.remove(_isAdminKey);
     _token = null;
     _userEmail = null;
+    _isAdmin = false;
     _isAuthenticated = false;
     notifyListeners();
   }

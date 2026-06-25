@@ -128,6 +128,11 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  Future<Map<String, dynamic>> getProfile() async {
+    final resp = await dio.get('/auth/me');
+    return _toJson(resp);
+  }
+
   Future<Map<String, dynamic>> getShipments({
     String? skus,
     String? since,

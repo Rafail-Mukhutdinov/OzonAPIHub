@@ -10,6 +10,7 @@ import '../providers/auth_provider.dart';
 import 'shipments_screen.dart';
 import 'settings_screen.dart';
 import 'login_screen.dart';
+import 'admin_users_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -221,6 +222,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
               },
             ),
+            if (Provider.of<AuthProvider>(context, listen: false).isAdmin) ...[
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.admin_panel_settings_outlined, color: Colors.amber),
+                title: const Text('Панель администратора'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminUsersScreen()));
+                },
+              ),
+            ],
             const Divider(),
             const Spacer(),
             ListTile(

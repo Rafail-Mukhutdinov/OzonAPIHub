@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
+import '../services/api.dart';
 import 'register_screen.dart';
 import 'dashboard_screen.dart';
 
@@ -65,8 +66,20 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (mounted) {
-        // Обновляем состояние провайдера
-        await Provider.of<AuthProvider>(context, listen: false).setToken(token, email: email);
+        // Сначала сохраняем токен в провайдере
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        await authProvider.setToken(token, email: email);
+
+        // Теперь, когда токен установлен в интерцепторах Dio, запрашиваем профиль
+        try {
+          final profileData = await OzonApiClient().getProfile();
+          final bool isAdmin = profileData['is_admin'] ?? false;
+          
+          // Обновляем информацию об админе в провайдере
+          await authProvider.setToken(token, email: email, isAdmin: isAdmin);
+        } catch (profileError) {
+          debugPrint('Ошибка получения профиля при входе: $profileError');
+        }
 
         // Успешный вход - заменяем текущий экран на Dashboard
         Navigator.of(context).pushReplacement(

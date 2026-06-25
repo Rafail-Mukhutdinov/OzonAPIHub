@@ -167,6 +167,28 @@ def get_users_count(db: Session = Depends(get_db)):
     count = db.query(User).count()
     return {"total_users": count}
 
+@router.get("/admin/users", response_model=list[UserResponse])
+def get_all_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Возвращает список всех пользователей системы (только для админа)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+    
+    users = db.query(User).all()
+    # Для каждого пользователя нужно проверить наличие ключей
+    result = []
+    for user in users:
+        has_creds = db.query(OzonCredential).filter(OzonCredential.user_id == user.id).first() is not None
+        result.append(UserResponse(
+            id=user.id,
+            email=user.email,
+            is_demo=user.is_demo,
+            is_admin=user.is_admin,
+            subscription_end_date=user.subscription_end_date,
+            is_active=user.is_active,
+            has_credentials=has_creds
+        ))
+    return result
+
 
 
 @router.get("/me/ozon-credentials")
