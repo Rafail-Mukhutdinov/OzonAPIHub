@@ -208,7 +208,28 @@ async def run_history_sync(
     if end_dt < start_dt:
         raise HTTPException(status_code=400, detail='Дата конца не может быть раньше даты начала')
 
-    raise HTTPException(
-        status_code=501,
-        detail="Ручной выбор периода временно недоступен в новой системе воркеров. Используйте полную загрузку."
+    # Проверка, не идет ли уже другая синхронизация
+    from db.database import SessionLocal
+    db = SessionLocal() # Используем временную сессию, так как эндпоинт не инжектит db
+    try:
+        sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
+        if sync_status and sync_status.is_syncing:
+            raise HTTPException(
+                status_code=409,
+                detail="Синхронизация уже выполняется. Подождите завершения текущей задачи."
+            )
+    finally:
+        db.close()
+
+    arq_pool = getattr(request.app.state, "arq_pool", None)
+    if arq_pool is None:
+        raise HTTPException(status_code=503, detail="Сервис очередей недоступен")
+
+    await arq_pool.enqueue_job(
+        'history_sync_task',
+        current_user.id,
+        start_dt.isoformat(),
+        end_dt.isoformat()
     )
+
+    return {"status": "ok", "message": "Задача на импорт истории добавлена в очередь"}

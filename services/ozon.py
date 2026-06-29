@@ -292,6 +292,31 @@ async def ozon_transaction_list_async(
     )
 
 
+async def ozon_accruals_by_day_async(
+    client_id: str,
+    api_key: str,
+    date: str,
+    last_id: str = "",
+    limit: int = 1000
+):
+    """
+    Получить детализированные начисления и списания за конкретный день (v1).
+    Метод заменяет устаревающий totals.
+    """
+    url = f"{BASE_URL}/v1/finance/accrual/by-day"
+    body = {
+        "date": date,
+        "last_id": last_id,
+        "limit": limit
+    }
+    headers = _get_headers(client_id, api_key)
+
+    return await _post_with_retry(
+        _get_client(), url, headers, body,
+        op_label=f"finance/accrual/by-day date={date}"
+    )
+
+
 def ozon_fbo_get(client_id: str, api_key: str, posting_number: str):
     """Синхронная версия получения деталей постинга (legacy/REPL)."""
     url = f"{BASE_URL}/v2/posting/fbo/get"
@@ -310,36 +335,3 @@ def ozon_fbo_get(client_id: str, api_key: str, posting_number: str):
             )
 
     return asyncio.run(_run())
-
-
-async def ozon_transaction_list_async(
-    client_id: str,
-    api_key: str,
-    from_date: str,
-    to_date: str,
-    transaction_type: str = "all",
-    page: int = 1,
-    page_size: int = 1000,
-):
-    """
-    Получить список транзакций из Ozon (v3).
-    Используется для получения данных о рекламе, хранении и прочих услугах.
-    """
-    url = f"{BASE_URL}/v3/finance/transaction/list"
-    body = {
-        "filter": {
-            "date": {
-                "from": from_date,
-                "to": to_date
-            },
-            "transaction_type": transaction_type
-        },
-        "page": page,
-        "page_size": page_size
-    }
-    headers = _get_headers(client_id, api_key)
-
-    return await _post_with_retry(
-        _get_client(), url, headers, body,
-        op_label=f"finance/transaction/list page={page}"
-    )

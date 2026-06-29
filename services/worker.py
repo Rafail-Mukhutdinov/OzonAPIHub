@@ -10,7 +10,7 @@ from arq import cron
 from arq.connections import RedisSettings
 from db.database import SessionLocal, User, SyncStatus, Order, OrderPosting
 from sqlalchemy import desc, func
-from services.sync import sync_user_orders, initial_backfill_for_user, get_latest_order_datetime
+from services.sync import sync_user_orders, initial_backfill_for_user, get_latest_order_datetime, sync_range_for_user
 from services.ozon import init_http_client, close_http_client
 from utils.common import to_msk, parse_ozon_datetime, get_now_utc
 import utils.logging_config
@@ -90,22 +90,66 @@ async def sync_all_users_task(ctx):
 
 async def initial_backfill_task(ctx, user_id: int):
     """Задача: Полная загрузка истории для конкретного пользователя."""
-    logger.info(f"--- [WORKER] Получена задача initial_backfill_task для пользователя {user_id} ---")
+    # Защита от двойного запуска
+    job_id = f"backfill_user_{user_id}"
+    
+    logger.info(f"--- [WORKER] Начало задачи {job_id} ---")
     db = SessionLocal()
     try:
+        # Проверяем статус в БД, чтобы не запускать если уже идет (дополнительная защита)
+        from db.database import SyncStatus
+        st = db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+        
+        # Если задача запущена менее 10 минут назад и флаг is_syncing стоит, 
+        # возможно она еще работает. Если прошло больше — считаем зависшей.
+        now = get_now_utc()
+        if st and st.is_syncing:
+            last_activity = st.updated_at or st.sync_started_at
+            if last_activity and (now - last_activity).total_seconds() < 600:
+                logger.warning(f"Backfill for user {user_id} is already in progress (last activity {int((now - last_activity).total_seconds())}s ago). Skipping.")
+                return
+            else:
+                logger.info(f"User {user_id}: Found zombie sync flag (older than 10m). Overriding.")
+
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             await initial_backfill_for_user(user, db)
         else:
-            logger.error(f"--- [WORKER] Пользователь {user_id} не найден в БД! ---")
+            logger.error(f"Пользователь {user_id} не найден в БД!")
     except Exception as e:
-        logger.error(f"--- [WORKER] Ошибка в initial_backfill_task: {e} ---")
+        logger.error(f"Ошибка в initial_backfill_task: {e}", exc_info=True)
+    finally:
+        db.close()
+
+async def history_sync_task(ctx, user_id: int, start_iso: str, end_iso: str):
+    """Задача: Загрузка данных за конкретный период."""
+    db = SessionLocal()
+    try:
+        from services.sync import sync_range_for_user
+        start_dt = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
+        end_dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+        
+        await sync_range_for_user(user_id, start_dt, end_dt, db)
+    except Exception as e:
+        logger.error(f"Ошибка в history_sync_task: {e}", exc_info=True)
     finally:
         db.close()
 
 async def startup(ctx):
-    from db.database import init_db
+    from db.database import init_db, SyncStatus, SessionLocal
     init_db()
+    
+    # Сбрасываем зависшие флаги синхронизации при старте воркера
+    db = SessionLocal()
+    try:
+        db.query(SyncStatus).update({SyncStatus.is_syncing: False, SyncStatus.status_message: "Restarted"})
+        db.commit()
+        logger.info("Zombie sync tasks cleared on startup")
+    except Exception as e:
+        logger.error(f"Error clearing sync status: {e}")
+    finally:
+        db.close()
+
     logger.info("Database initialized and migrations applied by worker")
     # Инициализируем пул соединений к Ozon API для долгоживущего цикла воркера
     init_http_client()
@@ -121,7 +165,7 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(os.getenv("REDIS_URL", "redis://redis:6379/0"))
     on_startup = startup
     on_shutdown = shutdown
-    functions = [sync_all_users_task, initial_backfill_task]
+    functions = [sync_all_users_task, initial_backfill_task, history_sync_task]
     job_timeout = 3600 # Увеличили до 1 часа для тяжелых задач типа Backfill
 
     # Крон запускается КАЖДУЮ МИНУТУ, но логика внутри решит,

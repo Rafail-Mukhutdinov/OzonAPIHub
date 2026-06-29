@@ -10,9 +10,9 @@ from typing import Union
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
-from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal, SyncStatus, Cost
-from services.enrichment import enrich_posting_from_ozon
-from services.ozon import ozon_fbo_list_async, ozon_transaction_list_async
+from db.database import User, Order, OrderPosting, OrderProduct, OzonCredential, SessionLocal, SyncStatus, Cost, OzonAccrual
+from services.enrichment import enrich_posting_from_ozon, enrich_accruals_from_ozon
+from services.ozon import ozon_fbo_list_async, ozon_transaction_list_async, ozon_accruals_by_day_async
 from utils.encryption import decrypt_credential
 from utils.common import valid_posting_number, to_msk, to_msk_date, parse_ozon_datetime, get_now_utc
 from utils.logging_config import log_user_event
@@ -22,7 +22,7 @@ logger = logging.getLogger("OzonAPIHub")
 # Настройки из .env
 RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '24'))
 ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 'yes')
-ENRICH_CONCURRENCY = 2 # Снизили параллельность для стабильности на локальной машине
+ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '2')) # Берем из env, по умолчанию 2
 
 def _get_now_utc():
     return get_now_utc()
@@ -154,6 +154,14 @@ async def sync_user_orders(user: User, db: Session) -> bool:
 
         # Запускаем синхронизацию транзакций (расходы: реклама, хранение)
         await sync_ozon_transactions(user.id, db)
+        
+        # Запускаем НОВУЮ синхронизацию детальных начислений (accruals v1)
+        # Синхронизируем сегодня и вчера для надежности
+        today_s = now.strftime("%Y-%m-%d")
+        yesterday_s = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        await enrich_accruals_from_ozon(user.id, today_s, db)
+        await enrich_accruals_from_ozon(user.id, yesterday_s, db)
 
         return total_saved > 0
     except Exception as e:
@@ -397,6 +405,74 @@ async def sync_ozon_transactions(user_id: int, db: Session, days_back: int = 30)
         logger.error(f"Error syncing transactions for user {user_id}: {e}")
         return 0
 
+async def sync_range_for_user(user_id: int, start_dt: datetime, end_dt: datetime, db: Session):
+    """
+    Синхронизирует заказы и начисления за конкретный период.
+    """
+    # Гарантируем, что даты без часового пояса для сравнения
+    start_dt = start_dt.replace(tzinfo=None)
+    end_dt = end_dt.replace(tzinfo=None)
+
+    # Проверка наличия активных ключей (Рекомендация №1)
+    cred = db.query(OzonCredential).filter(OzonCredential.user_id == user_id, OzonCredential.is_active == True).first()
+    if not cred:
+        logger.error(f"User {user_id}: Range sync aborted - No active Ozon Credentials found!")
+        return
+
+    logger.info(f"User {user_id}: Starting manual range sync: {start_dt} - {end_dt}")
+
+    # Обновляем статус синхронизации, чтобы UI показывал прогресс
+    # и адаптивный планировщик не запускал параллельную синхронизацию
+    sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+    if not sync_status:
+        sync_status = SyncStatus(user_id=user_id)
+        db.add(sync_status)
+    sync_status.is_syncing = True
+    sync_status.status_message = f"Range sync: {start_dt.strftime('%Y-%m-%d')} — {end_dt.strftime('%Y-%m-%d')}"
+    sync_status.sync_started_at = _get_now_utc()
+    db.commit()
+
+    try:
+        # Загрузка заказов
+        current_end = end_dt
+        while current_end > start_dt:
+            current_start = current_end - timedelta(days=30)
+            if current_start < start_dt:
+                current_start = start_dt
+
+            start_iso = current_start.replace(microsecond=0).isoformat() + 'Z'
+            end_iso = current_end.replace(microsecond=0).isoformat() + 'Z'
+
+            res = await fetch_and_save_orders_async(
+                start_iso, end_iso, "", 1000, 0, user_id, db
+            )
+
+            if res.get("orders"):
+                pns = [o.get("posting_number") for o in res["orders"] if isinstance(o, dict) and valid_posting_number(o.get("posting_number"))]
+                if pns:
+                    await run_enrichment_batch(pns, user_id)
+
+            # Загрузка начислений
+            acc_current = current_end
+            while acc_current >= current_start:
+                acc_date_s = acc_current.strftime("%Y-%m-%d")
+                await enrich_accruals_from_ozon(user_id, acc_date_s, db)
+                acc_current -= timedelta(days=1)
+
+            current_end = current_start
+            await asyncio.sleep(0.5)
+
+        logger.info(f"User {user_id}: Manual range sync completed.")
+    finally:
+        # Сбрасываем флаг синхронизации в любом случае (даже при ошибке)
+        db.refresh(sync_status)
+        sync_status.is_syncing = False
+        sync_status.status_message = "ok"
+        sync_status.sync_completed_at = _get_now_utc()
+        sync_status.updated_at = _get_now_utc()
+        db.commit()
+
+
 async def initial_backfill_for_user(user: User, db: Session):
     """
     Устойчивый Backfill с чекпоинтами и загрузкой порциями по 30 дней.
@@ -501,12 +577,20 @@ async def initial_backfill_for_user(user: User, db: Session):
                 else:
                     empty_pages_count = 0
 
-                # Если получили меньше лимита или 3 пустых страницы подряд (защита от зацикливания Озона)
                 if fetched_count < window_limit or empty_pages_count >= 3:
                     break
 
                 window_offset += window_limit
-                await asyncio.sleep(0.3) # Пауза между страницами
+                await asyncio.sleep(0.3)
+
+            # --- НОВОЕ: Загрузка транзакций (accruals) за это же окно ---
+            logger.info(f"User {user_id}: Загрузка транзакций за период {current_start.date()} - {current_end.date()}")
+            acc_current = current_end
+            while acc_current >= current_start:
+                acc_date_s = acc_current.strftime("%Y-%m-%d")
+                await enrich_accruals_from_ozon(user_id, acc_date_s, bg_db)
+                acc_current -= timedelta(days=1)
+                await asyncio.sleep(0.2) # Небольшая пауза, чтобы не спамить API
 
             # Сохраняем прогресс ТОЛЬКО после успешного завершения всего окна
             sync_status.backfill_cursor = current_start

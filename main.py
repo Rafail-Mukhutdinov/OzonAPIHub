@@ -89,11 +89,16 @@ app = FastAPI(
 setup_rate_limiting(app)
 
 # Настройка CORS
-# Для SaaS версии на сервере разрешаем все источники (Origins),
-# так как браузер может обращаться по IP или разным доменам.
+# В production стоит ограничить список разрешенных доменов через переменную окружения CORS_ORIGINS
+cors_origins_str = os.getenv("CORS_ORIGINS", "*")
+if cors_origins_str == "*":
+    origins = ["*"]
+else:
+    origins = [o.strip() for o in cors_origins_str.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

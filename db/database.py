@@ -161,6 +161,34 @@ class Cost(Base):
     notes = Column(Text)
     user = relationship("User", back_populates="costs")
 
+class OzonAccrual(Base):
+    """
+    Таблица для хранения детальных транзакций из /v1/finance/accrual/by-day.
+    Распаковывает POSTING на доходы и расходы для 100% точности.
+    """
+    __tablename__ = "ozon_accruals"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ozon_accrual_id = Column(BigInteger, index=True) # ID от Ozon (может дублироваться при распаковке)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    date = Column(DateTime, index=True, nullable=False)
+    unit_number = Column(String(255), index=True) 
+    accrued_category = Column(String(50), index=True) # POSTING, ITEM, NON_ITEM
+    
+    # Тип записи: 'revenue' (доход) или 'expense' (списание)
+    operation_type = Column(String(20), index=True, default='expense')
+    
+    amount = Column(sa.Float) # Сумма конкретной части (например, только комиссия)
+    currency = Column(String(10))
+    
+    type_id = Column(Integer, index=True) # ID услуги Озона (74, 32 и т.д.)
+    sku = Column(BigInteger, index=True)
+    
+    posting_id = Column(Integer, ForeignKey("order_postings.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    
+    user = relationship("User")
+    posting = relationship("OrderPosting")
+
 class SyncStatus(Base):
     __tablename__ = "sync_status"
     id = Column(Integer, primary_key=True)
@@ -188,9 +216,9 @@ def get_db():
     finally: db.close()
 
 def init_db():
-    # Создаем таблицы, если их нет (только для новых инсталляций)
-    Base.metadata.create_all(bind=engine)
-
-    # ПРИМЕЧАНИЕ: Вся логика миграций теперь перенесена в Alembic.
-    # Файлы миграций находятся в папке /alembic
+    """
+    Инициализация БД. 
+    ВАЖНО: Сами таблицы создаются и обновляются через миграции Alembic.
+    Здесь могут быть только проверки или начальное заполнение справочников.
+    """
     pass

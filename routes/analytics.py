@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from datetime import datetime, timedelta, timezone
-from db.database import OrderPosting, OrderProduct, Order, get_db, User, Cost
+from db.database import OrderPosting, OrderProduct, Order, get_db, User, Cost, OzonAccrual
 import logging
 import json
 from utils.common import to_msk, parse_ozon_datetime
@@ -10,6 +10,19 @@ from utils.auth import get_current_user
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 logger = logging.getLogger("OzonAPIHub")
+
+# Маппинг типов услуг Ozon API v1 Accrual
+OZON_SERVICE_TYPES = {
+    1: "Комиссия Ozon",
+    32: "Логистика",
+    29: "Сборка заказа",
+    98: "Последняя миля",
+    74: "Эквайринг",
+    45: "Магистраль",
+    54: "Логистика возврата",
+    12: "Прочие услуги (склад)",
+    59: "Магистраль возврата",
+}
 
 def parse_msk_date(value: str, end_of_day: bool = False, tz_offset_hours: int = 3) -> datetime | None:
     """Интерпретирует дату без времени как день в зоне с указанным смещением.
@@ -444,7 +457,7 @@ async def expenses_breakdown(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Детализация расходов по категориям с отдельными операциями.
+    Детализация расходов по категориям с использованием новых данных из OzonAccrual.
     """
     since_dt = parse_msk_date(since, tz_offset_hours=tz_offset_hours)
     to_dt = parse_msk_date(to, end_of_day=True, tz_offset_hours=tz_offset_hours)
@@ -455,105 +468,83 @@ async def expenses_breakdown(
     since_utc = since_dt.astimezone(timezone.utc).replace(tzinfo=None)
     to_utc = to_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # 1. Собираем постинги за период
-    search_since = since_utc - timedelta(hours=24)
-    search_to = to_utc + timedelta(hours=24)
-    postings_map = _get_unified_postings(db, current_user.id, search_since, search_to)
-
-    local_tz = timezone(timedelta(hours=tz_offset_hours))
-    date_since_local = since_dt.astimezone(local_tz).date()
-    date_to_local = to_dt.astimezone(local_tz).date()
-
-    final_postings = []
-    for pn, data in postings_map.items():
-        best_date = data.get("in_process_at") or data["created_at"]
-        dt_local = to_msk(best_date, tz_offset_hours)
-        if not dt_local:
-            continue
-        if date_since_local <= dt_local.date() <= date_to_local:
-            final_postings.append(pn)
-
-    # 2. Комиссия
-    totals = db.query(
-        func.coalesce(func.sum(OrderProduct.commission_amount), 0)
-    ).filter(
-        OrderProduct.user_id == current_user.id,
-        OrderProduct.posting_number.in_(final_postings)
-    ).first()
-    total_commission = abs(float(totals[0] or 0))
-
-    # 3. Логистика
-    total_logistics = 0
-    postings_data = db.query(OrderPosting.financial_data).filter(
-        OrderPosting.user_id == current_user.id,
-        OrderPosting.posting_number.in_(final_postings)
+    # 1. Считаем расходы из НОВОЙ таблицы OzonAccrual (приоритет)
+    accruals = db.query(OzonAccrual).filter(
+        OzonAccrual.user_id == current_user.id,
+        OzonAccrual.date >= since_utc,
+        OzonAccrual.date <= to_utc,
+        OzonAccrual.operation_type == 'expense' # Только расходы
     ).all()
 
-    for (f_data,) in postings_data:
-        if not f_data or not isinstance(f_data, dict): continue
-        def _get_val(v):
-            try: return abs(float(v or 0))
-            except: return 0
+    by_category = {
+        "Комиссия Ozon": 0.0,
+        "Логистика": 0.0,
+        "Эквайринг": 0.0,
+        "Прочие расходы": 0.0
+    }
+    ops_by_category = {}
 
-        services = f_data.get("services", {})
-        if isinstance(services, dict):
-            for s_val in services.values(): total_logistics += _get_val(s_val)
+    for acc in accruals:
+        cat_name = OZON_SERVICE_TYPES.get(acc.type_id)
+        
+        # Группируем мелкие услуги в крупные категории для чистоты
+        if acc.type_id in [32, 29, 98, 45, 54, 59]:
+            cat_name = "Логистика"
+        elif acc.type_id == 1:
+            cat_name = "Комиссия Ozon"
+        elif acc.type_id == 74:
+            cat_name = "Эквайринг"
+        
+        if not cat_name:
+            cat_name = "Прочие расходы"
 
-        products = f_data.get("products", [])
-        if isinstance(products, list):
-            for p in products:
-                if not isinstance(p, dict): continue
-                item_services = p.get("item_services", {})
-                if isinstance(item_services, dict):
-                    for s_val in item_services.values(): total_logistics += _get_val(s_val)
+        amount = abs(float(acc.amount or 0))
+        if cat_name not in by_category: by_category[cat_name] = 0.0
+        by_category[cat_name] += amount
 
-    # 4. Расходы из Cost
+        if cat_name not in ops_by_category:
+            ops_by_category[cat_name] = {"total": 0.0, "items": []}
+        ops_by_category[cat_name]["total"] += amount
+        
+        # Добавляем в детализацию
+        note = f"Заказ {acc.unit_number}" if acc.unit_number else acc.accrued_category
+        if acc.type_id and acc.type_id in OZON_SERVICE_TYPES:
+            note += f" ({OZON_SERVICE_TYPES[acc.type_id]})"
+
+        ops_by_category[cat_name]["items"].append({
+            "amount": amount,
+            "date": acc.date.isoformat() if acc.date else None,
+            "notes": note,
+            "unit_number": acc.unit_number
+        })
+
+    # 2. Добавляем данные из таблицы Cost (для внешних расходов, которых нет в Озоне)
+    # Например, налоги, зарплаты или реклама, если она еще не подтянулась в Accruals
     cost_rows = db.query(Cost).filter(
         Cost.user_id == current_user.id,
         Cost.date >= since_utc,
         Cost.date <= to_utc
-    ).order_by(Cost.date.desc()).all()
+    ).all()
 
-    def _classify_cost(row: Cost) -> str:
-        t = (row.type or "").lower()
-        if t in ("advertising", "adv"): return "Реклама"
-        if t == "storage": return "Хранение"
-        if t == "logistics": return "Логистика (транзакции)"
-        if t == "acquiring": return "Эквайринг"
-
-        notes = (row.notes or "").lower()
-        if any(x in notes for x in ["эквайринг", "acquiring"]): return "Эквайринг"
-        if any(x in notes for x in ["штраф", "penalty"]): return "Штрафы и пени"
-        if any(x in notes for x in ["логистик", "доставк", "delivery"]): return "Логистика (транзакции)"
-        if any(x in notes for x in ["реклам", "promotion", "звёздные"]): return "Реклама"
-        if "хранен" in notes: return "Хранение"
-
-        return "Прочие расходы"
-
-    by_category = {
-        "Комиссия Ozon": total_commission,
-        "Логистика (FBO/FBS)": total_logistics,
-        "Реклама": 0.0,
-        "Хранение": 0.0,
-        "Эквайринг": 0.0,
-        "Штрафы и пени": 0.0,
-        "Логистика (транзакции)": 0.0,
-        "Прочие расходы": 0.0
-    }
-
-    ops_by_category = {}
     for row in cost_rows:
-        cat = _classify_cost(row)
+        # Простая эвристика, чтобы не дублировать эквайринг/комиссию, если они уже есть в Accruals
+        t = (row.type or "").lower()
+        if t in ["acquiring", "commission", "logistics"] and len(accruals) > 0:
+            continue # Пропускаем, так как Accruals точнее
+            
+        cat = "Реклама" if t in ("advertising", "adv") else "Хранение" if t == "storage" else "Прочие расходы"
+        
+        amount = abs(float(row.amount or 0))
         if cat not in by_category: by_category[cat] = 0.0
-        by_category[cat] += float(row.amount or 0)
+        by_category[cat] += amount
 
         if cat not in ops_by_category:
             ops_by_category[cat] = {"total": 0.0, "items": []}
-        ops_by_category[cat]["total"] += float(row.amount or 0)
+        ops_by_category[cat]["total"] += amount
         ops_by_category[cat]["items"].append({
-            "amount": float(row.amount or 0),
+            "amount": amount,
             "date": row.date.isoformat() if row.date else None,
-            "notes": row.notes or "",
+            "notes": row.notes or t,
         })
 
     return {

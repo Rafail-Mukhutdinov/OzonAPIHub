@@ -1,8 +1,8 @@
 import os
 import logging
-from services.ozon import ozon_fbo_get_async, ozon_product_info_list_async
+from services.ozon import ozon_fbo_get_async, ozon_product_info_list_async, ozon_accruals_by_day_async
 from sqlalchemy.orm import Session
-from db.database import OrderHeader, OrderPosting, OrderProduct, User, OzonCredential
+from db.database import OrderHeader, OrderPosting, OrderProduct, User, OzonCredential, OzonAccrual
 from utils.encryption import decrypt_credential
 from datetime import datetime, timezone
 from utils.logging_config import log_user_event
@@ -98,11 +98,32 @@ async def enrich_posting_from_ozon(
         return {"status": "api_error", "detail": str(e)}
 
     order_number = data.get("order_number")
-    op = db.query(OrderPosting).filter(OrderPosting.posting_number == posting_number, OrderPosting.user_id == user_id).first()
-    if not op:
-        op = OrderPosting(posting_number=posting_number, user_id=user_id)
-        db.add(op)
     
+    # Пытаемся найти существующий или создаем новый максимально безопасно
+    op = db.query(OrderPosting).filter(
+        OrderPosting.posting_number == posting_number, 
+        OrderPosting.user_id == user_id
+    ).with_for_update().first() # Блокируем строку для обновления
+    
+    if not op:
+        # Если заказа все еще нет, создаем его
+        # Используем flush и вложенную транзакцию для обработки гонки
+        try:
+            with db.begin_nested():
+                op = OrderPosting(posting_number=posting_number, user_id=user_id)
+                db.add(op)
+                db.flush()
+        except Exception:
+            # Если кто-то успел вставить параллельно, просто берем его
+            db.rollback()
+            op = db.query(OrderPosting).filter(
+                OrderPosting.posting_number == posting_number, 
+                OrderPosting.user_id == user_id
+            ).first()
+    
+    if not op:
+        return {"status": "error", "detail": "Could not create or find OrderPosting"}
+
     op.order_number = order_number
     op.status = data.get("status")
     op.substatus = data.get("substatus")
@@ -182,7 +203,7 @@ async def enrich_posting_from_ozon(
                     image_map[str(s_id)] = img_url
 
             if image_map:
-                logger.info(f"User {user_id}: Успешно получено {len(image_map)} изображений для SKU.")
+                logger.debug(f"User {user_id}: Успешно получено {len(image_map)} изображений для SKU.")
         except Exception as e:
             logger.error(f"User {user_id}: Критическая ошибка при получении изображений Ozon: {e}")
 
@@ -222,3 +243,144 @@ async def enrich_posting_from_ozon(
 
     # Больше НЕ делаем здесь db.commit(), это ответственность вызывающего кода
     return {"status": "ok"}
+
+
+async def enrich_accruals_from_ozon(
+    user_id: int,
+    date_str: str,
+    db: Session
+):
+    """
+    Получает все транзакции за день через /v1/finance/accrual/by-day
+    и сохраняет их в базу, связывая с заказами.
+    date_str: "2026-06-06"
+    """
+    active_cred = db.query(OzonCredential).filter(OzonCredential.user_id == user_id, OzonCredential.is_active == True).first()
+    if not active_cred:
+        return {"status": "no_credentials"}
+
+    client_id = decrypt_credential(active_cred.client_id_encrypted)
+    api_key = decrypt_credential(active_cred.api_key_encrypted)
+
+    last_id = ""
+    total_synced = 0
+
+    # Кэш для posting_id, чтобы не долбить базу при каждой транзакции
+    posting_cache = {}
+
+    while True:
+        try:
+            response = await ozon_accruals_by_day_async(client_id, api_key, date_str, last_id)
+            accruals = response.get("accruals") or []
+            
+            if not accruals:
+                break
+
+            for acc in accruals:
+                acc_id = acc.get("accrual_id")
+                unit_number = acc.get("unit_number")
+                category = acc.get("accrued_category")
+                
+                # Ищем posting_id для связки
+                p_id = None
+                if unit_number:
+                    if unit_number in posting_cache:
+                        p_id = posting_cache[unit_number]
+                    else:
+                        op = db.query(OrderPosting.id).filter(
+                            OrderPosting.posting_number == unit_number,
+                            OrderPosting.user_id == user_id
+                        ).first()
+                        if op:
+                            p_id = op.id
+                            posting_cache[unit_number] = p_id
+
+                amount_data = acc.get("total_amount") or {}
+                currency = amount_data.get("currency")
+                acc_date = datetime.strptime(date_str, "%Y-%m-%d")
+
+                # Очищаем старые записи для этого accrual_id перед вставкой новых (защита от дублей)
+                db.query(OzonAccrual).filter(OzonAccrual.ozon_accrual_id == acc_id, OzonAccrual.user_id == user_id).delete()
+
+                rows_to_add = []
+
+                if category == "POSTING" and acc.get("posting"):
+                    # РАСПАКОВКА ЗАКАЗА: раскладываем на доход, комиссию и доставку
+                    p_data = acc["posting"]
+                    for prod in p_data.get("products", []):
+                        sku = prod.get("sku")
+                        comm = prod.get("commission") or {}
+                        
+                        # 1. ДОХОД (Цена продажи)
+                        rev_amount = float((comm.get("sale_amount") or {}).get("amount") or 0)
+                        if rev_amount > 0:
+                            rows_to_add.append(OzonAccrual(
+                                ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
+                                unit_number=unit_number, accrued_category=category,
+                                operation_type='revenue', amount=rev_amount, currency=currency,
+                                sku=sku, posting_id=p_id
+                            ))
+
+                        # 2. КОМИССИЯ
+                        comm_amount = float((comm.get("commission") or {}).get("amount") or 0)
+                        if comm_amount != 0:
+                            rows_to_add.append(OzonAccrual(
+                                ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
+                                unit_number=unit_number, accrued_category=category,
+                                operation_type='expense', amount=comm_amount, currency=currency,
+                                type_id=1, sku=sku, posting_id=p_id
+                            ))
+
+                        # 3. ДОСТАВКА И СЕРВИСЫ
+                        deliv = prod.get("delivery") or {}
+                        for srv in deliv.get("services", []):
+                            srv_amount = float((srv.get("accrued") or {}).get("amount") or 0)
+                            if srv_amount != 0:
+                                rows_to_add.append(OzonAccrual(
+                                    ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
+                                    unit_number=unit_number, accrued_category=category,
+                                    operation_type='expense', amount=srv_amount, currency=currency,
+                                    type_id=srv.get("type_id"), sku=sku, posting_id=p_id
+                                ))
+                else:
+                    # ДЛЯ ITEM и NON_ITEM: записываем как есть
+                    amount = float(amount_data.get("amount") or 0)
+                    type_id = None
+                    sku = None
+                    
+                    if category == "ITEM":
+                        item_fees = acc.get("item_fees") or {}
+                        if item_fees.get("fees"):
+                            fee_item = item_fees["fees"][0]
+                            sku = fee_item.get("sku")
+                            if fee_item.get("fees"):
+                                type_id = fee_item["fees"][0].get("type_id")
+                    elif category == "NON_ITEM":
+                        ni_fee = acc.get("non_item_fee") or {}
+                        type_id = ni_fee.get("type_id")
+
+                    rows_to_add.append(OzonAccrual(
+                        ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
+                        unit_number=unit_number, accrued_category=category,
+                        operation_type='revenue' if amount > 0 else 'expense',
+                        amount=amount, currency=currency,
+                        type_id=type_id, sku=sku, posting_id=p_id
+                    ))
+
+                for row in rows_to_add:
+                    db.add(row)
+                
+                total_synced += 1
+
+            db.commit() # Коммитим пачку
+            
+            last_id = response.get("last_id")
+            if not last_id:
+                break
+                
+        except Exception as e:
+            logger.error(f"Error enriching accruals for user {user_id} date {date_str}: {e}")
+            db.rollback()
+            return {"status": "error", "detail": str(e)}
+
+    return {"status": "ok", "synced": total_synced}
