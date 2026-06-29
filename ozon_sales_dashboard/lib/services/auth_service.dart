@@ -1,5 +1,5 @@
 import 'package:dio/dio.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'api.dart';
 
@@ -7,12 +7,13 @@ import 'api.dart';
  * AuthService — выделенный сервис для работы с аккаунтом.
  * Отвечает за:
  * 1. Отправку учетных данных на сервер (Login/Register).
- * 2. Получение и локальное сохранение JWT токена.
+ * 2. Получение и локальное сохранение JWT токена в защищенное хранилище.
  * 3. Очистку сессии при выходе.
  */
 class AuthService {
   static const String _tokenKey = 'jwt_token';
   final Dio dio;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   AuthService() : dio = Dio(BaseOptions(
     baseUrl: OzonApiClient.getDefaultBaseUrl(), // Авто-определение адреса сервера
@@ -38,7 +39,7 @@ class AuthService {
       final data = response.data as Map<String, dynamic>;
       final token = data['access_token'] as String;
       
-      await _saveToken(token); // Сохраняем для будущих запросов
+      await _saveToken(token); // Сохраняем защищенно
       return token;
     } on DioException catch (e) {
       if (e.response?.statusCode == 401) {
@@ -80,22 +81,24 @@ class AuthService {
     }
   }
 
-  /// Удаляет токен из памяти устройства.
+  /// Удаляет токен из защищенного хранилища.
   Future<void> logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_tokenKey);
+    await _secureStorage.delete(key: _tokenKey);
   }
 
   /// Проверяет наличие сохраненной сессии.
   Future<bool> isAuthenticated() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString(_tokenKey);
+    final token = await _secureStorage.read(key: _tokenKey);
     return token != null && token.isNotEmpty;
   }
 
-  /// Внутренний метод для записи токена в SharedPreferences.
+  /// Читает токен из защищенного хранилища.
+  Future<String?> getToken() async {
+    return await _secureStorage.read(key: _tokenKey);
+  }
+
+  /// Внутренний метод для записи токена в FlutterSecureStorage.
   Future<void> _saveToken(String token) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_tokenKey, token);
+    await _secureStorage.write(key: _tokenKey, value: token);
   }
 }

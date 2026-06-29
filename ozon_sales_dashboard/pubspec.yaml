@@ -39,7 +39,9 @@ dependencies:
   dio: ^5.9.0
   intl: ^0.20.2
   fl_chart: ^0.68.0
-  shared_preferences: ^2.2.2  # Хранение токена (работает на Web)
+  shared_preferences: ^2.2.2  # Хранение настроек
+  flutter_secure_storage: ^9.2.2  # Защищенное хранение токена
+  local_auth: ^2.3.0  # Биометрическая аутентификация
   provider: ^6.1.1  # Управление состоянием авторизации
 
 dev_dependencies:

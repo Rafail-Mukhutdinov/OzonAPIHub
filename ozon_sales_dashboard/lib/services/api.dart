@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class OzonApiClient {
   final Dio dio;
   final Function()? onUnauthorized;
+  final _secureStorage = const FlutterSecureStorage();
 
   static String getDefaultBaseUrl() {
     const String envUrl = String.fromEnvironment('API_BASE_URL');
@@ -38,8 +39,7 @@ class OzonApiClient {
     
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
-        final prefs = await SharedPreferences.getInstance();
-        final token = prefs.getString('jwt_token');
+        final token = await _secureStorage.read(key: 'jwt_token');
         if (token != null && token.isNotEmpty) {
           options.headers['Authorization'] = 'Bearer $token';
         }
@@ -47,8 +47,7 @@ class OzonApiClient {
       },
       onError: (DioException error, handler) async {
         if (error.response?.statusCode == 401) {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.remove('jwt_token');
+          await _secureStorage.delete(key: 'jwt_token');
           if (onUnauthorized != null) onUnauthorized!();
         }
         return handler.next(error);

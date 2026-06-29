@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
+import 'package:provider/provider.dart';
 import '../services/api.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../providers/auth_provider.dart';
 
 /**
  * SettingsScreen — экран настроек.
  * Позволяет управлять API-ключами Ozon (добавление, удаление, активация),
- * запускать полную синхронизацию данных и очищать базу.
+ * настраивать безопасность (биометрия) и управлять данными.
  */
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -23,13 +24,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // Используем наш централизованный API клиент
   late final OzonApiClient _api;
-
-  final List<Map<String, String>> _marketplaces = [
-    {'value': 'ozon', 'label': 'Ozon'},
-    {'value': 'wildberries', 'label': 'Wildberries'},
-    {'value': 'yandex_market', 'label': 'Yandex Market'},
-    {'value': 'aliexpress', 'label': 'AliExpress'},
-  ];
 
   @override
   void initState() {
@@ -204,6 +198,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final authProvider = context.watch<AuthProvider>();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Настройки'), backgroundColor: Theme.of(context).colorScheme.inversePrimary),
       body: _isLoading
@@ -214,6 +210,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if (_errorMessage != null)
                   Card(color: Colors.red.shade50, child: ListTile(leading: const Icon(Icons.error, color: Colors.red), title: Text(_errorMessage!))),
                 
+                // СЕКЦИЯ: Безопасность
+                const Text('Безопасность', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Card(
+                  child: SwitchListTile(
+                    title: const Text('Вход по отпечатку пальца'),
+                    subtitle: const Text('Использовать биометрию вместо ввода пароля'),
+                    secondary: const Icon(Icons.fingerprint),
+                    value: authProvider.biometricEnabled,
+                    onChanged: (bool value) {
+                      authProvider.setBiometricEnabled(value);
+                    },
+                  ),
+                ),
+                const SizedBox(height: 16),
+
                 // Карточка-инструкция
                 Card(
                   color: Theme.of(context).primaryColor.withOpacity(0.05),
