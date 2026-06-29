@@ -1,0 +1,117 @@
+import sys, os, asyncio
+PROJECT_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+from dotenv import load_dotenv
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+from db.database import SessionLocal, User, OzonCredential
+from utils.encryption import decrypt_credential
+from services.ozon import ozon_accruals_by_day_async, init_http_client, close_http_client
+
+
+def parse_amount(val):
+    if val is None:
+        return 0.0
+    if isinstance(val, dict):
+        return float(val.get("amount") or 0)
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def main():
+    session = SessionLocal()
+    user = session.query(User).first()
+    cred = session.query(OzonCredential).filter(
+        OzonCredential.user_id == user.id, OzonCredential.is_active == True
+    ).first()
+    client_id = decrypt_credential(cred.client_id_encrypted)
+    api_key = decrypt_credential(cred.api_key_encrypted)
+    init_http_client()
+    try:
+        all_acc = []
+        last_id = ""
+        while True:
+            r = await ozon_accruals_by_day_async(client_id, api_key, "2026-06-27", last_id)
+            accs = r.get("accruals") or []
+            if not accs:
+                break
+            all_acc.extend(accs)
+            last_id = r.get("last_id")
+            if not last_id:
+                break
+
+        total_sale_amount = 0.0
+        total_sale_price = 0.0
+        total_seller_price = 0.0
+        total_bonus = 0.0
+        total_coinvestment = 0.0
+        total_sale_commission = 0.0
+        total_commission = 0.0
+        total_delivery = 0.0
+        total_total_amount_posting = 0.0
+        posting_with_comm = 0
+        posting_without_comm = 0
+
+        for acc in all_acc:
+            if acc.get("accrued_category") == "POSTING" and acc.get("posting"):
+                total_total_amount_posting += parse_amount(acc.get("total_amount"))
+                for prod in acc["posting"].get("products", []):
+                    comm = prod.get("commission")
+                    deliv = prod.get("delivery") or {}
+                    if comm:
+                        posting_with_comm += 1
+                        total_sale_amount += parse_amount(comm.get("sale_amount"))
+                        total_sale_price += parse_amount(comm.get("sale_price"))
+                        total_seller_price += parse_amount(comm.get("seller_price"))
+                        total_bonus += parse_amount(comm.get("bonus"))
+                        total_coinvestment += parse_amount(comm.get("coinvestment"))
+                        total_sale_commission += parse_amount(comm.get("sale_commission"))
+                        total_commission += parse_amount(comm.get("commission"))
+                    else:
+                        posting_without_comm += 1
+                    total_delivery += parse_amount(deliv.get("total_accrued"))
+
+        print(f"POSTING with commission:    {posting_with_comm}")
+        print(f"POSTING without commission: {posting_without_comm}")
+        print()
+        print(f"sale_amount (seller_price): {total_sale_amount:.2f}")
+        print(f"seller_price:               {total_seller_price:.2f}")
+        print(f"sale_price:                 {total_sale_price:.2f}")
+        print(f"bonus:                      {total_bonus:.2f}")
+        print(f"coinvestment:               {total_coinvestment:.2f}")
+        print(f"sale_commission:            {total_sale_commission:.2f}")
+        print(f"commission:                 {total_commission:.2f}")
+        print(f"delivery total_accrued:     {total_delivery:.2f}")
+        print(f"total_amount (POSTING):     {total_total_amount_posting:.2f}")
+        print()
+        print(f"sale_amount + bonus:        {total_sale_amount + total_bonus:.2f}")
+        print(f"sale_amount + coinvestment: {total_sale_amount + total_coinvestment:.2f}")
+        print(f"sale_price + bonus:         {total_sale_price + total_bonus:.2f}")
+        print(f"sale_price + bonus + coinv: {total_sale_price + total_bonus + total_coinvestment:.2f}")
+
+        # ITEM / NON_ITEM
+        item_total = 0.0
+        nonitem_total = 0.0
+        for acc in all_acc:
+            cat = acc.get("accrued_category")
+            if cat == "ITEM":
+                item_total += parse_amount(acc.get("total_amount"))
+            elif cat == "NON_ITEM":
+                nonitem_total += parse_amount(acc.get("total_amount"))
+        print()
+        print(f"ITEM total_amount sum:      {item_total:.2f}")
+        print(f"NON_ITEM total_amount sum:  {nonitem_total:.2f}")
+
+        # All total_amount
+        all_ta = 0.0
+        for acc in all_acc:
+            all_ta += parse_amount(acc.get("total_amount"))
+        print(f"ALL total_amount sum:       {all_ta:.2f}")
+
+    finally:
+        await close_http_client()
+        session.close()
+
+
+asyncio.run(main())

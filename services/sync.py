@@ -152,10 +152,7 @@ async def sync_user_orders(user: User, db: Session) -> bool:
             if ENRICH_ON_FETCH:
                 await run_enrichment_batch(list(new_pns), user.id)
 
-        # Запускаем синхронизацию транзакций (расходы: реклама, хранение)
-        await sync_ozon_transactions(user.id, db)
-        
-        # Запускаем НОВУЮ синхронизацию детальных начислений (accruals v1)
+        # Синхронизация детальных начислений (accruals v1) - ОСНОВНОЙ ИСТОЧНИК РАСХОДОВ
         # Синхронизируем сегодня и вчера для надежности
         today_s = now.strftime("%Y-%m-%d")
         yesterday_s = (now - timedelta(days=1)).strftime("%Y-%m-%d")

@@ -11,17 +11,23 @@ from utils.auth import get_current_user
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 logger = logging.getLogger("OzonAPIHub")
 
-# Маппинг типов услуг Ozon API v1 Accrual
+# Маппинг типов услуг Ozon API v1 Accrual (Синхронизировано с реальными данными Ozon)
 OZON_SERVICE_TYPES = {
-    1: "Комиссия Ozon",
-    32: "Логистика",
-    29: "Сборка заказа",
-    98: "Последняя миля",
-    74: "Эквайринг",
-    45: "Магистраль",
-    54: "Логистика возврата",
-    12: "Прочие услуги (склад)",
-    59: "Магистраль возврата",
+    1000: "Комиссия за продажу",
+    1: "Эквайринг",
+    12: "Магистраль / Логистика",
+    29: "Последняя миля",
+    32: "Логистика (FBO)",
+    39: "Логистика (Доп. услуги)",
+    41: "Сборка заказа / Продвижение",
+    45: "Обработка отмен",
+    46: "Обработка возвратов",
+    59: "Доставка",
+    74: "Хранение",
+    98: "Утилизация",
+    101: "Продвижение (Реклама)",
+    102: "Бонусы продавца",
+    305: "Доставка сторонними службами",
 }
 
 def parse_msk_date(value: str, end_of_day: bool = False, tz_offset_hours: int = 3) -> datetime | None:
@@ -112,6 +118,26 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
         }
 
     return postings_map
+
+def get_expense_category(tid: int | None) -> str:
+    """Единая логика категоризации услуг Ozon для всех отчетов.
+    Синхронизировано с плитками раздела 'Экономика' в ЛК Ozon.
+    """
+    if tid == 1000:
+        return "Комиссия Ozon"
+    if tid in [32, 39, 59, 305]:
+        return "Логистика (FBO/FBS)"
+    if tid == 1:
+        return "Эквайринг"
+    if tid == 46: # В ЛК Озон обработка возвратов часто попадает в плитку 'Хранение'
+        return "Хранение"
+    if tid in [41, 101]:
+        return "Реклама"
+    if tid == 45:
+        return "Возвраты и отмены"
+    # Все остальное (Магистраль 12, Последняя миля 29, Утилизация 98, Складское хранение тип 74)
+    # Озон объединяет в плитку 'Прочие расходы Ozon'
+    return "Прочие расходы Ozon"
 
 @router.get("/daily_stats")
 async def daily_stats(
@@ -337,54 +363,51 @@ async def sales_report_universal(
     items = list(items_map.values())
     items.sort(key=lambda x: -x["quantity"])
 
-    # Вычисляем суммарные финансовые показатели (payout/commission)
-    # ПРИМЕЧАНИЕ: финансовые показатели по-прежнему берем только из нормализованных данных,
-    # так как в сыром списке FBO их может не быть в полном объеме.
-    totals = db.query(
-        func.coalesce(func.sum(OrderProduct.payout), 0),
-        func.coalesce(func.sum(OrderProduct.commission_amount), 0)
+    # Вычисляем суммарные финансовые показатели (Используем OzonAccrual для максимальной точности)
+    accruals_data = db.query(
+        OzonAccrual.operation_type,
+        OzonAccrual.accrued_category,
+        OzonAccrual.type_id,
+        func.sum(OzonAccrual.amount)
     ).filter(
-        OrderProduct.user_id == current_user.id,
-        OrderProduct.posting_number.in_(final_postings)
-    ).first()
+        OzonAccrual.user_id == current_user.id,
+        OzonAccrual.date >= since_utc.replace(tzinfo=None),
+        OzonAccrual.date <= to_utc.replace(tzinfo=None)
+    ).group_by(OzonAccrual.operation_type, OzonAccrual.accrued_category, OzonAccrual.type_id).all()
 
-    total_payout = abs(int(totals[0] or 0))
-    total_commission = abs(int(totals[1] or 0))
+    # Группировка как в Личном Кабинете Ozon (Экономика)
+    total_commission = 0.0
+    total_logistics = 0.0
+    total_acquiring = 0.0
+    total_advertising = 0.0
+    total_storage = 0.0
+    total_other_expenses = 0.0
+    total_manual_expenses = 0.0 # Новая категория для ручных затрат
+    total_returns_cancels = 0.0
+    total_sales_revenue = 0.0
 
-    # Считаем логистику и другие услуги из financial_data постингов
-    total_logistics = 0
-    postings_data = db.query(OrderPosting.financial_data).filter(
-        OrderPosting.user_id == current_user.id,
-        OrderPosting.posting_number.in_(final_postings)
-    ).all()
+    for op_type, cat, tid, amt in accruals_data:
+        val = float(amt or 0)
+        
+        # Выручка: Считаем ВСЕ положительные начисления (как в ЛК Ozon)
+        if val > 0:
+            total_sales_revenue += val
+        
+        # Расходы (любое отрицательное значение или тип expense)
+        if val < 0 or op_type == 'expense':
+            abs_val = abs(val)
+            cat_name = get_expense_category(tid)
+            
+            if cat_name == "Комиссия Ozon": total_commission += abs_val
+            elif cat_name == "Эквайринг": total_acquiring += abs_val
+            elif cat_name == "Логистика (FBO/FBS)": total_logistics += abs_val
+            elif cat_name == "Реклама": total_advertising += abs_val
+            elif cat_name == "Хранение": total_storage += abs_val
+            elif cat_name == "Возвраты и отмены": total_returns_cancels += abs_val
+            elif cat_name == "Прочие расходы Ozon": total_other_expenses += abs_val
+            else: total_other_expenses += abs_val
 
-    for (f_data,) in postings_data:
-        if not f_data or not isinstance(f_data, dict):
-            continue
-
-        # Помогаем парсить суммы (могут быть строками)
-        def _get_val(v):
-            try: return abs(float(v or 0))
-            except: return 0
-
-        # 1. Проверяем услуги на уровне всего заказа (если есть)
-        services = f_data.get("services", {})
-        if isinstance(services, dict):
-            for s_val in services.values():
-                total_logistics += _get_val(s_val)
-
-        # 2. Проверяем услуги на уровне каждого товара (для FBO/FBS)
-        products = f_data.get("products", [])
-        if isinstance(products, list):
-            for p in products:
-                if not isinstance(p, dict): continue
-                # В Ozon API услуги лежат в item_services
-                item_services = p.get("item_services", {})
-                if isinstance(item_services, dict):
-                    for s_val in item_services.values():
-                        total_logistics += _get_val(s_val)
-
-    # Считаем дополнительные расходы (реклама, хранение) из таблицы Cost
+    # Считаем дополнительные расходы из таблицы Cost (ручные расходы)
     costs_by_type = db.query(
         Cost.type,
         func.sum(Cost.amount)
@@ -394,29 +417,31 @@ async def sales_report_universal(
         Cost.date <= to_utc.replace(tzinfo=None)
     ).group_by(Cost.type).all()
 
-    costs_dict = {t: abs(float(a or 0)) for t, a in costs_by_type}
+    for c_type, c_amt in costs_by_type:
+        t = (c_type or "").lower()
+        val = abs(float(c_amt or 0))
+        
+        # Маппинг типов из Cost в категории аналитики
+        # Важно: исключаем дублирование, если эти типы уже пришли из Озона
+        # Если в таблице OzonAccrual уже есть данные за этот день, 
+        # значит озоновские типы в Cost - это дубликаты от старого синхронизатора.
+        if len(accruals_data) > 0 and t in ["acquiring", "commission", "logistics", "advertising", "storage"]:
+            continue
 
-    total_advertising = costs_dict.get("advertising", 0) + costs_dict.get("adv", 0)
-    total_storage = costs_dict.get("storage", 0)
+        if t in ("advertising", "adv"): total_advertising += val
+        elif t == "storage": total_storage += val
+        elif t == "logistics": total_logistics += val
+        elif t == "acquiring": total_acquiring += val
+        elif t == "commission": total_commission += val
+        else: total_manual_expenses += val
 
-    # Добавляем логистику из транзакций к логистике из заказов
-    total_logistics += costs_dict.get("logistics", 0)
-
-    total_acquiring = costs_dict.get("acquiring", 0)
-
-    # Всё остальное относим в прочие
-    other_costs_sum = sum(v for k, v in costs_dict.items() if k not in ["advertising", "adv", "storage", "logistics", "acquiring"])
-
-    total_expenses = total_commission + float(total_logistics) + total_advertising + total_storage + total_acquiring + other_costs_sum
-    profit = total_payout - total_expenses
+    # Итоговый расчет
+    total_expenses = total_commission + total_logistics + total_advertising + total_storage + total_acquiring + total_other_expenses + total_returns_cancels + total_manual_expenses
+    profit = total_sales_revenue - total_expenses
 
     # Считаем отмены отдельно
-    def _is_cancelled_local(st):
-        status = (st or "").lower()
-        return any(x in status for x in ["cancelled", "отменен", "отменён", "canceled"])
-
-    cancelled_pns = [pn for pn in final_postings if _is_cancelled_local(postings_map.get(pn, {}).get("status"))]
-    total_cancelled_amount = 0
+    cancelled_pns = [pn for pn in final_postings if is_cancelled(postings_map.get(pn, {}).get("status"))]
+    total_cancelled_amount = 0.0
     total_cancelled_count = 0
 
     if cancelled_pns:
@@ -428,24 +453,24 @@ async def sales_report_universal(
             OrderProduct.posting_number.in_(cancelled_pns)
         ).first()
         total_cancelled_count = int(c_res[0] or 0)
-        total_cancelled_amount = int(c_res[1] or 0)
+        total_cancelled_amount = float(c_res[1] or 0.0)
 
     return {
         "items": items,
         "total_items": sum(i["quantity"] for i in items),
         "total_orders": len(final_postings),
-        "total_amount_raw": sum(i["amount_raw"] for i in items),
+        "total_amount_raw": sum(i["amount_raw"] for i in items), # Сумма оплат покупателей (3447)
         "total_cancelled_amount": total_cancelled_amount,
         "total_cancelled_count": total_cancelled_count,
-        "total_expenses": total_expenses,
-        "total_advertising": total_advertising,
-        "total_storage": total_storage,
-        "total_logistics": int(total_logistics),
-        "total_acquiring": total_acquiring,
-        "total_other": other_costs_sum,
-        "total_payout": total_payout,
-        "total_commission": total_commission,
-        "profit": profit
+        "total_expenses": round(total_expenses, 2),
+        "total_advertising": round(total_advertising, 2),
+        "total_storage": round(total_storage, 2),
+        "total_logistics": round(total_logistics, 2),
+        "total_acquiring": round(total_acquiring, 2),
+        "total_other": round(total_other_expenses + total_manual_expenses + total_returns_cancels, 2),
+        "total_payout": round(total_sales_revenue - total_commission - total_acquiring, 2), # Выплата до логистики
+        "total_commission": round(total_commission, 2),
+        "profit": round(profit, 2)
     }
 
 @router.get("/expenses_breakdown")
@@ -457,7 +482,7 @@ async def expenses_breakdown(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Детализация расходов по категориям с использованием новых данных из OzonAccrual.
+    Детализация расходов по категориям (БЕЗ МИНУСОВ).
     """
     since_dt = parse_msk_date(since, tz_offset_hours=tz_offset_hours)
     to_dt = parse_msk_date(to, end_of_day=True, tz_offset_hours=tz_offset_hours)
@@ -468,58 +493,50 @@ async def expenses_breakdown(
     since_utc = since_dt.astimezone(timezone.utc).replace(tzinfo=None)
     to_utc = to_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # 1. Считаем расходы из НОВОЙ таблицы OzonAccrual (приоритет)
     accruals = db.query(OzonAccrual).filter(
         OzonAccrual.user_id == current_user.id,
         OzonAccrual.date >= since_utc,
         OzonAccrual.date <= to_utc,
-        OzonAccrual.operation_type == 'expense' # Только расходы
+        or_(OzonAccrual.operation_type == 'expense', OzonAccrual.amount < 0)
     ).all()
 
     by_category = {
         "Комиссия Ozon": 0.0,
-        "Логистика": 0.0,
+        "Логистика (FBO/FBS)": 0.0,
         "Эквайринг": 0.0,
+        "Хранение": 0.0,
+        "Реклама": 0.0,
+        "Возвраты и отмены": 0.0,
         "Прочие расходы": 0.0
     }
     ops_by_category = {}
 
     for acc in accruals:
-        cat_name = OZON_SERVICE_TYPES.get(acc.type_id)
-        
-        # Группируем мелкие услуги в крупные категории для чистоты
-        if acc.type_id in [32, 29, 98, 45, 54, 59]:
-            cat_name = "Логистика"
-        elif acc.type_id == 1:
-            cat_name = "Комиссия Ozon"
-        elif acc.type_id == 74:
-            cat_name = "Эквайринг"
-        
-        if not cat_name:
-            cat_name = "Прочие расходы"
-
+        tid = acc.type_id
         amount = abs(float(acc.amount or 0))
-        if cat_name not in by_category: by_category[cat_name] = 0.0
+        cat_name = get_expense_category(tid)
+
+        if cat_name not in by_category:
+            by_category[cat_name] = 0.0
         by_category[cat_name] += amount
 
         if cat_name not in ops_by_category:
             ops_by_category[cat_name] = {"total": 0.0, "items": []}
+        
         ops_by_category[cat_name]["total"] += amount
         
-        # Добавляем в детализацию
         note = f"Заказ {acc.unit_number}" if acc.unit_number else acc.accrued_category
-        if acc.type_id and acc.type_id in OZON_SERVICE_TYPES:
-            note += f" ({OZON_SERVICE_TYPES[acc.type_id]})"
+        if tid and tid in OZON_SERVICE_TYPES:
+            note += f" ({OZON_SERVICE_TYPES[tid]})"
 
         ops_by_category[cat_name]["items"].append({
-            "amount": amount,
+            "amount": round(amount, 2),
             "date": acc.date.isoformat() if acc.date else None,
             "notes": note,
             "unit_number": acc.unit_number
         })
 
-    # 2. Добавляем данные из таблицы Cost (для внешних расходов, которых нет в Озоне)
-    # Например, налоги, зарплаты или реклама, если она еще не подтянулась в Accruals
+    # Добавляем данные из таблицы Cost (ручные расходы)
     cost_rows = db.query(Cost).filter(
         Cost.user_id == current_user.id,
         Cost.date >= since_utc,
@@ -527,30 +544,35 @@ async def expenses_breakdown(
     ).all()
 
     for row in cost_rows:
-        # Простая эвристика, чтобы не дублировать эквайринг/комиссию, если они уже есть в Accruals
         t = (row.type or "").lower()
-        if t in ["acquiring", "commission", "logistics"] and len(accruals) > 0:
-            continue # Пропускаем, так как Accruals точнее
+        # Игнорируем озоновские типы в таблице Cost, чтобы не было дублей с Accruals
+        if t in ["acquiring", "commission", "logistics", "advertising", "storage"] and len(accruals) > 0:
+            continue
             
-        cat = "Реклама" if t in ("advertising", "adv") else "Хранение" if t == "storage" else "Прочие расходы"
-        
+        # Маппинг как в основном отчете
+        if t in ("advertising", "adv"): cat = "Реклама"
+        elif t == "storage": cat = "Хранение"
+        elif t == "logistics": cat = "Логистика (FBO/FBS)"
+        elif t == "acquiring": cat = "Эквайринг"
+        elif t == "commission": cat = "Комиссия Ozon"
+        else: cat = "Прочие расходы (ручные)"
         amount = abs(float(row.amount or 0))
-        if cat not in by_category: by_category[cat] = 0.0
+        
         by_category[cat] += amount
-
         if cat not in ops_by_category:
             ops_by_category[cat] = {"total": 0.0, "items": []}
+        
         ops_by_category[cat]["total"] += amount
         ops_by_category[cat]["items"].append({
-            "amount": amount,
+            "amount": round(amount, 2),
             "date": row.date.isoformat() if row.date else None,
             "notes": row.notes or t,
         })
 
     return {
-        "by_category": by_category,
+        "by_category": {k: round(v, 2) for k, v in by_category.items() if v != 0},
         "details": ops_by_category,
-        "total": sum(by_category.values())
+        "total": round(sum(by_category.values()), 2)
     }
 
 @router.get("/expenses_summary")

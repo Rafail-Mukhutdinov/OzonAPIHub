@@ -17,6 +17,17 @@
       "env": { "PYTHONUNBUFFERED": "1" },
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "Python: Test Accruals By Day",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/test_accruals_by_day.py",
+      "args": [
+        "2026-06-15"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
     }
   ]
 }

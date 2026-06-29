@@ -4,9 +4,20 @@
 """
 import asyncio
 import sys
+import os
 from datetime import datetime, timedelta
+
+# Добавляем корень проекта в sys.path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+# Загружаем .env из корня проекта
+from dotenv import load_dotenv
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
 from db.database import SessionLocal
 from services.enrichment import enrich_accruals_from_ozon
+
 
 async def enrich_accruals_range(user_id: int, start_date_str: str, end_date_str: str = None):
     """
@@ -14,38 +25,39 @@ async def enrich_accruals_range(user_id: int, start_date_str: str, end_date_str:
     """
     if not end_date_str:
         end_date_str = start_date_str
-        
+
     start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
-    
+
     current_dt = start_dt
     db = SessionLocal()
-    
+
     try:
         while current_dt <= end_dt:
             date_s = current_dt.strftime("%Y-%m-%d")
             print(f"Syncing accruals for {date_s}...", end="", flush=True)
-            
+
             result = await enrich_accruals_from_ozon(user_id, date_s, db)
-            
+
             if result.get("status") == "ok":
-                print(f" ✓ Synced: {result.get('synced')}")
+                print(f" OK Synced: {result.get('synced')} accruals ({result.get('rows', 0)} rows)")
             else:
-                print(f" ✗ Error: {result.get('detail')}")
-                
+                print(f" ERROR: {result.get('detail')}")
+
             current_dt += timedelta(days=1)
-            
+
     finally:
         db.close()
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python enrich_accruals.py <user_id> <start_date> [end_date]")
         print("Example: python enrich_accruals.py 2 2026-06-01 2026-06-06")
         sys.exit(1)
-    
+
     u_id = int(sys.argv[1])
     s_date = sys.argv[2]
     e_date = sys.argv[3] if len(sys.argv) > 3 else None
-    
+
     asyncio.run(enrich_accruals_range(u_id, s_date, e_date))
