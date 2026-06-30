@@ -201,6 +201,24 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Обработка истечения срока токена (401 ошибка)
+  /// Мы удаляем токен, чтобы вызвать экран логина, но ОСТАВЛЯЕМ ПИН и Email
+  Future<void> handleSessionExpired() async {
+    debugPrint("AuthProvider: Session expired, clearing token only...");
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_tokenKey);
+    } else {
+      try {
+        await _secureStorage.delete(key: _tokenKey);
+      } catch (_) {}
+    }
+    _token = null;
+    _isAuthenticated = false;
+    _isLocalAuthenticated = false;
+    notifyListeners();
+  }
+
   Future<void> clearAllData() async {
     debugPrint("AuthProvider: Clearing all data...");
     // SecureStorage на Web не используется (требует HTTPS),

@@ -24,7 +24,8 @@ class _ShipmentsScreenState extends State<ShipmentsScreen> {
   @override
   void initState() {
     super.initState();
-    _apiClient = OzonApiClient();
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    _apiClient = OzonApiClient(authProvider: auth);
   }
 
   Future<void> _loadShipments() async {

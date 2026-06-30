@@ -42,7 +42,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    api = OzonApiClient(onUnauthorized: _handleUnauthorized);
+    // Передаем authProvider напрямую для централизованной обработки 401
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    api = OzonApiClient(authProvider: auth);
     _loadAllData();
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadAllData(isSilent: true));
   }
@@ -53,13 +55,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  void _handleUnauthorized() {
-    if (mounted) {
-      // Вместо Navigator.push просто очищаем данные через провайдер.
-      // AuthGate сам увидит это и покажет экран логина.
-      Provider.of<AuthProvider>(context, listen: false).clearAllData();
-    }
-  }
+  // МЕТОД _handleUnauthorized больше не нужен, удаляем его
 
   String _getIso(DateTime date, bool endOfDay) {
     // ВАЖНО: Приводим к UTC+3 (Москва) перед отправкой

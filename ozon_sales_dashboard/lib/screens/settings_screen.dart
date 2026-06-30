@@ -29,7 +29,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _api = OzonApiClient(); // Инициализация клиента
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    _api = OzonApiClient(authProvider: auth); // Добавили передачу провайдера
     _loadCredentials(); // Загружаем список ключей при открытии экрана
   }
 

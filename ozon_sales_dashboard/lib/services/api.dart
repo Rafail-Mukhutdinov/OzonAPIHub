@@ -3,10 +3,11 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../providers/auth_provider.dart'; // Добавляем импорт
 
 class OzonApiClient {
   final Dio dio;
-  final Function()? onUnauthorized;
+  final AuthProvider? authProvider; // Теперь принимаем провайдер напрямую
   final _secureStorage = const FlutterSecureStorage();
 
   static String getDefaultBaseUrl() {
@@ -31,7 +32,7 @@ class OzonApiClient {
     return const String.fromEnvironment('BASE_URL', defaultValue: 'http://45.150.11.25:8083');
   }
 
-  OzonApiClient({String? baseUrl, this.onUnauthorized})
+  OzonApiClient({String? baseUrl, this.authProvider})
     : dio = Dio(BaseOptions(
         baseUrl: baseUrl ?? getDefaultBaseUrl(),
         connectTimeout: const Duration(seconds: 30),
@@ -57,17 +58,9 @@ class OzonApiClient {
       },
       onError: (DioException error, handler) async {
         if (error.response?.statusCode == 401) {
-          try {
-            if (kIsWeb) {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('jwt_token');
-            } else {
-              await _secureStorage.delete(key: 'jwt_token');
-            }
-          } catch (_) {}
-          final callback = onUnauthorized;
-          if (callback != null) {
-            callback();
+          // Если получили 401, сообщаем об этом провайдеру
+          if (authProvider != null) {
+            authProvider!.handleSessionExpired();
           }
         }
         return handler.next(error);
