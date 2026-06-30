@@ -50,7 +50,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     try {
       final email = _emailController.text.trim();
-      final pin = _pinController.text.trim();
+      final pin = kIsWeb ? null : _pinController.text.trim();
+
       final token = await _authService.register(
         email,
         _passwordController.text,

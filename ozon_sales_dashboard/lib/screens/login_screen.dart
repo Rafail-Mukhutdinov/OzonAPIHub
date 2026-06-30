@@ -62,7 +62,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final email = _emailController.text.trim();
-      final pin = _pinController.text.trim();
+      final pin = kIsWeb ? null : _pinController.text.trim();
 
       // Отправка запроса на сервер
       final token = await _authService.login(
@@ -73,7 +73,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
         
-        // Сначала сохраняем токен и ПИН
+        // Сначала сохраняем токен и ПИН (если он есть)
         await authProvider.setToken(token, email: email, pin: pin);
 
         // Дополнительно запрашиваем профиль для получения статуса админа

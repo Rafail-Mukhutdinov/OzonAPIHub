@@ -48,7 +48,11 @@ class OzonApiClient {
       onError: (DioException error, handler) async {
         if (error.response?.statusCode == 401) {
           await _secureStorage.delete(key: 'jwt_token');
-          if (onUnauthorized != null) onUnauthorized!();
+          // Вызываем колбэк только если он реально передан
+          final callback = onUnauthorized;
+          if (callback != null) {
+            callback();
+          }
         }
         return handler.next(error);
       },
