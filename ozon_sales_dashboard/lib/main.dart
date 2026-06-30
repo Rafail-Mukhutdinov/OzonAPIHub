@@ -3,7 +3,6 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'providers/auth_provider.dart';
-import 'screens/check_auth_screen.dart';
 
 /**
  * Точка входа в приложение Flutter.
@@ -57,7 +56,7 @@ class MyApp extends StatelessWidget {
           Locale('ru', 'RU'),
         ],
         // Начальный экран: проверяет наличие токена и перенаправляет на Login или Dashboard
-        home: const CheckAuthScreen(),
+        home: const AuthGate(),
       ),
     );
   }

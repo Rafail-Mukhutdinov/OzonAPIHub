@@ -25,6 +25,7 @@ class _LoginScreenState extends State<LoginScreen> {
   // Контроллеры для извлечения текста из полей ввода
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _pinController = TextEditingController(); // Для ПИН-кода
   
   late final AuthService _authService;
   
@@ -42,6 +43,7 @@ class _LoginScreenState extends State<LoginScreen> {
     // Обязательно освобождаем ресурсы контроллеров при закрытии экрана
     _emailController.dispose();
     _passwordController.dispose();
+    _pinController.dispose();
     super.dispose();
   }
 
@@ -59,6 +61,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final email = _emailController.text.trim();
+      final pin = _pinController.text.trim();
+
       // Отправка запроса на сервер
       final token = await _authService.login(
         email,
@@ -66,28 +70,21 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (mounted) {
-        // Сначала сохраняем токен в провайдере
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
-        await authProvider.setToken(token, email: email);
+        
+        // Сначала сохраняем токен и ПИН
+        await authProvider.setToken(token, email: email, pin: pin);
 
-        // Теперь, когда токен установлен в интерцепторах Dio, запрашиваем профиль
+        // Дополнительно запрашиваем профиль для получения статуса админа
         try {
           final profileData = await OzonApiClient().getProfile();
           final bool isAdmin = profileData['is_admin'] ?? false;
-          
-          // Обновляем информацию об админе в провайдере
-          await authProvider.setToken(token, email: email, isAdmin: isAdmin);
-        } catch (profileError) {
-          debugPrint('Ошибка получения профиля при входе: $profileError');
+          await authProvider.setToken(token, email: email, isAdmin: isAdmin, pin: pin);
+        } catch (e) {
+          debugPrint('Profile fetch error: $e');
         }
-
-        // Успешный вход - заменяем текущий экран на Dashboard
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
-        );
       }
     } catch (e) {
-      // Обработка ошибок (неверный пароль, отсутствие сети и т.д.)
       setState(() {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
@@ -157,6 +154,26 @@ class _LoginScreenState extends State<LoginScreen> {
                         obscureText: true, // Скрывает вводимые символы
                         validator: (value) {
                           if (value == null || value.isEmpty) return 'Введите пароль';
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 16),
+
+                      // НОВОЕ: Поле ПИН-кода для входа
+                      TextFormField(
+                        controller: _pinController,
+                        decoration: const InputDecoration(
+                          labelText: 'ПИН-код для этого устройства',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.dialpad),
+                          helperText: 'Цифры будут использоваться для быстрого входа',
+                        ),
+                        keyboardType: TextInputType.number,
+                        maxLength: 4,
+                        obscureText: true,
+                        validator: (value) {
+                          if (value == null || value.isEmpty) return 'Придумайте ПИН-код';
+                          if (value.length != 4) return 'Нужно 4 цифры';
                           return null;
                         },
                       ),

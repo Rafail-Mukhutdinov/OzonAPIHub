@@ -16,6 +16,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _pinController = TextEditingController(); // Для ПИН-кода
   late final AuthService _authService;
   
   bool _isLoading = false;
@@ -32,6 +33,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _pinController.dispose();
     super.dispose();
   }
 
@@ -47,6 +49,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     try {
       final email = _emailController.text.trim();
+      final pin = _pinController.text.trim();
       final token = await _authService.register(
         email,
         _passwordController.text,
@@ -54,13 +57,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
       );
 
       if (mounted) {
-        // Обновляем состояние провайдера
-        await Provider.of<AuthProvider>(context, listen: false).setToken(token, email: email);
-
-        // Успешная регистрация - переходим на дашборд
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        // Обновляем состояние провайдера, передавая ПИН
+        await Provider.of<AuthProvider>(context, listen: false).setToken(
+          token, 
+          email: email,
+          pin: pin,
         );
+
+        // Успешная регистрация - AuthGate сам переключит экран на Dashboard
       }
     } catch (e) {
       setState(() {
@@ -170,6 +174,33 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           }
                           if (value != _passwordController.text) {
                             return 'Пароли не совпадают';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 16),
+
+                      // НОВОЕ: ПИН-код поле
+                      TextFormField(
+                        controller: _pinController,
+                        decoration: const InputDecoration(
+                          labelText: 'Создайте ПИН-код (4 цифры)',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.dialpad),
+                          helperText: 'Для быстрого входа в приложение',
+                        ),
+                        keyboardType: TextInputType.number,
+                        maxLength: 4,
+                        obscureText: true,
+                        validator: (value) {
+                          if (value == null || value.isEmpty) {
+                            return 'Введите ПИН-код';
+                          }
+                          if (value.length != 4) {
+                            return 'Ровно 4 цифры';
+                          }
+                          if (int.tryParse(value) == null) {
+                            return 'Только цифры';
                           }
                           return null;
                         },

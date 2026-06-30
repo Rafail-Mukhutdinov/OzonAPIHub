@@ -54,7 +54,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _handleUnauthorized() {
-    if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+    if (mounted) {
+      // Вместо Navigator.push просто очищаем данные через провайдер.
+      // AuthGate сам увидит это и покажет экран логина.
+      Provider.of<AuthProvider>(context, listen: false).clearAllData();
+    }
   }
 
   String _getIso(DateTime date, bool endOfDay) {
@@ -174,8 +178,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
 
     if (confirmed == true && mounted) {
-      await Provider.of<AuthProvider>(context, listen: false).logout();
-      if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+      // 1. Блокируем приложение локально
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      auth.logout();
+      
+      // 2. Сбрасываем всю навигацию до корня (AuthGate)
+      // Это гарантирует, что мы выйдем из всех открытых экранов
+      Navigator.of(context).popUntil((route) => route.isFirst);
     }
   }
 

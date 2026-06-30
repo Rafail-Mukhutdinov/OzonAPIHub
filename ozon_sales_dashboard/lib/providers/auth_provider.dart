@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../screens/login_screen.dart';
 import '../screens/dashboard_screen.dart';
+import '../screens/pin_screen.dart';
 
 /**
  * AuthProvider — центральный узел управления сессией пользователя.
@@ -16,82 +17,96 @@ class AuthProvider extends ChangeNotifier {
   static const String _emailKey = 'user_email';
   static const String _isAdminKey = 'is_admin';
   static const String _biometricEnabledKey = 'biometric_enabled';
+  static const String _pinKey = 'user_pin'; 
 
   final _secureStorage = const FlutterSecureStorage();
   final _localAuth = LocalAuthentication();
 
   String? _token;
   String? _userEmail;
+  String? _pinCode;
   bool _isAdmin = false;
   bool _isAuthenticated = false;
+  bool _isLocalAuthenticated = false; 
   bool _isLoading = true;
   bool _biometricEnabled = false;
 
   // Геттеры
   bool get isAuthenticated => _isAuthenticated;
+  bool get isLocalAuthenticated => _isLocalAuthenticated;
   bool get isLoading => _isLoading;
   String? get token => _token;
   String? get userEmail => _userEmail;
   bool get isAdmin => _isAdmin;
   bool get biometricEnabled => _biometricEnabled;
+  bool get hasPin => _pinCode != null && _pinCode!.length == 4;
 
   AuthProvider() {
     _initAuth();
   }
 
-  /// Инициализация: проверяем наличие токена и настройки биометрии.
   Future<void> _initAuth() async {
-    final prefs = await SharedPreferences.getInstance();
-    
-    // Токен читаем из защищенного хранилища
-    _token = await _secureStorage.read(key: _tokenKey);
-    
-    // Остальное из обычных настроек
-    _userEmail = prefs.getString(_emailKey);
-    _isAdmin = prefs.getBool(_isAdminKey) ?? false;
-    _biometricEnabled = prefs.getBool(_biometricEnabledKey) ?? false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _token = await _secureStorage.read(key: _tokenKey);
+      _pinCode = await _secureStorage.read(key: _pinKey);
+      
+      _userEmail = prefs.getString(_emailKey);
+      _isAdmin = prefs.getBool(_isAdminKey) ?? false;
+      _biometricEnabled = prefs.getBool(_biometricEnabledKey) ?? false;
 
-    _isAuthenticated = _token != null && _token!.isNotEmpty;
-    _isLoading = false;
+      _isAuthenticated = _token != null && _token!.isNotEmpty;
+      _isLocalAuthenticated = false; 
+      _isLoading = false;
+      notifyListeners();
+    } catch (e) {
+      debugPrint("Init auth error: $e");
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> setPin(String pin) async {
+    await _secureStorage.write(key: _pinKey, value: pin);
+    _pinCode = pin;
     notifyListeners();
   }
 
-  /// Попытка входа по отпечатку пальца/FaceID
-  Future<bool> authenticateWithBiometrics() async {
-    if (!_biometricEnabled) {
-      debugPrint("Biometrics not enabled in settings");
-      return false;
+  bool verifyPin(String enteredPin) {
+    if (_pinCode == enteredPin) {
+      _isLocalAuthenticated = true;
+      notifyListeners();
+      return true;
     }
+    return false;
+  }
 
+  Future<bool> authenticateWithBiometrics() async {
+    if (!_biometricEnabled) return false;
     try {
-      final canAuthenticateWithBiometrics = await _localAuth.canCheckBiometrics;
-      final canAuthenticate = canAuthenticateWithBiometrics || await _localAuth.isDeviceSupported();
+      final canAuthenticate = await _localAuth.canCheckBiometrics || await _localAuth.isDeviceSupported();
+      if (!canAuthenticate) return false;
 
-      debugPrint("Device support: $canAuthenticate, Can check biometrics: $canAuthenticateWithBiometrics");
-
-      if (!canAuthenticate) {
-        debugPrint("Biometrics not supported or not set up on this device");
-        return false;
-      }
-
-      final didAuthenticate = await _localAuth.authenticate(
-        localizedReason: 'Пожалуйста, подтвердите личность для входа в OzonAPIHub',
+      final success = await _localAuth.authenticate(
+        localizedReason: 'Подтвердите личность для входа',
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: true,
-          useErrorDialogs: true, // Показывать системные ошибки (например, если палец не привязан)
+          useErrorDialogs: true,
         ),
       );
 
-      debugPrint("Authentication result: $didAuthenticate");
-      return didAuthenticate;
+      if (success) {
+        _isLocalAuthenticated = true;
+        notifyListeners();
+      }
+      return success;
     } on PlatformException catch (e) {
-      debugPrint("Biometric error: code=${e.code}, message=${e.message}");
+      debugPrint("Biometric error: $e");
       return false;
     }
   }
 
-  /// Включение/выключение биометрии в настройках
   Future<void> setBiometricEnabled(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_biometricEnabledKey, enabled);
@@ -99,10 +114,13 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Сохранение сессии после логина
-  Future<void> setToken(String token, {String? email, bool? isAdmin}) async {
+  Future<void> setToken(String token, {String? email, bool? isAdmin, String? pin}) async {
     await _secureStorage.write(key: _tokenKey, value: token);
     _token = token;
+
+    if (pin != null) {
+      await setPin(pin);
+    }
 
     final prefs = await SharedPreferences.getInstance();
     if (email != null) {
@@ -115,25 +133,26 @@ class AuthProvider extends ChangeNotifier {
     }
 
     _isAuthenticated = true;
+    _isLocalAuthenticated = true; 
     notifyListeners();
   }
 
-  /// Выход
   Future<void> logout() async {
-    await _secureStorage.delete(key: _tokenKey);
-    _token = null;
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_emailKey);
-    await prefs.remove(_isAdminKey);
-    // Настройку биометрии не удаляем, чтобы пользователь мог зайти снова, если захочет
-
-    _isAuthenticated = false;
+    debugPrint("AuthProvider: Locking session...");
+    _isLocalAuthenticated = false;
     notifyListeners();
   }
-
-  void forceLogout() {
-    logout();
+  
+  Future<void> clearAllData() async {
+    debugPrint("AuthProvider: Clearing all data...");
+    await _secureStorage.deleteAll();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    _token = null;
+    _pinCode = null;
+    _isAuthenticated = false;
+    _isLocalAuthenticated = false;
+    notifyListeners();
   }
 }
 
@@ -150,43 +169,43 @@ class _AuthGateState extends State<AuthGate> {
   @override
   Widget build(BuildContext context) {
     final authProvider = context.watch<AuthProvider>();
+    
+    debugPrint("AuthGate: Auth=${authProvider.isAuthenticated}, LocalAuth=${authProvider.isLocalAuthenticated}, HasPin=${authProvider.hasPin}");
 
     if (authProvider.isLoading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // Если токен есть и включена биометрия, пробуем её вызвать ОДИН РАЗ при загрузке
-    if (authProvider.isAuthenticated && authProvider.biometricEnabled && !_biometricAttempted) {
-      _biometricAttempted = true;
+    // 1. Если нет токена — на логин
+    if (!authProvider.isAuthenticated) {
+      return const LoginScreen();
+    }
+
+    // 2. Если есть токен, но не прошли ПИН/Биометрию
+    if (!authProvider.isLocalAuthenticated) {
       
-      // Вызываем после завершения кадра
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        final success = await authProvider.authenticateWithBiometrics();
-        if (!success) {
-          // Если биометрия не прошла (отмена), можно оставить на экране входа или просить пароль
-          // В данном случае, если токен есть, мы всё равно пустим, но в идеале
-          // здесь должна быть логика блокировки экрана до ввода PIN или отпечатка.
-          // Для MVP: если отмена — разлогиниваем для безопасности.
-          authProvider.logout();
-        }
-      });
-      
-      return const Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.fingerprint, size: 64, color: Colors.blue),
-              SizedBox(height: 16),
-              Text("Требуется подтверждение"),
-            ],
-          ),
-        ),
+      // Если ПИН-кода нет — отправляем на Логин (чтобы он там создался)
+      if (!authProvider.hasPin) {
+        debugPrint("AuthGate: No PIN found, redirecting to Login");
+        return const LoginScreen();
+      }
+
+      // Если ПИН есть, пробуем биометрию один раз
+      if (authProvider.biometricEnabled && !_biometricAttempted) {
+        _biometricAttempted = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          await authProvider.authenticateWithBiometrics();
+        });
+      }
+
+      return PinScreen(
+        onAuthenticated: () {
+          setState(() => _biometricAttempted = false);
+        },
       );
     }
 
-    return authProvider.isAuthenticated 
-        ? const DashboardScreen() 
-        : const LoginScreen();
+    // 3. Всё Ок — Дашборд
+    return const DashboardScreen();
   }
 }
