@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 import '../services/api.dart';
 
 class AdminUsersScreen extends StatefulWidget {
@@ -18,7 +20,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   @override
   void initState() {
     super.initState();
-    api = OzonApiClient(onUnauthorized: () => Navigator.of(context).pop());
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    api = OzonApiClient(authProvider: auth);
     _loadUsers();
   }
 
