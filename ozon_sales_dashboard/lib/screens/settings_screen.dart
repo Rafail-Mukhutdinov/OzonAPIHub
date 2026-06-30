@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
 import 'package:dio/dio.dart';
 import 'package:provider/provider.dart';
 import '../services/api.dart';
@@ -210,21 +211,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if (_errorMessage != null)
                   Card(color: Colors.red.shade50, child: ListTile(leading: const Icon(Icons.error, color: Colors.red), title: Text(_errorMessage!))),
                 
-                // СЕКЦИЯ: Безопасность
-                const Text('Безопасность', style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Card(
-                  child: SwitchListTile(
-                    title: const Text('Вход по отпечатку пальца'),
-                    subtitle: const Text('Использовать биометрию вместо ввода пароля'),
-                    secondary: const Icon(Icons.fingerprint),
-                    value: authProvider.biometricEnabled,
-                    onChanged: (bool value) {
-                      authProvider.setBiometricEnabled(value);
-                    },
+                // СЕКЦИЯ: Безопасность (только для мобильных)
+                if (!kIsWeb) ...[
+                  const Text('Безопасность', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Card(
+                    child: SwitchListTile(
+                      title: const Text('Вход по отпечатку пальца'),
+                      subtitle: const Text('Использовать биометрию вместо ввода пароля'),
+                      secondary: const Icon(Icons.fingerprint),
+                      value: authProvider.biometricEnabled,
+                      onChanged: (bool value) {
+                        authProvider.setBiometricEnabled(value);
+                      },
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
+                  const SizedBox(height: 16),
+                ],
 
                 // Карточка-инструкция
                 Card(

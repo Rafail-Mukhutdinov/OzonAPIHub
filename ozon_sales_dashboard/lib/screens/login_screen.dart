@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
 import '../services/auth_service.dart';
 import '../services/api.dart';
 import 'register_screen.dart';
@@ -159,25 +160,28 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      // НОВОЕ: Поле ПИН-кода для входа
-                      TextFormField(
-                        controller: _pinController,
-                        decoration: const InputDecoration(
-                          labelText: 'ПИН-код для этого устройства',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.dialpad),
-                          helperText: 'Цифры будут использоваться для быстрого входа',
+                      // ПИН-код только для мобилок
+                      if (!kIsWeb) ...[
+                        TextFormField(
+                          controller: _pinController,
+                          decoration: const InputDecoration(
+                            labelText: 'ПИН-код для этого устройства',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.dialpad),
+                            helperText: 'Цифры будут использоваться для быстрого входа',
+                          ),
+                          keyboardType: TextInputType.number,
+                          maxLength: 4,
+                          obscureText: true,
+                          validator: (value) {
+                            if (kIsWeb) return null; // На вебе не проверяем
+                            if (value == null || value.isEmpty) return 'Придумайте ПИН-код';
+                            if (value.length != 4) return 'Нужно 4 цифры';
+                            return null;
+                          },
                         ),
-                        keyboardType: TextInputType.number,
-                        maxLength: 4,
-                        obscureText: true,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) return 'Придумайте ПИН-код';
-                          if (value.length != 4) return 'Нужно 4 цифры';
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 24),
+                        const SizedBox(height: 24),
+                      ],
                       
                       if (_errorMessage != null)
                         Padding(

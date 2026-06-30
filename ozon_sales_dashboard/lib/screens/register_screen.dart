@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
 import '../services/auth_service.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
@@ -64,7 +65,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
           pin: pin,
         );
 
-        // Успешная регистрация - AuthGate сам переключит экран на Dashboard
+        // Закрываем экран регистрации, чтобы вернуться к AuthGate
+        if (mounted) {
+          Navigator.of(context).pop();
+        }
       }
     } catch (e) {
       setState(() {
@@ -180,32 +184,35 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      // НОВОЕ: ПИН-код поле
-                      TextFormField(
-                        controller: _pinController,
-                        decoration: const InputDecoration(
-                          labelText: 'Создайте ПИН-код (4 цифры)',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.dialpad),
-                          helperText: 'Для быстрого входа в приложение',
+                      // ПИН-код только для мобилок
+                      if (!kIsWeb) ...[
+                        TextFormField(
+                          controller: _pinController,
+                          decoration: const InputDecoration(
+                            labelText: 'Создайте ПИН-код (4 цифры)',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.dialpad),
+                            helperText: 'Для быстрого входа в приложение',
+                          ),
+                          keyboardType: TextInputType.number,
+                          maxLength: 4,
+                          obscureText: true,
+                          validator: (value) {
+                            if (kIsWeb) return null;
+                            if (value == null || value.isEmpty) {
+                              return 'Введите ПИН-код';
+                            }
+                            if (value.length != 4) {
+                              return 'Ровно 4 цифры';
+                            }
+                            if (int.tryParse(value) == null) {
+                              return 'Только цифры';
+                            }
+                            return null;
+                          },
                         ),
-                        keyboardType: TextInputType.number,
-                        maxLength: 4,
-                        obscureText: true,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Введите ПИН-код';
-                          }
-                          if (value.length != 4) {
-                            return 'Ровно 4 цифры';
-                          }
-                          if (int.tryParse(value) == null) {
-                            return 'Только цифры';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 24),
+                        const SizedBox(height: 24),
+                      ],
                       
                       // Сообщение об ошибке
                       if (_errorMessage != null)

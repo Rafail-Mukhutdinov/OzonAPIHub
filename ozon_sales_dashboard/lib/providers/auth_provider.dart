@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
 import 'package:provider/provider.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -30,11 +31,13 @@ class AuthProvider extends ChangeNotifier {
   bool _isLocalAuthenticated = false; 
   bool _isLoading = true;
   bool _biometricEnabled = false;
+  bool _needsBiometricPrompt = false; // Новый флаг
 
   // Геттеры
   bool get isAuthenticated => _isAuthenticated;
   bool get isLocalAuthenticated => _isLocalAuthenticated;
   bool get isLoading => _isLoading;
+  bool get needsBiometricPrompt => _needsBiometricPrompt;
   String? get token => _token;
   String? get userEmail => _userEmail;
   bool get isAdmin => _isAdmin;
@@ -134,13 +137,30 @@ class AuthProvider extends ChangeNotifier {
 
     _isAuthenticated = true;
     _isLocalAuthenticated = true; 
+    
+    // Если биометрия еще не включена, ставим флаг для показа запроса
+    if (!_biometricEnabled) {
+      _needsBiometricPrompt = true;
+    }
+    
+    notifyListeners();
+  }
+
+  /// Сброс флага запроса биометрии
+  void dismissBiometricPrompt() {
+    _needsBiometricPrompt = false;
     notifyListeners();
   }
 
   Future<void> logout() async {
     debugPrint("AuthProvider: Locking session...");
-    _isLocalAuthenticated = false;
-    notifyListeners();
+    if (kIsWeb) {
+      // На вебе при нажатии Выход нужно реально разлогиниваться (удалять токен)
+      await clearAllData();
+    } else {
+      _isLocalAuthenticated = false;
+      notifyListeners();
+    }
   }
   
   Future<void> clearAllData() async {
@@ -165,12 +185,17 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   bool _biometricAttempted = false;
+  bool _promptShown = false; // Флаг, чтобы не показывать диалог дважды
 
   @override
   Widget build(BuildContext context) {
     final authProvider = context.watch<AuthProvider>();
     
-    debugPrint("AuthGate: Auth=${authProvider.isAuthenticated}, LocalAuth=${authProvider.isLocalAuthenticated}, HasPin=${authProvider.hasPin}");
+    // Сбрасываем флаги при выходе
+    if (!authProvider.isAuthenticated) {
+      _biometricAttempted = false;
+      _promptShown = false;
+    }
 
     if (authProvider.isLoading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -182,15 +207,9 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     // 2. Если есть токен, но не прошли ПИН/Биометрию
-    if (!authProvider.isLocalAuthenticated) {
-      
-      // Если ПИН-кода нет — отправляем на Логин (чтобы он там создался)
-      if (!authProvider.hasPin) {
-        debugPrint("AuthGate: No PIN found, redirecting to Login");
-        return const LoginScreen();
-      }
+    if (!kIsWeb && !authProvider.isLocalAuthenticated) {
+      if (!authProvider.hasPin) return const LoginScreen();
 
-      // Если ПИН есть, пробуем биометрию один раз
       if (authProvider.biometricEnabled && !_biometricAttempted) {
         _biometricAttempted = true;
         WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -205,7 +224,50 @@ class _AuthGateState extends State<AuthGate> {
       );
     }
 
-    // 3. Всё Ок — Дашборд
+    // 3. Всё Ок — Дашборд + запрос биометрии один раз
+    if (!kIsWeb && authProvider.needsBiometricPrompt && !_promptShown) {
+      _promptShown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showBiometricDialog(context, authProvider);
+      });
+    }
+
     return const DashboardScreen();
+  }
+
+  void _showBiometricDialog(BuildContext context, AuthProvider auth) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.fingerprint, color: Colors.blue, size: 28),
+            SizedBox(width: 12),
+            Text('Вход по отпечатку'),
+          ],
+        ),
+        content: const Text(
+          'Хотите использовать биометрию для быстрого входа в приложение?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              auth.dismissBiometricPrompt();
+              Navigator.of(dialogContext).pop();
+            },
+            child: const Text('Позже'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await auth.setBiometricEnabled(true);
+              auth.dismissBiometricPrompt();
+              if (mounted) Navigator.of(dialogContext).pop();
+            },
+            child: const Text('Включить'),
+          ),
+        ],
+      ),
+    );
   }
 }
