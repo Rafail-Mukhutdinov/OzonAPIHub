@@ -42,7 +42,7 @@ class AuthProvider extends ChangeNotifier {
   String? get userEmail => _userEmail;
   bool get isAdmin => _isAdmin;
   bool get biometricEnabled => _biometricEnabled;
-  bool get hasPin => _pinCode != null && (_pinCode?.length ?? 0) == 4;
+  bool get hasPin => _pinCode?.length == 4;
 
   AuthProvider() {
     _initAuth();
@@ -70,7 +70,11 @@ class AuthProvider extends ChangeNotifier {
       _isAdmin = prefs.getBool(_isAdminKey) ?? false;
       _biometricEnabled = prefs.getBool(_biometricEnabledKey) ?? false;
 
-      _isAuthenticated = _token != null && _token!.isNotEmpty;
+      // Локальная переменная нужна для null-promotion: поля класса не
+      // промоутятся автоматически, так как могут измениться между
+      // проверкой и доступом. Это позволяет не использовать оператор '!'.
+      final token = _token;
+      _isAuthenticated = token != null && token.isNotEmpty;
       _isLocalAuthenticated = false;
       _isLoading = false;
       notifyListeners();
@@ -82,6 +86,8 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> setPin(String pin) async {
+    // На Web ПИН-код не используется (отключён через kIsWeb).
+    if (kIsWeb) return;
     try {
       await _secureStorage.write(key: _pinKey, value: pin);
       _pinCode = pin;
@@ -103,6 +109,10 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<bool> authenticateWithBiometrics() async {
+    // На Web биометрия недоступна: local_auth не имеет Web-плагина,
+    // а вызовы бросают MissingPluginException, который не ловится
+    // как PlatformException. Досрочный выход обязателен.
+    if (kIsWeb) return false;
     if (!_biometricEnabled) return false;
     try {
       final canAuthenticate = await _localAuth.canCheckBiometrics || await _localAuth.isDeviceSupported();
@@ -166,8 +176,9 @@ class AuthProvider extends ChangeNotifier {
     _isAuthenticated = true;
     _isLocalAuthenticated = true;
 
-    // Если биометрия еще не включена, ставим флаг для показа запроса
-    if (!_biometricEnabled) {
+    // Если биометрия еще не включена, ставим флаг для показа запроса.
+    // Запрос имеет смысл только на мобильных устройствах.
+    if (!kIsWeb && !_biometricEnabled) {
       _needsBiometricPrompt = true;
     }
 
@@ -192,10 +203,14 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> clearAllData() async {
     debugPrint("AuthProvider: Clearing all data...");
-    try {
-      await _secureStorage.deleteAll();
-    } catch (e) {
-      debugPrint("clearAllData: secureStorage deleteAll error: $e");
+    // SecureStorage на Web не используется (требует HTTPS),
+    // поэтому чистим его только на мобильных платформах.
+    if (!kIsWeb) {
+      try {
+        await _secureStorage.deleteAll();
+      } catch (e) {
+        debugPrint("clearAllData: secureStorage deleteAll error: $e");
+      }
     }
     try {
       final prefs = await SharedPreferences.getInstance();

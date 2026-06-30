@@ -136,14 +136,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if (!mounted) return;
       setState(() {
-        items = (reportResponse.data['items'] as List).cast<Map<String, dynamic>>();
+        items = (reportResponse.data['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
         totals = reportResponse.data;
-        // Сохраняем ISO строки для виджетов
-        totals!['current_since'] = sinceStr;
-        totals!['current_to'] = toStr;
+        // Сохраняем ISO строки для виджетов (безопасно)
+        if (totals != null) {
+          totals!['current_since'] = sinceStr;
+          totals!['current_to'] = toStr;
+        }
 
         yesterdayTotals = prevResponse.data;
-        weeklyStats = (statsResponse.data['data'] as List).cast<Map<String, dynamic>>();
+        weeklyStats = (statsResponse.data['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
         loading = false;
       });
     } catch (e) {
@@ -262,9 +264,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       drillDownDate = null;
       if (selectedPeriod == 'custom' && customRange != null) {
         // Сдвигаем ВЕСЬ произвольный период
+        final range = customRange!;
         customRange = DateTimeRange(
-          start: customRange!.start.add(Duration(days: step)),
-          end: customRange!.end.add(Duration(days: step)),
+          start: range.start.add(Duration(days: step)),
+          end: range.end.add(Duration(days: step)),
         );
         // Синхронизируем activeDate для корректной работы других механизмов
         activeDate = customRange!.end;

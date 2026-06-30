@@ -39,13 +39,13 @@ class SalesTable extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Отображение "чипсов" со статусами над таблицей (информационная панель)
-          if (totals != null && totals!['by_status'] is List)
+          if (totals != null && totals?['by_status'] is List)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Wrap(
                 spacing: 8, runSpacing: 8,
                 crossAxisAlignment: WrapCrossAlignment.center,
-                children: (totals!['by_status'] as List)
+                children: (totals?['by_status'] as List)
                     .cast<Map<String, dynamic>>()
                     .map((s) => Chip(
                         label: Text('${_statusRu('${s['status']}')}: ${s['count']}'),
@@ -117,14 +117,14 @@ class SalesTable extends StatelessWidget {
                 children: [
                   Text('Уникальных товаров: ${items.length}'),
                   const SizedBox(width: 24),
-                  Text('Всего штук: ${totals!['total_items'] ?? '-'}'),
+                  Text('Всего штук: ${totals?['total_items'] ?? '-'}'),
                   const SizedBox(width: 24),
-                  Text('Всего заказов: ${totals!['total_orders'] ?? '-'}'),
+                  Text('Всего заказов: ${totals?['total_orders'] ?? '-'}'),
                   const SizedBox(width: 24),
                   Text(
                     delivered
-                        ? 'К выплате: ${totals!['total_payout'] ?? '-'} ₽'
-                        : 'Грязная сумма: ${totals!['total_amount_raw'] ?? '-'} ₽',
+                        ? 'К выплате: ${totals?['total_payout'] ?? '-'} ₽'
+                        : 'Грязная сумма: ${totals?['total_amount_raw'] ?? '-'} ₽',
                     style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).primaryColor),
                   ),
                 ],

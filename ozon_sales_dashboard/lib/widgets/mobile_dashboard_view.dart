@@ -117,7 +117,8 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     if (widget.drillDownDate != null) {
       rangeStart = displayDate;
     } else if (widget.selectedPeriod == 'custom' && widget.customRange != null) {
-      rangeStart = widget.customRange!.start;
+      final range = widget.customRange!;
+      rangeStart = range.start;
     } else if (widget.selectedPeriod == 'today') {
       rangeStart = displayDate;
     } else if (widget.selectedPeriod == 'week') {
