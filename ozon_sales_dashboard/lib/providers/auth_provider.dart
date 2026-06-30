@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -18,7 +18,7 @@ class AuthProvider extends ChangeNotifier {
   static const String _emailKey = 'user_email';
   static const String _isAdminKey = 'is_admin';
   static const String _biometricEnabledKey = 'biometric_enabled';
-  static const String _pinKey = 'user_pin'; 
+  static const String _pinKey = 'user_pin';
 
   final _secureStorage = const FlutterSecureStorage();
   final _localAuth = LocalAuthentication();
@@ -28,10 +28,10 @@ class AuthProvider extends ChangeNotifier {
   String? _pinCode;
   bool _isAdmin = false;
   bool _isAuthenticated = false;
-  bool _isLocalAuthenticated = false; 
+  bool _isLocalAuthenticated = false;
   bool _isLoading = true;
   bool _biometricEnabled = false;
-  bool _needsBiometricPrompt = false; // Новый флаг
+  bool _needsBiometricPrompt = false;
 
   // Геттеры
   bool get isAuthenticated => _isAuthenticated;
@@ -51,15 +51,27 @@ class AuthProvider extends ChangeNotifier {
   Future<void> _initAuth() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _token = await _secureStorage.read(key: _tokenKey);
-      _pinCode = await _secureStorage.read(key: _pinKey);
-      
+
+      if (kIsWeb) {
+        // На Web используем обычные настройки (SecureStorage не работает без HTTPS)
+        _token = prefs.getString(_tokenKey);
+        _pinCode = null;
+      } else {
+        // На Mobile используем защищенное хранилище
+        try {
+          _token = await _secureStorage.read(key: _tokenKey);
+          _pinCode = await _secureStorage.read(key: _pinKey);
+        } catch (e) {
+          debugPrint("_initAuth: secureStorage error: $e");
+        }
+      }
+
       _userEmail = prefs.getString(_emailKey);
       _isAdmin = prefs.getBool(_isAdminKey) ?? false;
       _biometricEnabled = prefs.getBool(_biometricEnabledKey) ?? false;
 
       _isAuthenticated = _token != null && _token!.isNotEmpty;
-      _isLocalAuthenticated = false; 
+      _isLocalAuthenticated = false;
       _isLoading = false;
       notifyListeners();
     } catch (e) {
@@ -70,8 +82,14 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> setPin(String pin) async {
-    await _secureStorage.write(key: _pinKey, value: pin);
-    _pinCode = pin;
+    try {
+      await _secureStorage.write(key: _pinKey, value: pin);
+      _pinCode = pin;
+    } catch (e) {
+      debugPrint("setPin: secureStorage write error: $e");
+      // Если не удалось сохранить, всё равно сохраняем в памяти на сессию
+      _pinCode = pin;
+    }
     notifyListeners();
   }
 
@@ -118,7 +136,18 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> setToken(String token, {String? email, bool? isAdmin, String? pin}) async {
-    await _secureStorage.write(key: _tokenKey, value: token);
+    final prefs = await SharedPreferences.getInstance();
+    
+    if (kIsWeb) {
+      await prefs.setString(_tokenKey, token);
+    } else {
+      try {
+        await _secureStorage.write(key: _tokenKey, value: token);
+      } catch (e) {
+        debugPrint("setToken: secureStorage write error: $e");
+      }
+    }
+
     _token = token;
 
     if (pin != null) {
@@ -136,13 +165,13 @@ class AuthProvider extends ChangeNotifier {
     }
 
     _isAuthenticated = true;
-    _isLocalAuthenticated = true; 
-    
+    _isLocalAuthenticated = true;
+
     // Если биометрия еще не включена, ставим флаг для показа запроса
     if (!_biometricEnabled) {
       _needsBiometricPrompt = true;
     }
-    
+
     notifyListeners();
   }
 
@@ -155,19 +184,26 @@ class AuthProvider extends ChangeNotifier {
   Future<void> logout() async {
     debugPrint("AuthProvider: Locking session...");
     if (kIsWeb) {
-      // На вебе при нажатии Выход нужно реально разлогиниваться (удалять токен)
       await clearAllData();
     } else {
       _isLocalAuthenticated = false;
       notifyListeners();
     }
   }
-  
+
   Future<void> clearAllData() async {
     debugPrint("AuthProvider: Clearing all data...");
-    await _secureStorage.deleteAll();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
+    try {
+      await _secureStorage.deleteAll();
+    } catch (e) {
+      debugPrint("clearAllData: secureStorage deleteAll error: $e");
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+    } catch (e) {
+      debugPrint("clearAllData: SharedPreferences clear error: $e");
+    }
     _token = null;
     _pinCode = null;
     _isAuthenticated = false;
@@ -185,12 +221,12 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   bool _biometricAttempted = false;
-  bool _promptShown = false; // Флаг, чтобы не показывать диалог дважды
+  bool _promptShown = false;
 
   @override
   Widget build(BuildContext context) {
     final authProvider = context.watch<AuthProvider>();
-    
+
     // Сбрасываем флаги при выходе
     if (!authProvider.isAuthenticated) {
       _biometricAttempted = false;
@@ -206,7 +242,7 @@ class _AuthGateState extends State<AuthGate> {
       return const LoginScreen();
     }
 
-    // 2. Если есть токен, но не прошли ПИН/Биометрию
+    // 2. Если есть токен, но не прошли ПИН/Биометрию (только на мобильных)
     if (!kIsWeb && !authProvider.isLocalAuthenticated) {
       if (!authProvider.hasPin) return const LoginScreen();
 
@@ -224,7 +260,7 @@ class _AuthGateState extends State<AuthGate> {
       );
     }
 
-    // 3. Всё Ок — Дашборд + запрос биометрии один раз
+    // 3. Всё Ок — Дашборд + запрос биометрии один раз (только на мобильных)
     if (!kIsWeb && authProvider.needsBiometricPrompt && !_promptShown) {
       _promptShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {

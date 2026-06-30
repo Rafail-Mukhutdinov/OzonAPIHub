@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart'; // Добавляем
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // Добавляем
 import 'api.dart';
 
 /**
@@ -16,38 +18,58 @@ class AuthService {
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   AuthService() : dio = Dio(BaseOptions(
-    baseUrl: OzonApiClient.getDefaultBaseUrl(), // Авто-определение адреса сервера
+    baseUrl: OzonApiClient.getDefaultBaseUrl(),
     connectTimeout: const Duration(seconds: 30),
     receiveTimeout: const Duration(seconds: 30),
   ));
 
+  /// Безопасно извлекает Map из тела ответа (обрабатывает null, String JSON, Map).
+  Map<String, dynamic>? _extractMap(dynamic data) {
+    if (data == null) return null;
+    if (data is Map<String, dynamic>) return data;
+    if (data is String) {
+      if (data.isEmpty) return null;
+      try {
+        final decoded = json.decode(data);
+        if (decoded is Map<String, dynamic>) return decoded;
+      } catch (_) {}
+    }
+    return null;
+  }
+
   /// Выполняет вход в систему.
-  /// Использует формат x-www-form-urlencoded, так как бэкенд FastAPI использует OAuth2PasswordRequestForm.
   Future<String> login(String email, String password) async {
     try {
       final response = await dio.post(
         '/auth/login',
         data: {
-          'username': email, 
+          'username': email,
           'password': password,
         },
         options: Options(
           contentType: Headers.formUrlEncodedContentType,
-          // ВАЖНО: Добавляем эти заголовки для Web
-          headers: {
-            'Accept': 'application/json',
-          },
+          headers: {'Accept': 'application/json'},
         ),
       );
 
-      final data = response.data as Map<String, dynamic>;
-      final token = data['access_token'] as String;
-      
-      await _saveToken(token); // Сохраняем защищенно
+      final data = _extractMap(response.data);
+      if (data == null) {
+        throw Exception('Некорректный ответ сервера');
+      }
+      final token = data['access_token'];
+      if (token is! String || token.isEmpty) {
+        throw Exception('Токен не получен от сервера');
+      }
+
+      await _saveToken(token);
       return token;
     } on DioException catch (e) {
       if (e.response?.statusCode == 401) {
         throw Exception('Неверный email или пароль');
+      }
+      final errorData = _extractMap(e.response?.data);
+      if (errorData != null && errorData['detail'] is String) {
+        throw Exception(errorData['detail']);
       }
       throw Exception('Ошибка сети при входе');
     }
@@ -67,42 +89,76 @@ class AuthService {
           'password': password,
           'confirm_password': confirmPassword,
         },
-        options: Options(
-          contentType: Headers.jsonContentType,
-        ),
+        options: Options(contentType: Headers.jsonContentType),
       );
-      
-      // После успешной регистрации сразу авторизуем пользователя
-      return await login(email, password);
 
+      return await login(email, password);
     } on DioException catch (e) {
-      // Парсим детальную ошибку от Pydantic/FastAPI
       if (e.response?.statusCode == 400 || e.response?.statusCode == 422) {
-        final detail = e.response?.data?['detail'];
-        throw Exception(detail ?? 'Ошибка валидации данных');
+        final errorData = _extractMap(e.response?.data);
+        if (errorData != null) {
+          final detail = errorData['detail'];
+          if (detail is String) throw Exception(detail);
+          if (detail is List && detail.isNotEmpty) {
+            final first = detail.first;
+            if (first is Map && first['msg'] is String) {
+              throw Exception(first['msg']);
+            }
+          }
+        }
+        throw Exception('Ошибка валидации данных');
       }
       throw Exception('Ошибка сервера при регистрации');
     }
   }
 
-  /// Удаляет токен из защищенного хранилища.
   Future<void> logout() async {
-    await _secureStorage.delete(key: _tokenKey);
+    try {
+      if (kIsWeb) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_tokenKey);
+      } else {
+        await _secureStorage.delete(key: _tokenKey);
+      }
+    } catch (_) {}
   }
 
-  /// Проверяет наличие сохраненной сессии.
   Future<bool> isAuthenticated() async {
-    final token = await _secureStorage.read(key: _tokenKey);
-    return token != null && token.isNotEmpty;
+    try {
+      String? token;
+      if (kIsWeb) {
+        final prefs = await SharedPreferences.getInstance();
+        token = prefs.getString(_tokenKey);
+      } else {
+        token = await _secureStorage.read(key: _tokenKey);
+      }
+      return token != null && token.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
   }
 
-  /// Читает токен из защищенного хранилища.
   Future<String?> getToken() async {
-    return await _secureStorage.read(key: _tokenKey);
+    try {
+      if (kIsWeb) {
+        final prefs = await SharedPreferences.getInstance();
+        return prefs.getString(_tokenKey);
+      } else {
+        return await _secureStorage.read(key: _tokenKey);
+      }
+    } catch (_) {
+      return null;
+    }
   }
 
-  /// Внутренний метод для записи токена в FlutterSecureStorage.
   Future<void> _saveToken(String token) async {
-    await _secureStorage.write(key: _tokenKey, value: token);
+    try {
+      if (kIsWeb) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_tokenKey, token);
+      } else {
+        await _secureStorage.write(key: _tokenKey, value: token);
+      }
+    } catch (_) {}
   }
 }

@@ -39,16 +39,31 @@ class OzonApiClient {
     
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
-        final token = await _secureStorage.read(key: 'jwt_token');
-        if (token != null && token.isNotEmpty) {
-          options.headers['Authorization'] = 'Bearer $token';
-        }
+        String? token;
+        try {
+          if (kIsWeb) {
+            final prefs = await SharedPreferences.getInstance();
+            token = prefs.getString('jwt_token');
+          } else {
+            token = await _secureStorage.read(key: 'jwt_token');
+          }
+          
+          if (token != null && token.isNotEmpty) {
+            options.headers['Authorization'] = 'Bearer $token';
+          }
+        } catch (_) {}
         return handler.next(options);
       },
       onError: (DioException error, handler) async {
         if (error.response?.statusCode == 401) {
-          await _secureStorage.delete(key: 'jwt_token');
-          // Вызываем колбэк только если он реально передан
+          try {
+            if (kIsWeb) {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('jwt_token');
+            } else {
+              await _secureStorage.delete(key: 'jwt_token');
+            }
+          } catch (_) {}
           final callback = onUnauthorized;
           if (callback != null) {
             callback();
@@ -175,12 +190,28 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Безопасное преобразование тела ответа в Map<String, dynamic>.
+  /// Обрабатывает null, String (JSON), Map и любые другие типы.
   Map<String, dynamic> _toJson(Response resp) {
-    if (resp.data == null) return {};
-    if (resp.data is String) {
-      if ((resp.data as String).isEmpty) return {};
-      return json.decode(resp.data) as Map<String, dynamic>;
+    final data = resp.data;
+    if (data == null) return {};
+    if (data is Map<String, dynamic>) return data;
+    if (data is String) {
+      if (data.isEmpty) return {};
+      try {
+        final decoded = json.decode(data);
+        if (decoded is Map<String, dynamic>) return decoded;
+        return {};
+      } catch (_) {
+        debugPrint('_toJson: failed to decode JSON string');
+        return {};
+      }
     }
-    return resp.data as Map<String, dynamic>;
+    // На случай, если Dio вернул List или другой тип — оборачиваем в Map
+    if (data is List) {
+      return {'items': data};
+    }
+    debugPrint('_toJson: unexpected data type ${data.runtimeType}');
+    return {};
   }
 }
