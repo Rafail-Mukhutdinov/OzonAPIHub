@@ -10,3 +10,7 @@ venv/
 
 # Logs
 logs/
+
+# App builds
+*.apk
+static/apps/*.apk

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
 import 'package:dio/dio.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../services/api.dart';
 import '../widgets/mobile_dashboard_view.dart';
 import '../widgets/expenses_widget.dart';
@@ -21,6 +22,7 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   late final OzonApiClient api;
+  String _appVersion = '...';
   
   // ЕДИНОЕ СОСТОЯНИЕ ДЛЯ ВСЕХ ВЕРСИЙ
   String selectedPeriod = 'today'; 
@@ -46,7 +48,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     api = OzonApiClient(authProvider: auth);
     _loadAllData();
+    _initPackageInfo();
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadAllData(isSilent: true));
+  }
+
+  Future<void> _initPackageInfo() async {
+    final info = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _appVersion = 'Версия ${info.version}+${info.buildNumber}';
+      });
+    }
   }
 
   @override
@@ -247,6 +259,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
               leading: const Icon(Icons.logout, color: Colors.redAccent),
               title: const Text('Выйти', style: TextStyle(color: Colors.redAccent)),
               onTap: _handleLogout,
+            ),
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                _appVersion,
+                style: const TextStyle(color: Colors.grey, fontSize: 12),
+              ),
             ),
             const SizedBox(height: 8), // Небольшой отступ внутри SafeArea
           ],

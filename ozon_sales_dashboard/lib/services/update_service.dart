@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:ota_update/ota_update.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'api.dart';
 
 class UpdateService {
@@ -12,7 +12,6 @@ class UpdateService {
     try {
       // 1. Получаем инфо о текущей версии
       final packageInfo = await PackageInfo.fromPlatform();
-      // buildNumber — это то, что идет после + в version (например, 1.0.0+1 -> 1)
       final currentVersionCode = int.tryParse(packageInfo.buildNumber) ?? 0;
 
       // 2. Запрашиваем инфо о последней версии с сервера
@@ -24,8 +23,7 @@ class UpdateService {
       final updateMessage = data['display_message'] as String;
       final downloadUrlFragment = data['download_url'] as String;
 
-      // Ссылка на скачивание (объединяем base_url и фрагмент из ответа)
-      // Убираем лишние слеши при склейке
+      // Ссылка на скачивание
       String baseUrl = api.dio.options.baseUrl;
       if (baseUrl.endsWith('/')) baseUrl = baseUrl.substring(0, baseUrl.length - 1);
       String fragment = downloadUrlFragment;
@@ -38,8 +36,6 @@ class UpdateService {
         if (context.mounted) {
           _showUpdateDialog(context, latestVersionName, updateMessage, fullDownloadUrl);
         }
-      } else {
-        debugPrint('Приложение актуально: $currentVersionCode >= $latestVersionCode');
       }
     } catch (e) {
       debugPrint('Ошибка при проверке обновлений: $e');
@@ -51,19 +47,8 @@ class UpdateService {
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: Text('Доступна новая версия: $version'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(message),
-            const SizedBox(height: 10),
-            const Text(
-              'При нажатии на "Обновить" начнется скачивание файла. Пожалуйста, разрешите установку из этого источника, если система спросит.',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ],
-        ),
+        title: Text('Доступна версия $version'),
+        content: Text(message),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -72,37 +57,31 @@ class UpdateService {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              _executeUpdate(context, url);
+              _launchUpdateUrl(context, url);
             },
-            child: const Text('Обновить сейчас'),
+            child: const Text('Обновить'),
           ),
         ],
       ),
     );
   }
 
-  void _executeUpdate(BuildContext context, String url) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Загрузка обновления...')),
-    );
-    
+  Future<void> _launchUpdateUrl(BuildContext context, String url) async {
+    final uri = Uri.parse(url);
     try {
-      OtaUpdate().execute(
-        url,
-        destinationFilename: 'ozon_hub_update.apk',
-      ).listen(
-        (OtaEvent event) {
-          debugPrint('OTA Status: ${event.status} : ${event.value}');
-          if (event.status == OtaStatus.DOWNLOADING) {
-            // Можно добавить прогресс-бар, если захотим
-          }
-        },
-      );
+      // Пытаемся открыть ссылку во внешнем браузере
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        throw 'Could not launch $url';
+      }
     } catch (e) {
-      debugPrint('Не удалось запустить обновление: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка обновления: $e')),
-      );
+      debugPrint('Ошибка при открытии ссылки: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: не удалось открыть браузер. Ссылка: $url')),
+        );
+      }
     }
   }
 }
