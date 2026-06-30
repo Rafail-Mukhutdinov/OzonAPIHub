@@ -42,7 +42,7 @@ class AuthProvider extends ChangeNotifier {
   String? get userEmail => _userEmail;
   bool get isAdmin => _isAdmin;
   bool get biometricEnabled => _biometricEnabled;
-  bool get hasPin => _pinCode != null && _pinCode!.length == 4;
+  bool get hasPin => _pinCode != null && (_pinCode?.length ?? 0) == 4;
 
   AuthProvider() {
     _initAuth();
