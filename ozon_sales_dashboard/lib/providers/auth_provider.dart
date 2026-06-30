@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../screens/login_screen.dart';
 import '../screens/dashboard_screen.dart';
 import '../screens/pin_screen.dart';
+import '../services/api.dart';
+import '../services/update_service.dart';
 
 /**
  * AuthProvider — центральный узел управления сессией пользователя.
@@ -254,6 +256,7 @@ class AuthGate extends StatefulWidget {
 class _AuthGateState extends State<AuthGate> {
   bool _biometricAttempted = false;
   bool _promptShown = false;
+  bool _updateChecked = false;
 
   @override
   Widget build(BuildContext context) {
@@ -293,11 +296,21 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     // 3. Всё Ок — Дашборд + запрос биометрии один раз (только на мобильных)
-    if (!kIsWeb && authProvider.needsBiometricPrompt && !_promptShown) {
-      _promptShown = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _showBiometricDialog(context, authProvider);
-      });
+    if (!kIsWeb) {
+      if (!_updateChecked) {
+        _updateChecked = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final api = OzonApiClient(authProvider: authProvider);
+          UpdateService(api).checkForUpdates(context);
+        });
+      }
+
+      if (authProvider.needsBiometricPrompt && !_promptShown) {
+        _promptShown = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showBiometricDialog(context, authProvider);
+        });
+      }
     }
 
     return const DashboardScreen();
