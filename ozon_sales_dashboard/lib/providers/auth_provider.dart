@@ -154,7 +154,6 @@ class AuthProvider extends ChangeNotifier {
       await setPin(pin);
     }
 
-    final prefs = await SharedPreferences.getInstance();
     if (email != null) {
       await prefs.setString(_emailKey, email);
       _userEmail = email;
