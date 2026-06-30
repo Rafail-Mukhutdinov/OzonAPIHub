@@ -28,11 +28,15 @@ class AuthService {
       final response = await dio.post(
         '/auth/login',
         data: {
-          'username': email, // В OAuth2 стандартное поле называется username
+          'username': email, 
           'password': password,
         },
         options: Options(
           contentType: Headers.formUrlEncodedContentType,
+          // ВАЖНО: Добавляем эти заголовки для Web
+          headers: {
+            'Accept': 'application/json',
+          },
         ),
       );
 

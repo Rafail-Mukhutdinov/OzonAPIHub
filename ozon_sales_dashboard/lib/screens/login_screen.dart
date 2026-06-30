@@ -73,16 +73,18 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
         
-        // Сначала сохраняем токен и ПИН (если он есть)
+        // 1. Сначала ГАРАНТИРОВАННО сохраняем токен
         await authProvider.setToken(token, email: email, pin: pin);
 
-        // Дополнительно запрашиваем профиль для получения статуса админа
+        // 2. Только ПОТОМ пробуем загрузить профиль
         try {
+          // Создаем новый клиент, чтобы интерцептор подхватил только что сохраненный токен
           final profileData = await OzonApiClient().getProfile();
           final bool isAdmin = profileData['is_admin'] ?? false;
           await authProvider.setToken(token, email: email, isAdmin: isAdmin, pin: pin);
         } catch (e) {
           debugPrint('Profile fetch error: $e');
+          // Не прерываем вход, если профиль не загрузился
         }
       }
     } catch (e) {
