@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:ota_update/ota_update.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+// Условный импорт: если мы в вебе, берем заглушку, если нет - мобильную версию
+import 'ota_stub.dart' if (dart.library.io) 'ota_mobile.dart' as ota;
 import 'api.dart';
 
 class UpdateService {
@@ -62,46 +65,17 @@ class UpdateService {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              _startOtaUpdate(context, url);
+              if (kIsWeb) {
+                _launchUpdateUrl(context, url);
+              } else {
+                ota.startOtaUpdate(context, url);
+              }
             },
             child: const Text('Обновить'),
           ),
         ],
       ),
     );
-  }
-
-  void _startOtaUpdate(BuildContext context, String url) {
-    try {
-      debugPrint('Запуск OTA обновления с URL: $url');
-      
-      // Показываем индикатор прогресса
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const UpdateProgressDialog(),
-      );
-
-      OtaUpdate().execute(
-        url,
-        destinationFileName: 'ozon_sales_dashboard.apk',
-      ).listen(
-        (OtaEvent event) {
-          debugPrint('OTA Status: ${event.status}, Progress: ${event.value}');
-          // Статус и прогресс обрабатываются внутри UpdateProgressDialog
-          // через глобальный или локальный стейт, но для простоты мы можем
-          // просто надеяться, что OtaUpdate сам вызовет установщик при успехе.
-        },
-        onError: (error) {
-          debugPrint('OTA Error: $error');
-          if (context.mounted) Navigator.pop(context); // Закрываем прогресс
-        },
-      );
-    } catch (e) {
-      debugPrint('Ошибка при запуске OTA: $e');
-      // Фоллбек на браузер если OTA не сработал
-      _launchUpdateUrl(context, url);
-    }
   }
 
   Future<void> _launchUpdateUrl(BuildContext context, String url) async {
