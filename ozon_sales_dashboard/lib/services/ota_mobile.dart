@@ -16,7 +16,8 @@ void startOtaUpdate(BuildContext context, String url) {
 
     OtaUpdate().execute(
       url,
-      destinationFileName: 'ozon_sales_dashboard.apk',
+      destinationFilename: 'ozon_sales_dashboard.apk',
+      androidProviderAuthority: 'com.example.ozon_sales_dashboard.ota_update_provider',
     ).listen(
       (OtaEvent event) {
         debugPrint('OTA Status: ${event.status}, Progress: ${event.value}');
