@@ -114,6 +114,7 @@ from routes.analytics import router as analytics_router
 from routes.orders import router as orders_router
 from routes.sync_endpoints import router as sync_router
 from routes.costs import router as costs_router
+from routes.product_costs import router as product_costs_router
 from routes.enrichment_endpoints import router as enrichment_router
 from routes.auth_endpoints import router as auth_router
 from routes.app_updates import router as app_updates_router
@@ -123,6 +124,7 @@ app.include_router(analytics_router)
 app.include_router(orders_router)
 app.include_router(sync_router)
 app.include_router(costs_router)
+app.include_router(product_costs_router)
 app.include_router(enrichment_router)
 app.include_router(auth_router)
 app.include_router(app_updates_router)

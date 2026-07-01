@@ -184,6 +184,39 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  Future<Map<String, dynamic>> getProductsList() async {
+    final resp = await dio.get('/product-costs/products/list');
+    return _toJson(resp);
+  }
+
+  Future<Map<String, dynamic>> getProductCostHistory(int sku) async {
+    final resp = await dio.get('/product-costs/history/$sku');
+    return _toJson(resp);
+  }
+
+  Future<Map<String, dynamic>> setProductCost({
+    required int sku,
+    String? offerId,
+    required double costPrice,
+    required DateTime effectiveFrom,
+  }) async {
+    final resp = await dio.post(
+      '/product-costs',
+      data: {
+        'sku': sku,
+        'offer_id': offerId,
+        'cost_price': costPrice,
+        'effective_from': effectiveFrom.toIso8601String(),
+      },
+    );
+    return _toJson(resp);
+  }
+
+  Future<Map<String, dynamic>> deleteProductCost(int costId) async {
+    final resp = await dio.delete('/product-costs/$costId');
+    return _toJson(resp);
+  }
+
   /// Безопасное преобразование тела ответа в Map<String, dynamic>.
   /// Обрабатывает null, String (JSON), Map и любые другие типы.
   Map<String, dynamic> _toJson(Response resp) {

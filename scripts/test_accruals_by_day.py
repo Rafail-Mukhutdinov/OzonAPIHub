@@ -14,6 +14,7 @@ import sys
 import os
 import asyncio
 import argparse
+from datetime import datetime
 from collections import defaultdict
 
 # Добавляем корень проекта в sys.path, чтобы импорты работали из scripts/
@@ -27,6 +28,7 @@ load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 from db.database import SessionLocal, User, OzonCredential
 from utils.encryption import decrypt_credential
 from services.ozon import ozon_accruals_by_day_async, init_http_client, close_http_client
+from services.costs import get_product_cost
 
 
 async def fetch_all_accruals(client_id: str, api_key: str, date_str: str):
@@ -115,7 +117,7 @@ def get_type_name(tid) -> str:
     return OZON_TYPE_NAMES.get(tid_str, f"Операция {tid_str}")
 
 
-def analyze_accruals(accruals: list, raw: bool = False):
+def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = None, date_str: str = None, raw: bool = False):
     """Анализирует accruals и выводит отчёт по расходам."""
     if raw:
         print("\n" + "=" * 80)
@@ -138,6 +140,9 @@ def analyze_accruals(accruals: list, raw: bool = False):
     # Агрегация
     total_revenue = 0.0
     total_expense = 0.0
+    total_cost_price = 0.0
+    
+    target_date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
 
     # По категориям
     by_category = defaultdict(lambda: {"revenue": 0.0, "expense": 0.0, "count": 0})
@@ -172,6 +177,11 @@ def analyze_accruals(accruals: list, raw: bool = False):
                     total_revenue += rev
                     by_category[category]["revenue"] += rev
                     posting_breakdown["revenue"] += rev
+                    
+                    # Считаем себестоимость при продаже
+                    if db and user_id and sku:
+                        cp = get_product_cost(db, user_id, int(sku), target_date)
+                        total_cost_price += cp
 
                 # Комиссия
                 comm_amt = parse_amount(comm.get("commission"))
@@ -233,7 +243,9 @@ def analyze_accruals(accruals: list, raw: bool = False):
     print(f"\nВсего транзакций: {len(accruals)}")
     print(f"Общий доход:   {total_revenue:>15.2f} руб")
     print(f"Общий расход:  {total_expense:>15.2f} руб")
+    print(f"Себестоимость: {total_cost_price:>15.2f} руб")
     print(f"Чистая выплата: {total_revenue - total_expense:>14.2f} руб")
+    print(f"Прибыль (Net):  {total_revenue - total_expense - total_cost_price:>14.2f} руб")
 
     print("\n--- По категориям ---")
     print(f"{'Категория':<15} {'Доход':>15} {'Расход':>15} {'Кол-во':>8}")
@@ -304,12 +316,15 @@ def analyze_accruals(accruals: list, raw: bool = False):
     bank_total_expense = sum(by_bank_category.values())
     print("-" * 47)
     print(f"{'ИТОГО расходы (API)':<30} {bank_total_expense:>15.2f}")
+    print(f"{'Себестоимость (БД)':<30} {total_cost_price:>15.2f}")
     print(f"{'Доходы (sale_amount, API)':<30} {total_revenue:>15.2f}")
-    print(f"{'Прибыль (API, без себестоимости)':<30} {total_revenue - bank_total_expense:>15.2f}")
-    print(
-        "\nДля полного соответствия отчёту Ozon Банк добавьте себестоимость\n"
-        "товаров из отдельного справочника (в примере за 28.06.2026: 1161.00 ₽)."
-    )
+    print(f"{'Прибыль (Net, финальная)':<30} {total_revenue - bank_total_expense - total_cost_price:>15.2f}")
+    
+    if total_cost_price == 0 and total_revenue > 0:
+        print(
+            "\nВНИМАНИЕ: Себестоимость равна 0.00. Проверьте, заполнены ли данные\n"
+            "в новой таблице product_costs для используемых SKU."
+        )
 
 
 async def main():
@@ -361,7 +376,7 @@ async def main():
             print("Нет данных за эту дату")
             return
 
-        analyze_accruals(accruals, raw=args.raw)
+        analyze_accruals(accruals, db=session, user_id=user.id, date_str=args.date, raw=args.raw)
 
     finally:
         await close_http_client()

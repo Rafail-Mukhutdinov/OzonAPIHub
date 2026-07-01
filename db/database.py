@@ -60,6 +60,7 @@ class User(Base):
     order_headers = relationship("OrderHeader", back_populates="user", cascade="all, delete-orphan")
     order_postings = relationship("OrderPosting", back_populates="user", cascade="all, delete-orphan")
     costs = relationship("Cost", back_populates="user", cascade="all, delete-orphan")
+    product_costs = relationship("ProductCost", back_populates="user", cascade="all, delete-orphan")
 
 class OzonCredential(Base):
     __tablename__ = "ozon_credentials"
@@ -160,6 +161,22 @@ class Cost(Base):
     scope_offer_id = Column(String(255), index=True, nullable=True)
     notes = Column(Text)
     user = relationship("User", back_populates="costs")
+
+class ProductCost(Base):
+    """
+    Таблица для хранения истории себестоимости товаров.
+    Позволяет отслеживать изменение себестоимости во времени.
+    """
+    __tablename__ = "product_costs"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    sku = Column(BigInteger, index=True, nullable=False)
+    offer_id = Column(String(255), index=True, nullable=True)
+    cost_price = Column(sa.Float, nullable=False) # Себестоимость (может быть дробной)
+    effective_from = Column(DateTime, index=True, nullable=False) # Дата начала действия этой цены
+    created_at = Column(DateTime, default=get_utc_now, nullable=False)
+    
+    user = relationship("User", back_populates="product_costs")
 
 class OzonAccrual(Base):
     """

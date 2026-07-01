@@ -13,6 +13,7 @@ import 'shipments_screen.dart';
 import 'settings_screen.dart';
 import 'login_screen.dart';
 import 'admin_users_screen.dart';
+import 'product_costs_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -232,6 +233,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onTap: () {
                 Navigator.pop(context);
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ShipmentsScreen()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_money_outlined),
+              title: const Text('Себестоимость'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProductCostsScreen()));
               },
             ),
             ListTile(
