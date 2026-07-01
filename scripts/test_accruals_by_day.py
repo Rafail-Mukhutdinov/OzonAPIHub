@@ -308,13 +308,13 @@ def analyze_accruals(accruals: list, raw: bool = False):
     print(f"{'Прибыль (API, без себестоимости)':<30} {total_revenue - bank_total_expense:>15.2f}")
     print(
         "\nДля полного соответствия отчёту Ozon Банк добавьте себестоимость\n"
-        "товаров из отдельного справочника (в примере за 27.06.2026: 1161.00 ₽)."
+        "товаров из отдельного справочника (в примере за 28.06.2026: 1161.00 ₽)."
     )
 
 
 async def main():
     parser = argparse.ArgumentParser(description="Тест расчёта расходов через accrual/by-day")
-    parser.add_argument("date", nargs="?", default="2026-06-27", help="Дата в формате YYYY-MM-DD (по умолчанию 2026-06-15)")
+    parser.add_argument("date", nargs="?", default="2026-06-28", help="Дата в формате YYYY-MM-DD (по умолчанию 2026-06-15)")
     parser.add_argument("--user", type=int, default=None, help="ID пользователя (по умолчанию первый)")
     parser.add_argument("--raw", action="store_true", help="Вывести сырые данные каждой транзакции")
     args = parser.parse_args()
