@@ -312,40 +312,42 @@ async def enrich_accruals_from_ozon(
                     p_data = acc["posting"]
                     for prod in p_data.get("products", []):
                         sku = prod.get("sku")
+                        qty = int(prod.get("quantity") or 1)
                         comm = prod.get("commission") or {}
                         
-                        # 1. ДОХОД
-                        rev_amount = round(float((comm.get("sale_amount") or {}).get("amount") or 0), 2)
-                        if rev_amount > 0:
+                        # 1. ВЫРУЧКА (Может быть отрицательной при возврате)
+                        rev_amount = float((comm.get("sale_amount") or {}).get("amount") or 0)
+                        if rev_amount != 0:
                             rows_to_add.append(OzonAccrual(
                                 ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
                                 unit_number=unit_number, accrued_category=category,
-                                operation_type='revenue', amount=rev_amount, currency=currency,
-                                sku=sku, posting_id=p_id
+                                operation_type='revenue' if rev_amount > 0 else 'expense', 
+                                amount=round(rev_amount * qty, 2), currency=currency,
+                                quantity=qty, sku=sku, posting_id=p_id
                             ))
 
-                        # 2. КОМИССИЯ (Специальный ID 1000 для Комиссии)
-                        comm_amount = round(float((comm.get("commission") or {}).get("amount") or 0), 2)
+                        # 2. КОМИССИЯ (Специальный ID 1000. Отрицательная - расход, Положительная - возврат денег)
+                        comm_amount = float((comm.get("commission") or {}).get("amount") or 0)
                         if comm_amount != 0:
                             rows_to_add.append(OzonAccrual(
                                 ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
                                 unit_number=unit_number, accrued_category=category,
-                                operation_type='expense' if comm_amount < 0 else 'revenue', 
-                                amount=comm_amount, currency=currency,
-                                type_id=1000, sku=sku, posting_id=p_id
+                                operation_type='expense', # Комиссия всегда относится к расходам (даже если она с плюсом)
+                                amount=round(comm_amount * qty, 2), currency=currency,
+                                quantity=qty, type_id=1000, sku=sku, posting_id=p_id
                             ))
 
                         # 3. ДОСТАВКА И СЕРВИСЫ
                         deliv = prod.get("delivery") or {}
                         for srv in deliv.get("services", []):
-                            srv_amount = round(float((srv.get("accrued") or {}).get("amount") or 0), 2)
+                            srv_amount = float((srv.get("accrued") or {}).get("amount") or 0)
                             if srv_amount != 0:
                                 rows_to_add.append(OzonAccrual(
                                     ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
                                     unit_number=unit_number, accrued_category=category,
-                                    operation_type='expense' if srv_amount < 0 else 'revenue', 
-                                    amount=srv_amount, currency=currency,
-                                    type_id=srv.get("type_id"), sku=sku, posting_id=p_id
+                                    operation_type='expense', 
+                                    amount=round(srv_amount * qty, 2), currency=currency,
+                                    quantity=qty, type_id=srv.get("type_id"), sku=sku, posting_id=p_id
                                 ))
                 else:
                     # ДЛЯ ITEM и NON_ITEM: Собираем ВСЕ услуги (исправлено)

@@ -1,0 +1,25 @@
+# ЭТАП 1: Сборка Flutter Web
+FROM debian:latest AS build-env
+
+# Установка зависимостей
+RUN apt-get update && apt-get install -y curl git unzip xz-utils libglu1-mesa python3 libsqlite3-dev && rm -rf /var/lib/apt/lists/*
+
+# Установка Flutter
+RUN git clone --depth 1 https://github.com/flutter/flutter.git -b stable /usr/local/flutter
+ENV PATH="/usr/local/flutter/bin:/usr/local/flutter/bin/cache/dart-sdk/bin:${PATH}"
+RUN flutter doctor -v
+
+# Копирование кода
+WORKDIR /app
+COPY ozon_sales_dashboard/ .
+
+RUN flutter pub get
+
+# Сборка без жестко заданного API_BASE_URL, чтобы работала динамика в api.dart
+RUN flutter build web --release
+
+# ЭТАП 2: Nginx
+FROM nginx:alpine
+COPY --from=build-env /app/build/web /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

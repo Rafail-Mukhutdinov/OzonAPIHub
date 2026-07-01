@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+*.xlsx
+*.db
+*.db.bak
+.initial_sync_done
+*.png
+venv/
+
+# Logs
+logs/
+
+# App builds
+*.apk
+static/apps/*.apk

@@ -84,18 +84,19 @@ OZON_TYPE_NAMES = {
     "98": "Утилизация",
     "101": "Реклама (Продвижение)",
     "102": "Бонусы продавца",
+    "103": "Трафареты",
+    "104": "Вывод в топ",
+    "105": "Брендовая полка",
+    "120": "Продвижение (Акция)",
     "305": "Доставка сторонними службами",
 }
 
 # Маппинг type_id → категория отчёта Ozon "Банк" / "Экономика".
-# Используется для сверки с отчётом Ozon (вкладка "Банк" → "Экономика").
-# ВАЖНО: себестоимость товара (1161.00 ₽ в примере) НЕ возвращается API
-# accrual/by-day — она берётся из отдельного справочника себестоимостей.
 OZON_BANK_CATEGORY_MAP = {
     "commission": "Комиссия МП",
     "1": "Эквайринг",
-    "12": "Логистика",
-    "29": "Прочие расходы Ozon",
+    "12": "Прочие расходы Ozon", # Магистраль часто в прочих
+    "29": "Прочие расходы Ozon", # Последняя миля часто в прочих
     "32": "Логистика",
     "38": "Прочие расходы Ozon",
     "39": "Логистика",
@@ -103,9 +104,13 @@ OZON_BANK_CATEGORY_MAP = {
     "45": "Возвраты и отмены",
     "46": "Хранение",
     "59": "Логистика",
-    "74": "Прочие расходы Ozon",
+    "74": "Хранение",
     "98": "Прочие расходы Ozon",
     "101": "Реклама Ozon",
+    "103": "Реклама Ozon",
+    "104": "Реклама Ozon",
+    "105": "Реклама Ozon",
+    "120": "Реклама Ozon",
     "102": "Прочие доходы",
     "305": "Логистика",
 }
@@ -141,6 +146,7 @@ def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = Non
     total_revenue = 0.0
     total_expense = 0.0
     total_cost_price = 0.0
+    total_returns_amount = 0.0 # Сумма возвращенных товаров
     
     target_date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
 
@@ -155,6 +161,7 @@ def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = Non
         "revenue": 0.0,
         "commission": 0.0,
         "delivery_services": 0.0,
+        "returns": 0.0
     }
 
     for acc in accruals:
@@ -169,71 +176,79 @@ def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = Non
             p_data = acc["posting"]
             for prod in p_data.get("products", []):
                 sku = prod.get("sku")
+                qty = int(prod.get("quantity") or 1)
                 comm = prod.get("commission") or {}
 
-                # Доход
-                rev = parse_amount(comm.get("sale_amount"))
-                if rev > 0:
-                    total_revenue += rev
-                    by_category[category]["revenue"] += rev
-                    posting_breakdown["revenue"] += rev
-                    
-                    # Считаем себестоимость при продаже
+                # 1. Выручка и Возвраты товаров
+                sale_amt = parse_amount(comm.get("sale_amount"))
+                if sale_amt > 0:
+                    item_rev = sale_amt * qty
+                    total_revenue += item_rev
+                    by_category[category]["revenue"] += item_rev
+                    posting_breakdown["revenue"] += item_rev
+                    # Считаем себестоимость при продаже (используем дату транзакции!)
                     if db and user_id and sku:
                         cp = get_product_cost(db, user_id, int(sku), target_date)
-                        total_cost_price += cp
+                        total_cost_price += cp * qty
+                elif sale_amt < 0:
+                    abs_ret = abs(sale_amt) * qty
+                    total_returns_amount += abs_ret
+                    posting_breakdown["returns"] += abs_ret
+                    # ВАЖНО: Вычитаем себестоимость при возврате (используем дату транзакции!)
+                    if db and user_id and sku:
+                        cp = get_product_cost(db, user_id, int(sku), target_date)
+                        total_cost_price -= cp * qty
 
-                # Комиссия
+                # 2. Комиссия (С учетом знака!)
                 comm_amt = parse_amount(comm.get("commission"))
                 if comm_amt != 0:
-                    # Считаем расход как положительное число для отчета
-                    abs_comm = abs(comm_amt)
-                    total_expense += abs_comm
-                    by_category[category]["expense"] += abs_comm
-                    by_type_id["commission"] += abs_comm
-                    by_sku[f"sku:{sku}"] += abs_comm
-                    posting_breakdown["commission"] += abs_comm
+                    expense_val = -comm_amt * qty
+                    total_expense += expense_val
+                    by_category[category]["expense"] += expense_val
+                    by_type_id["commission"] += expense_val
+                    by_sku[f"sku:{sku}"] += expense_val
+                    posting_breakdown["commission"] += expense_val
 
-                # Доставка и сервисы
+                # 3. Доставка и сервисы (С учетом знака!)
                 deliv = prod.get("delivery") or {}
                 for srv in deliv.get("services", []):
                     srv_amt = parse_amount(srv.get("accrued"))
                     if srv_amt != 0:
-                        abs_srv = abs(srv_amt)
-                        total_expense += abs_srv
-                        by_category[category]["expense"] += abs_srv
+                        expense_val = -srv_amt * qty
+                        total_expense += expense_val
+                        by_category[category]["expense"] += expense_val
                         type_id = srv.get("type_id", "unknown")
-                        by_type_id[f"type_id:{type_id}"] += abs_srv
-                        by_sku[f"sku:{sku}"] += abs_srv
-                        posting_breakdown["delivery_services"] += abs_srv
+                        by_type_id[f"type_id:{type_id}"] += expense_val
+                        by_sku[f"sku:{sku}"] += expense_val
+                        posting_breakdown["delivery_services"] += expense_val
         else:
             # ITEM и NON_ITEM
             amount = total_amount
-            if amount > 0:
-                total_revenue += amount
-                by_category[category]["revenue"] += amount
+            type_id = None
+            sku = None
+            if category == "ITEM":
+                item_fees = acc.get("item_fees") or {}
+                if item_fees.get("fees"):
+                    fee_item = item_fees["fees"][0]
+                    sku = fee_item.get("sku")
+                    if fee_item.get("fees"):
+                        type_id = fee_item["fees"][0].get("type_id")
+            elif category == "NON_ITEM":
+                ni_fee = acc.get("non_item_fee") or {}
+                type_id = ni_fee.get("type_id")
+
+            if type_id is not None:
+                expense_val = -amount
+                total_expense += expense_val
+                by_category[category]["expense"] += expense_val
+                by_type_id[f"type_id:{type_id}"] += expense_val
             else:
-                abs_amt = abs(amount)
-                total_expense += abs_amt
-                by_category[category]["expense"] += abs_amt
-
-                type_id = None
-                sku = None
-                if category == "ITEM":
-                    item_fees = acc.get("item_fees") or {}
-                    if item_fees.get("fees"):
-                        fee_item = item_fees["fees"][0]
-                        sku = fee_item.get("sku")
-                        if fee_item.get("fees"):
-                            type_id = fee_item["fees"][0].get("type_id")
-                elif category == "NON_ITEM":
-                    ni_fee = acc.get("non_item_fee") or {}
-                    type_id = ni_fee.get("type_id")
-
-                if type_id is not None:
-                    by_type_id[f"type_id:{type_id}"] += abs_amt
-                if sku is not None:
-                    by_sku[f"sku:{sku}"] += abs_amt
+                if amount > 0:
+                    total_revenue += amount
+                    by_category[category]["revenue"] += amount
+                else:
+                    total_expense += abs(amount)
+                    by_category[category]["expense"] += abs(amount)
 
     # Вывод отчёта
     print("\n" + "=" * 80)
@@ -244,8 +259,9 @@ def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = Non
     print(f"Общий доход:   {total_revenue:>15.2f} руб")
     print(f"Общий расход:  {total_expense:>15.2f} руб")
     print(f"Себестоимость: {total_cost_price:>15.2f} руб")
-    print(f"Чистая выплата: {total_revenue - total_expense:>14.2f} руб")
-    print(f"Прибыль (Net):  {total_revenue - total_expense - total_cost_price:>14.2f} руб")
+    print(f"Возвраты:      {total_returns_amount:>15.2f} руб")
+    print(f"Чистая выплата: {total_revenue - total_returns_amount - total_expense:>14.2f} руб")
+    print(f"Прибыль (Net):  {total_revenue - total_returns_amount - total_expense - total_cost_price:>14.2f} руб")
 
     print("\n--- По категориям ---")
     print(f"{'Категория':<15} {'Доход':>15} {'Расход':>15} {'Кол-во':>8}")
@@ -256,6 +272,7 @@ def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = Non
 
     print("\n--- Расшифровка POSTING ---")
     print(f"  Доход (sale_amount):     {posting_breakdown['revenue']:>15.2f}")
+    print(f"  Возвраты товаров:        {posting_breakdown['returns']:>15.2f}")
     print(f"  Комиссия:                {posting_breakdown['commission']:>15.2f}")
     print(f"  Доставка и сервисы:      {posting_breakdown['delivery_services']:>15.2f}")
 
@@ -318,7 +335,8 @@ def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = Non
     print(f"{'ИТОГО расходы (API)':<30} {bank_total_expense:>15.2f}")
     print(f"{'Себестоимость (БД)':<30} {total_cost_price:>15.2f}")
     print(f"{'Доходы (sale_amount, API)':<30} {total_revenue:>15.2f}")
-    print(f"{'Прибыль (Net, финальная)':<30} {total_revenue - bank_total_expense - total_cost_price:>15.2f}")
+    print(f"{'Возвраты (sale_amount < 0)':<30} {total_returns_amount:>15.2f}")
+    print(f"{'Прибыль (Net, финальная)':<30} {total_revenue - total_returns_amount - bank_total_expense - total_cost_price:>15.2f}")
     
     if total_cost_price == 0 and total_revenue > 0:
         print(
@@ -329,7 +347,7 @@ def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = Non
 
 async def main():
     parser = argparse.ArgumentParser(description="Тест расчёта расходов через accrual/by-day")
-    parser.add_argument("date", nargs="?", default="2026-06-28", help="Дата в формате YYYY-MM-DD (по умолчанию 2026-06-15)")
+    parser.add_argument("date", nargs="?", default="2026-06-27", help="Дата в формате YYYY-MM-DD (по умолчанию 2026-06-15)")
     parser.add_argument("--user", type=int, default=None, help="ID пользователя (по умолчанию первый)")
     parser.add_argument("--raw", action="store_true", help="Вывести сырые данные каждой транзакции")
     args = parser.parse_args()

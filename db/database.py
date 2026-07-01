@@ -195,6 +195,7 @@ class OzonAccrual(Base):
     operation_type = Column(String(20), index=True, default='expense')
     
     amount = Column(sa.Float) # Сумма конкретной части (например, только комиссия)
+    quantity = Column(Integer, default=1) # Количество товаров
     currency = Column(String(10))
     
     type_id = Column(Integer, index=True) # ID услуги Озона (74, 32 и т.д.)
