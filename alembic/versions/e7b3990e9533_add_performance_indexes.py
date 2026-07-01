@@ -19,16 +19,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Используем сырой SQL для обеспечения идемпотентности (CREATE INDEX IF NOT EXISTS)
+    # так как индексы могли быть созданы ранее вручную диагностическим скриптом.
+    
     # Индексы для таблицы начислений (OzonAccrual)
-    op.create_index('idx_ozon_accruals_query', 'ozon_accruals', ['user_id', 'date', 'sku'], unique=False)
-    op.create_index('idx_ozon_accruals_type_query', 'ozon_accruals', ['user_id', 'date', 'type_id'], unique=False)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_ozon_accruals_query ON ozon_accruals (user_id, date, sku)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_ozon_accruals_type_query ON ozon_accruals (user_id, date, type_id)")
     
     # Индекс для таблицы себестоимостей (ProductCost)
-    # Удаляем старый если есть и создаем правильный
-    op.create_index('idx_product_costs_lookup', 'product_costs', ['user_id', 'sku', sa.text('effective_from DESC')], unique=False)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_product_costs_lookup ON product_costs (user_id, sku, effective_from DESC)")
     
     # Индекс для OrderProduct (связь с постингами и SKU)
-    op.create_index('idx_order_products_sku_user', 'order_products', ['user_id', 'sku'], unique=False)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_order_products_sku_user ON order_products (user_id, sku)")
 
 
 def downgrade() -> None:
