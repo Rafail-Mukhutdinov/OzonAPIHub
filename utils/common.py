@@ -93,5 +93,6 @@ def valid_posting_number(pn: str | None) -> bool:
 def normalize_iso(val: Union[str, datetime, None]) -> str:
     """Приводит дату к ISO-строке с Z на конце для БД."""
     dt = parse_ozon_datetime(val)
-    if not dt: return ""
+    if not dt:
+        raise ValueError(f"Некорректный формат даты: {val}")
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

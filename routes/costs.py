@@ -7,7 +7,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from datetime import datetime
 from db.database import Cost, get_db, User
 from utils.auth import get_current_user
 from utils.logging_config import log_user_event

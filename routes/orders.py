@@ -208,22 +208,35 @@ def list_order_postings(
             for p in legacy_postings
         ]
 
+    if not postings:
+        return {"order_number": order_number, "count": 0, "items": []}
+
+    # Оптимизировано: загружаем все товары для всех постингов заказа одним запросом (устраняем N+1)
+    pns = [p.posting_number for p in postings]
+    all_prods = db.query(OrderProduct).filter(
+        OrderProduct.user_id == current_user.id,
+        OrderProduct.posting_number.in_(pns)
+    ).all()
+
+    # Группируем товары по номеру постинга в памяти
+    prods_by_pn = {}
+    for pr in all_prods:
+        if pr.posting_number not in prods_by_pn:
+            prods_by_pn[pr.posting_number] = []
+        prods_by_pn[pr.posting_number].append(pr)
+
     result = []
     for p in postings:
-        # Считаем финансовые итоги по каждому отправлению отдельно
-        prods = db.query(OrderProduct).filter(
-            OrderProduct.user_id == current_user.id,
-            OrderProduct.posting_number == p.posting_number
-        ).all()
-        total_payout = sum((pr.payout or 0) for pr in prods)
-        total_commission = sum((pr.commission_amount or 0) for pr in prods)
+        pn_prods = prods_by_pn.get(p.posting_number, [])
+        total_payout = sum((pr.payout or 0) for pr in pn_prods)
+        total_commission = sum((pr.commission_amount or 0) for pr in pn_prods)
 
         result.append({
             "posting_number": p.posting_number,
             "status": p.status,
             "created_at": p.created_at,
-            "products_count": len(prods),
-            "total_payout": total_payout,
-            "total_commission": total_commission,
+            "products_count": len(pn_prods),
+            "total_payout": round(total_payout, 2),
+            "total_commission": round(total_commission, 2),
         })
     return {"order_number": order_number, "count": len(result), "items": result}
