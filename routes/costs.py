@@ -11,6 +11,7 @@ from datetime import datetime
 from db.database import Cost, get_db, User
 from utils.auth import get_current_user
 from utils.logging_config import log_user_event
+from utils.common import normalize_iso
 
 router = APIRouter(prefix="/costs", tags=["costs"])
 
@@ -26,19 +27,6 @@ class CostIn(BaseModel):
     scope_sku: int | None = None            # Опциональная привязка к товару
     scope_offer_id: str | None = None
     notes: str | None = None # Произвольный комментарий
-
-
-def _normalize_iso(s: str | None) -> str | None:
-    """Нормализует формат даты для базы данных."""
-    if not s:
-        return None
-    try:
-        s2 = s.rstrip('Z')
-        dt = datetime.fromisoformat(s2)
-        dt = dt.replace(microsecond=0)
-        return dt.isoformat() + 'Z'
-    except Exception:
-        raise ValueError(f"Некорректный формат даты: {s}")
 
 
 @router.post("")
@@ -95,8 +83,8 @@ def list_costs(
     if type: q = q.filter(Cost.type == type)
     
     try:
-        since_iso = _normalize_iso(since) if since else None
-        to_iso = _normalize_iso(to) if to else None
+        since_iso = normalize_iso(since) if since else None
+        to_iso = normalize_iso(to) if to else None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     

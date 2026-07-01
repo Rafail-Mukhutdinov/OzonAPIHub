@@ -67,34 +67,48 @@ def is_cancelled(st):
 def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc: datetime, include_cancelled: bool = True):
     """
     Собирает уникальные постинги из сырых (Order) и нормализованных (OrderPosting) таблиц.
+    Оптимизировано для использования индексов: избегаем OR по разным колонкам.
     """
-    # native datetime objects are now used for filtering
     search_since = since_utc.replace(tzinfo=None)
     search_to = to_utc.replace(tzinfo=None)
 
-    # 1. Собираем данные из сырой таблицы
-    raw_orders = db.query(Order.posting_number, Order.created_at, Order.status, Order.data).filter(
-        Order.user_id == user_id,
-        or_(
-            Order.created_at.between(search_since, search_to),
-            Order.updated_at.between(search_since, search_to)
-        )
-    ).all()
-
-    # 2. Собираем данные из нормализованной таблицы
-    norm_orders = db.query(OrderPosting.posting_number, OrderPosting.created_at, OrderPosting.status, OrderPosting.in_process_at).filter(
-        OrderPosting.user_id == user_id,
-        or_(
-            OrderPosting.created_at.between(search_since, search_to),
-            OrderPosting.in_process_at.between(search_since, search_to)
-        )
-    ).all()
-
     postings_map = {}
 
-    # Сначала заполняем из сырых
-    for pn, cr, st, data in raw_orders:
-        if not pn: continue
+    # 1. Собираем данные из нормализованной таблицы (Приоритетный источник)
+    # Используем UNION или раздельные запросы для эффективного использования индексов
+    q1 = db.query(OrderPosting.posting_number, OrderPosting.created_at, OrderPosting.status, OrderPosting.in_process_at).filter(
+        OrderPosting.user_id == user_id,
+        OrderPosting.created_at.between(search_since, search_to)
+    )
+    q2 = db.query(OrderPosting.posting_number, OrderPosting.created_at, OrderPosting.status, OrderPosting.in_process_at).filter(
+        OrderPosting.user_id == user_id,
+        OrderPosting.in_process_at.between(search_since, search_to)
+    )
+    
+    # Объединяем результаты в Python (быстрее, чем OR в БД без правильных индексов)
+    for pn, cr, st, in_proc in q1.all() + q2.all():
+        if not pn or pn in postings_map: continue
+        if not include_cancelled and is_cancelled(st): continue
+
+        postings_map[pn] = {
+            "posting_number": pn,
+            "created_at": cr,
+            "in_process_at": in_proc,
+            "status": st,
+            "source": "normalized"
+        }
+
+    # 2. Дозаполняем из сырой таблицы только если нет в нормализованной
+    # (Фоллбек для постингов, которые еще не прошли энричмент)
+    q3 = db.query(Order.posting_number, Order.created_at, Order.status, Order.data).filter(
+        Order.user_id == user_id,
+        Order.created_at.between(search_since, search_to)
+    )
+    # Мы не берем здесь по updated_at, так как это обычно техническое поле, 
+    # а основные события (создание/обработка) покрыты выше.
+    
+    for pn, cr, st, data in q3.all():
+        if not pn or pn in postings_map: continue
         if not include_cancelled and is_cancelled(st): continue
 
         in_proc = None
@@ -107,21 +121,6 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
             "in_process_at": in_proc,
             "status": st,
             "source": "raw"
-        }
-
-    # Затем перезаписываем из нормализованных (приоритет)
-    for pn, cr, st, in_proc in norm_orders:
-        if not pn: continue
-        if not include_cancelled and is_cancelled(st):
-            if pn in postings_map: del postings_map[pn]
-            continue
-
-        postings_map[pn] = {
-            "posting_number": pn,
-            "created_at": cr,
-            "in_process_at": in_proc,
-            "status": st,
-            "source": "normalized"
         }
 
     return postings_map
@@ -317,7 +316,14 @@ async def sales_report_universal(
     total_returns_cancels_fee = 0.0 # Услуги по возвратам
     total_manual_expenses = 0.0 # Ручные расходы (не из Ozon)
 
-    from services.costs import get_product_cost
+    # Для оптимизации: собираем суммы по type_id прямо здесь, чтобы не делать второй запрос к БД
+    accruals_by_type = {}
+
+    from services.costs import get_batch_product_costs
+
+    # Собираем все уникальные SKU для массового получения себестоимости
+    all_skus = list(set(int(r[0]) for r in accrual_items_raw if r[0] and r[4] is None))
+    cost_cache = get_batch_product_costs(db, current_user.id, all_skus, to_utc.replace(tzinfo=None))
 
     for r_sku, r_cat, r_amt, r_qty, r_tid, r_op_type, r_date in accrual_items_raw:
         val = float(r_amt or 0)
@@ -336,25 +342,20 @@ async def sales_report_universal(
                     items_map[r_sku]["amount_raw"] += val
                     items_map[r_sku]["quantity"] += qty
 
-                    cp = get_product_cost(db, current_user.id, int(r_sku), r_date)
+                    # Используем кэшированную себестоимость
+                    cp = cost_cache.get(int(r_sku), 0.0)
                     total_cost_price += (cp * qty)
             elif val < 0:
                 total_returns_amount += abs(val)
                 if r_sku:
-                    cp = get_product_cost(db, current_user.id, int(r_sku), r_date)
+                    cp = cost_cache.get(int(r_sku), 0.0)
                     total_cost_price -= (cp * qty)
+        else:
+            # Накапливаем услуги для последующей агрегации
+            accruals_by_type[r_tid] = accruals_by_type.get(r_tid, 0.0) + val
 
-    accruals_summary = db.query(
-        OzonAccrual.type_id,
-        func.sum(OzonAccrual.amount)
-    ).filter(
-        OzonAccrual.user_id == current_user.id,
-        OzonAccrual.date >= since_utc.replace(tzinfo=None),
-        OzonAccrual.date <= to_utc.replace(tzinfo=None),
-        OzonAccrual.type_id != None
-    ).group_by(OzonAccrual.type_id).all()
-
-    for tid, amt_sum in accruals_summary:
+    # Распределяем накопленные услуги по категориям
+    for tid, amt_sum in accruals_by_type.items():
         abs_expense = -float(amt_sum or 0) 
         cat_name = get_expense_category(tid)
         
@@ -366,12 +367,27 @@ async def sales_report_universal(
         elif cat_name == "Возвраты и отмены": total_returns_cancels_fee += abs_expense
         else: total_other_expenses += abs_expense
 
-    for sku in items_map:
-        prod_meta = db.query(OrderProduct).filter(OrderProduct.user_id == current_user.id, OrderProduct.sku == sku).first()
-        if prod_meta:
-            items_map[sku]["name"] = prod_meta.name
-            items_map[sku]["offer_id"] = prod_meta.offer_id
-            items_map[sku]["image_url"] = prod_meta.image_url
+    # ОБОГАЩЕНИЕ ТОВАРОВ МЕТАДАННЫМИ (Оптимизировано: убран N+1)
+    if items_map:
+        unique_skus = list(items_map.keys())
+        # Берем данные по товарам одним батч-запросом
+        products_meta = db.query(OrderProduct).filter(
+            OrderProduct.user_id == current_user.id,
+            OrderProduct.sku.in_(unique_skus)
+        ).all()
+        
+        # Создаем маппинг SKU -> meta для быстрого доступа
+        meta_by_sku = {}
+        for p in products_meta:
+            if p.sku not in meta_by_sku: # Берем первое вхождение
+                meta_by_sku[p.sku] = p
+        
+        for sku, item in items_map.items():
+            meta = meta_by_sku.get(sku)
+            if meta:
+                item["name"] = meta.name
+                item["offer_id"] = meta.offer_id
+                item["image_url"] = meta.image_url
 
     items = list(items_map.values())
     items.sort(key=lambda x: -x["amount_raw"])
@@ -388,7 +404,7 @@ async def sales_report_universal(
     for c_type, c_amt in costs_by_type:
         t = (c_type or "").lower()
         val = abs(float(c_amt or 0))
-        if len(accruals_summary) > 0 and t in ["acquiring", "commission", "logistics", "advertising", "storage"]:
+        if len(accruals_by_type) > 0 and t in ["acquiring", "commission", "logistics", "advertising", "storage"]:
             continue
 
         if t in ("advertising", "adv"): total_advertising += val

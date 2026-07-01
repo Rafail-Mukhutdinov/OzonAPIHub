@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, and_
 from db.database import ProductCost
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 def set_product_cost(
     db: Session, 
@@ -54,6 +54,34 @@ def get_product_cost(db: Session, user_id: int, sku: int, date: datetime) -> flo
     ).order_by(desc(ProductCost.effective_from)).first()
     
     return cost_record.cost_price if cost_record else 0.0
+
+def get_batch_product_costs(db: Session, user_id: int, skus: List[int], date: datetime) -> Dict[int, float]:
+    """
+    Эффективно получает актуальную себестоимость для списка SKU на указанную дату.
+    Использует один запрос к БД вместо множества.
+    """
+    if not skus:
+        return {}
+
+    # Получаем все записи о себестоимости для данных SKU, которые могли действовать на указанную дату
+    costs = db.query(ProductCost).filter(
+        ProductCost.user_id == user_id,
+        ProductCost.sku.in_(skus),
+        ProductCost.effective_from <= date
+    ).order_by(ProductCost.sku, desc(ProductCost.effective_from)).all()
+
+    # Группируем и берем самую актуальную (последнюю по дате) для каждого SKU
+    result = {}
+    for c in costs:
+        if c.sku not in result:
+            result[c.sku] = c.cost_price
+    
+    # Для тех, кого не нашли, ставим 0
+    for sku in skus:
+        if sku not in result:
+            result[sku] = 0.0
+            
+    return result
 
 def get_costs_history_for_sku(db: Session, user_id: int, sku: int) -> List[ProductCost]:
     """Возвращает историю изменения себестоимости для конкретного SKU."""

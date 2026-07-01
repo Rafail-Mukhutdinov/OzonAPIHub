@@ -10,20 +10,9 @@ from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, 
 from utils.auth import get_current_user
 from datetime import datetime, timezone
 from utils.logging_config import log_user_event
+from utils.common import normalize_iso
 
 router = APIRouter(tags=["orders"])
-
-def _normalize_iso(s: str | None) -> str | None:
-    """Приводит строку даты к стандартному формату ISO (без микросекунд, с Z)."""
-    if not s:
-        return None
-    try:
-        s2 = s.rstrip('Z')
-        dt = datetime.fromisoformat(s2)
-        dt = dt.replace(microsecond=0)
-        return dt.isoformat() + 'Z'
-    except (ValueError, TypeError):
-        return None
 
 @router.get("/orders")
 def list_orders(
@@ -42,8 +31,8 @@ def list_orders(
     Получает список всех заказов (постингов) пользователя из таблицы Orders.
     Это 'сырой' список, который приходит первым при синхронизации.
     """
-    since_iso = _normalize_iso(since) if since else None
-    to_iso = _normalize_iso(to) if to else None
+    since_iso = normalize_iso(since) if since else None
+    to_iso = normalize_iso(to) if to else None
 
     if since and not since_iso:
         raise HTTPException(status_code=400, detail="Неверный формат даты 'since'")

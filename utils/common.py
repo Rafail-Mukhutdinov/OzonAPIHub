@@ -89,3 +89,9 @@ def valid_posting_number(pn: str | None) -> bool:
     # Проверяем, что после последнего дефиса идут только цифры
     suffix = pn.split('-')[-1]
     return suffix.isdigit()
+
+def normalize_iso(val: Union[str, datetime, None]) -> str:
+    """Приводит дату к ISO-строке с Z на конце для БД."""
+    dt = parse_ozon_datetime(val)
+    if not dt: return ""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
