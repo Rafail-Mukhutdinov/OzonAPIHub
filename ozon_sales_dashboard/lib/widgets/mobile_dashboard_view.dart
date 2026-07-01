@@ -65,6 +65,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
   
   final Map<String, Map<String, dynamic>> _allMetrics = {
     'revenue': {'title': 'Выручка', 'icon': Icons.paid},
+    'profit': {'title': 'Прибыль', 'icon': Icons.trending_up},
     'items': {'title': 'Продано', 'icon': Icons.shopping_bag},
     'avgPrice': {'title': 'Ср. цена', 'icon': Icons.analytics},
     'expenses': {'title': 'Расходы', 'icon': Icons.account_balance_wallet},
@@ -86,9 +87,22 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     setState(() {
       if (order != null && order.isNotEmpty) {
         _metricsOrder = order;
+        // Если прибыли нет в старом списке порядка, добавляем её в начало
+        if (!_metricsOrder.contains('profit')) {
+          _metricsOrder.insert(0, 'profit');
+        }
+      } else {
+        _metricsOrder = ['profit', 'revenue', 'items', 'avgPrice', 'expenses', 'cancelled', 'storage'];
       }
+
       if (visible != null) {
         _visibleMetrics = visible.toSet();
+        // Включаем прибыль по умолчанию, если это первая загрузка с новым функционалом
+        if (visible.isEmpty || !visible.contains('profit')) {
+           _visibleMetrics.add('profit');
+        }
+      } else {
+        _visibleMetrics = {'profit', 'revenue', 'items', 'avgPrice'};
       }
     });
   }
@@ -156,6 +170,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final expensesCurr = widget.totals?['total_expenses'] ?? 0;
     final drrCurr = revenueCurr > 0 ? (expensesCurr / revenueCurr * 100).toInt() : 0;
     
+    final profitCurr = widget.totals?['profit'] ?? 0;
     final storageCurr = widget.totals?['total_storage'] ?? 0;
 
     // --- РАСЧЕТ ПРЕДЫДУЩИХ ПОКАЗАТЕЛЕЙ ---
@@ -167,6 +182,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final cancelledCountPrev = widget.yesterdayTotals?['total_cancelled_count'] ?? 0;
     
     final expensesPrev = widget.yesterdayTotals?['total_expenses'] ?? 0;
+    final profitPrev = widget.yesterdayTotals?['profit'] ?? 0;
     final storagePrev = widget.yesterdayTotals?['total_storage'] ?? 0;
 
     return ScrollConfiguration(
@@ -290,7 +306,17 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                   final metric = _allMetrics[id]!;
                   Widget card;
                   
-                  if (id == 'revenue') {
+                  if (id == 'profit') {
+                    card = MobileStatCard(
+                      title: metric['title'], 
+                      value: '${f.format(profitCurr)} ₽', 
+                      change: _calcChange(profitCurr, profitPrev), 
+                      isPositive: profitCurr >= profitPrev, 
+                      icon: metric['icon'],
+                      // Используем зеленый цвет для прибыли, если она больше нуля
+                      isPositiveColor: profitCurr > 0,
+                    );
+                  } else if (id == 'revenue') {
                     card = MobileStatCard(title: metric['title'], value: '${f.format(revenueCurr)} ₽', change: _calcChange(revenueCurr, revenuePrev), isPositive: revenueCurr >= revenuePrev, icon: metric['icon']);
                   } else if (id == 'items') {
                     card = MobileStatCard(title: metric['title'], value: '${f.format(itemsCurr)} шт', change: _calcChange(itemsCurr, itemsPrev), isPositive: itemsCurr >= itemsPrev, icon: metric['icon']);
@@ -548,6 +574,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final advertising = widget.totals?['total_advertising'] ?? 0;
     final storage = widget.totals?['total_storage'] ?? 0;
     final acquiring = widget.totals?['total_acquiring'] ?? 0;
+    final costPrice = widget.totals?['total_cost_price'] ?? 0;
     final other = widget.totals?['total_other'] ?? 0;
     final total = widget.totals?['total_expenses'] ?? 0;
 
@@ -563,6 +590,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
           children: [
             const Text('Детализация расходов', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 24),
+            _buildExpenseRow('Себестоимость товаров', costPrice, f, isCostPrice: true),
             _buildExpenseRow('Комиссия Ozon', commission, f),
             _buildExpenseRow('Логистика (FBO/FBS)', logistics, f),
             _buildExpenseRow('Реклама', advertising, f),
@@ -584,14 +612,22 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
-  Widget _buildExpenseRow(String label, num value, NumberFormat f) {
+  Widget _buildExpenseRow(String label, num value, NumberFormat f, {bool isCostPrice = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: const TextStyle(color: Colors.grey, fontSize: 15)),
-          Text('- ${f.format(value.abs())} ₽', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: Colors.black87)),
+          Text(label, style: TextStyle(
+            color: isCostPrice ? Colors.blueGrey[700] : Colors.grey, 
+            fontSize: 15,
+            fontWeight: isCostPrice ? FontWeight.bold : FontWeight.normal
+          )),
+          Text('- ${f.format(value.abs())} ₽', style: TextStyle(
+            fontWeight: FontWeight.w600, 
+            fontSize: 15, 
+            color: isCostPrice ? Colors.blue[800] : Colors.black87
+          )),
         ],
       ),
     );

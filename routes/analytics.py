@@ -436,7 +436,29 @@ async def sales_report_universal(
         else: total_manual_expenses += val
 
     # Итоговый расчет
-    total_expenses = total_commission + total_logistics + total_advertising + total_storage + total_acquiring + total_other_expenses + total_returns_cancels + total_manual_expenses
+    
+    # --- НОВОЕ: Расчет себестоимости ---
+    total_cost_price = 0.0
+    from services.costs import get_product_cost
+    
+    # Для каждого товара в отчете находим его себестоимость на дату "середина периода" или "сегодня"
+    # Для максимальной точности в будущем можно считать себестоимость каждой продажи отдельно,
+    # но здесь для агрегированного отчета используем дату окончания периода.
+    calculation_date = to_utc.replace(tzinfo=None)
+    
+    for item in items:
+        sku = item.get("sku")
+        qty = item.get("quantity") or 0
+        if sku and qty > 0:
+            cp = get_product_cost(db, current_user.id, int(sku), calculation_date)
+            total_cost_price += (cp * qty)
+    # -----------------------------------
+
+    total_expenses = (
+        total_commission + total_logistics + total_advertising + 
+        total_storage + total_acquiring + total_other_expenses + 
+        total_returns_cancels + total_manual_expenses + total_cost_price
+    )
     profit = total_sales_revenue - total_expenses
 
     # Считаем отмены отдельно
@@ -470,6 +492,7 @@ async def sales_report_universal(
         "total_other": round(total_other_expenses + total_manual_expenses + total_returns_cancels, 2),
         "total_payout": round(total_sales_revenue - total_commission - total_acquiring, 2), # Выплата до логистики
         "total_commission": round(total_commission, 2),
+        "total_cost_price": round(total_cost_price, 2), # Пробрасываем на фронт
         "profit": round(profit, 2)
     }
 

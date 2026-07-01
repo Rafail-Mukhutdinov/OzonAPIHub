@@ -5,6 +5,7 @@ class MobileStatCard extends StatelessWidget {
   final String value;
   final String change;
   final bool isPositive;
+  final bool? isPositiveColor;
   final IconData icon;
 
   const MobileStatCard({
@@ -14,10 +15,15 @@ class MobileStatCard extends StatelessWidget {
     required this.change,
     required this.isPositive,
     required this.icon,
+    this.isPositiveColor,
   });
 
   @override
   Widget build(BuildContext context) {
+    final Color trendColor = (isPositiveColor ?? isPositive) 
+        ? const Color(0xFF2E7D32) 
+        : const Color(0xFFD32F2F);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
       decoration: BoxDecoration(
@@ -50,14 +56,14 @@ class MobileStatCard extends StatelessWidget {
                   Icon(
                     isPositive ? Icons.trending_up : Icons.trending_down,
                     size: 14,
-                    color: isPositive ? const Color(0xFF2E7D32) : const Color(0xFFD32F2F),
+                    color: trendColor,
                   ),
                   const SizedBox(width: 2),
                   Text(
                     change,
                     style: TextStyle(
                       fontSize: 11,
-                      color: isPositive ? const Color(0xFF2E7D32) : const Color(0xFFD32F2F),
+                      color: trendColor,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
