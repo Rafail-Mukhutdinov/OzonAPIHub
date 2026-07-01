@@ -286,26 +286,49 @@ async def sales_report_universal(
         if date_since_local <= dt_local.date() <= date_to_local:
             final_postings.append(pn)
 
-    # 2. Агрегируем продажи и себестоимость из OzonAccrual (Финансовый первоисточник)
-    # ВАЖНО: выбираем также type_id и operation_type, чтобы отличать продажу/возврат
-    # товара (type_id IS NULL) от комиссий и услуг (type_id задан).
-    accrual_items_raw = db.query(
+    # 2. Агрегируем продажи и список товаров из OrderProduct (Наиболее точный источник по данным верификации)
+    # Это гарантирует 100% совпадение количества товаров в графике и в итоговой таблице.
+    product_stats = db.query(
+        OrderProduct.sku,
+        OrderProduct.name,
+        OrderProduct.offer_id,
+        OrderProduct.image_url,
+        func.sum(OrderProduct.quantity).label("qty"),
+        func.sum(OrderProduct.price * OrderProduct.quantity).label("rev")
+    ).filter(
+        OrderProduct.user_id == current_user.id,
+        OrderProduct.posting_number.in_(final_postings)
+    ).group_by(OrderProduct.sku, OrderProduct.name, OrderProduct.offer_id, OrderProduct.image_url).all()
+
+    items_map = {}
+    total_sales_revenue = 0.0
+    all_skus = []
+
+    for r_sku, r_name, r_oid, r_img, r_qty, r_rev in product_stats:
+        s = int(r_sku)
+        items_map[s] = {
+            "sku": s,
+            "name": r_name,
+            "offer_id": r_oid,
+            "image_url": r_img,
+            "quantity": int(r_qty or 0),
+            "amount_raw": float(r_rev or 0)
+        }
+        total_sales_revenue += float(r_rev or 0)
+        all_skus.append(s)
+
+    # 3. Агрегируем расходы и возвраты из OzonAccrual (Финансовый первоисточник для услуг)
+    accrual_data_raw = db.query(
         OzonAccrual.sku,
-        OzonAccrual.accrued_category,
         OzonAccrual.amount,
-        OzonAccrual.quantity,
         OzonAccrual.type_id,
-        OzonAccrual.operation_type,
-        OzonAccrual.date
+        OzonAccrual.operation_type
     ).filter(
         OzonAccrual.user_id == current_user.id,
         OzonAccrual.date >= since_utc.replace(tzinfo=None),
         OzonAccrual.date <= to_utc.replace(tzinfo=None)
     ).all()
 
-    items_map = {}
-    total_cost_price = 0.0
-    total_sales_revenue = 0.0
     total_returns_amount = 0.0
     total_commission = 0.0
     total_logistics = 0.0
@@ -313,45 +336,20 @@ async def sales_report_universal(
     total_advertising = 0.0
     total_storage = 0.0
     total_other_expenses = 0.0
-    total_returns_cancels_fee = 0.0 # Услуги по возвратам
-    total_manual_expenses = 0.0 # Ручные расходы (не из Ozon)
+    total_returns_cancels_fee = 0.0 
+    total_manual_expenses = 0.0 
 
-    # Для оптимизации: собираем суммы по type_id прямо здесь, чтобы не делать второй запрос к БД
     accruals_by_type = {}
 
-    from services.costs import get_batch_product_costs
-
-    # Собираем все уникальные SKU для массового получения себестоимости
-    all_skus = list(set(int(r[0]) for r in accrual_items_raw if r[0] and r[4] is None))
-    cost_cache = get_batch_product_costs(db, current_user.id, all_skus, to_utc.replace(tzinfo=None))
-
-    for r_sku, r_cat, r_amt, r_qty, r_tid, r_op_type, r_date in accrual_items_raw:
+    for r_sku, r_amt, r_tid, r_op_type in accrual_data_raw:
         val = float(r_amt or 0)
-        qty = int(r_qty or 1)
-
-        is_product_row = (r_tid is None)
-
-        if is_product_row:
-            if val > 0:
-                # Продажа товара или компенсация/доплата (sale_amount > 0)
-                total_sales_revenue += val
-                
-                if r_sku:
-                    if r_sku not in items_map:
-                        items_map[r_sku] = {"sku": r_sku, "name": f"Товар {r_sku}", "quantity": 0, "amount_raw": 0, "image_url": None}
-                    items_map[r_sku]["amount_raw"] += val
-                    items_map[r_sku]["quantity"] += qty
-
-                    # Используем кэшированную себестоимость
-                    cp = cost_cache.get(int(r_sku), 0.0)
-                    total_cost_price += (cp * qty)
-            elif val < 0:
+        
+        if r_tid is None:
+            # Только возвраты товара (отрицательные суммы без type_id)
+            if val < 0:
                 total_returns_amount += abs(val)
-                if r_sku:
-                    cp = cost_cache.get(int(r_sku), 0.0)
-                    total_cost_price -= (cp * qty)
         else:
-            # Накапливаем услуги для последующей агрегации
+            # Накапливаем услуги
             accruals_by_type[r_tid] = accruals_by_type.get(r_tid, 0.0) + val
 
     # Распределяем накопленные услуги по категориям
@@ -367,27 +365,14 @@ async def sales_report_universal(
         elif cat_name == "Возвраты и отмены": total_returns_cancels_fee += abs_expense
         else: total_other_expenses += abs_expense
 
-    # ОБОГАЩЕНИЕ ТОВАРОВ МЕТАДАННЫМИ (Оптимизировано: убран N+1)
-    if items_map:
-        unique_skus = list(items_map.keys())
-        # Берем данные по товарам одним батч-запросом
-        products_meta = db.query(OrderProduct).filter(
-            OrderProduct.user_id == current_user.id,
-            OrderProduct.sku.in_(unique_skus)
-        ).all()
-        
-        # Создаем маппинг SKU -> meta для быстрого доступа
-        meta_by_sku = {}
-        for p in products_meta:
-            if p.sku not in meta_by_sku: # Берем первое вхождение
-                meta_by_sku[p.sku] = p
-        
-        for sku, item in items_map.items():
-            meta = meta_by_sku.get(sku)
-            if meta:
-                item["name"] = meta.name
-                item["offer_id"] = meta.offer_id
-                item["image_url"] = meta.image_url
+    # 4. Расчет себестоимости проданных товаров
+    from services.costs import get_batch_product_costs
+    cost_cache = get_batch_product_costs(db, current_user.id, all_skus, to_utc.replace(tzinfo=None))
+    
+    total_cost_price = 0.0
+    for sku, item in items_map.items():
+        cp = cost_cache.get(sku, 0.0)
+        total_cost_price += (cp * item["quantity"])
 
     items = list(items_map.values())
     items.sort(key=lambda x: -x["amount_raw"])
