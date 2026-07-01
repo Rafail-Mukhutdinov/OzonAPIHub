@@ -253,10 +253,32 @@ class AuthGate extends StatefulWidget {
   State<AuthGate> createState() => _AuthGateState();
 }
 
-class _AuthGateState extends State<AuthGate> {
+class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   bool _biometricAttempted = false;
   bool _promptShown = false;
   bool _updateChecked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // При возврате приложения из фона сбрасываем флаг, чтобы проверить обновления снова
+    if (state == AppLifecycleState.resumed) {
+      setState(() {
+        _updateChecked = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -266,6 +288,7 @@ class _AuthGateState extends State<AuthGate> {
     if (!authProvider.isAuthenticated) {
       _biometricAttempted = false;
       _promptShown = false;
+      _updateChecked = false;
     }
 
     if (authProvider.isLoading) {
