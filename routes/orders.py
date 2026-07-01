@@ -31,13 +31,11 @@ def list_orders(
     Получает список всех заказов (постингов) пользователя из таблицы Orders.
     Это 'сырой' список, который приходит первым при синхронизации.
     """
-    since_iso = normalize_iso(since) if since else None
-    to_iso = normalize_iso(to) if to else None
-
-    if since and not since_iso:
-        raise HTTPException(status_code=400, detail="Неверный формат даты 'since'")
-    if to and not to_iso:
-        raise HTTPException(status_code=400, detail="Неверный формат даты 'to'")
+    try:
+        since_iso = normalize_iso(since) if since else None
+        to_iso = normalize_iso(to) if to else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
