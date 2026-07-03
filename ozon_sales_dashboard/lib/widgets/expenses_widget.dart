@@ -142,6 +142,7 @@ class _ExpensesWidgetState extends State<ExpensesWidget> {
                             else
                               ...categories.map((cat) {
                                 final String name = cat['name'];
+                                //debugPrint('Выводим имя переменной : $name');
                                 final double amount = (cat['amount'] as num).toDouble();
                                 final double percent = (cat['percent'] as num).toDouble();
                                 final color = _getCategoryColor(name);

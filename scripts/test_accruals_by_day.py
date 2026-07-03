@@ -1,405 +1,136 @@
 """
-Тестовый скрипт для проверки расчёта расходов через /v1/finance/accrual/by-day.
-
-Запуск:
-    python scripts/test_accruals_by_day.py 2026-06-15
-    python scripts/test_accruals_by_day.py 2026-06-15 --user 1
-    python scripts/test_accruals_by_day.py 2026-06-15 --raw
-
-Без --raw выводит агрегированный отчёт по расходам.
-С --raw выводит каждую транзакцию отдельно.
+Тестовый скрипт для поиска расхождений себестоимости.
+Ищет все транзакции, которые Озон Банк может считать продажами.
 """
 
 import sys
 import os
 import asyncio
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 
-# Добавляем корень проекта в sys.path, чтобы импорты работали из scripts/
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-# Загружаем .env из корня проекта
 from dotenv import load_dotenv
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
-from db.database import SessionLocal, User, OzonCredential
+from db.database import SessionLocal, User, OzonCredential, OrderProduct
 from utils.encryption import decrypt_credential
 from services.ozon import ozon_accruals_by_day_async, init_http_client, close_http_client
 from services.costs import get_product_cost
 
 
 async def fetch_all_accruals(client_id: str, api_key: str, date_str: str):
-    """Получает все accruals за день с пагинацией через last_id."""
     all_accruals = []
     last_id = ""
-    page = 0
-
     while True:
-        page += 1
         response = await ozon_accruals_by_day_async(client_id, api_key, date_str, last_id)
         accruals = response.get("accruals") or []
-
-        if not accruals:
-            break
-
+        if not accruals: break
         all_accruals.extend(accruals)
-        print(f"  Страница {page}: получено {len(accruals)} записей (всего {len(all_accruals)})")
-
         last_id = response.get("last_id")
-        if not last_id:
-            break
-
+        if not last_id: break
     return all_accruals
 
 
 def parse_amount(val) -> float:
-    """Безопасно парсит сумму из ответа Ozon."""
-    if val is None:
-        return 0.0
-    if isinstance(val, dict):
-        return float(val.get("amount") or 0)
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return 0.0
+    if val is None: return 0.0
+    if isinstance(val, dict): return float(val.get("amount") or 0)
+    try: return float(val)
+    except: return 0.0
 
 
-# Справочник типов операций Ozon (Синхронизировано с 'Экономикой' Озон)
-OZON_TYPE_NAMES = {
-    "commission": "Комиссия за продажу",
-    "1": "Эквайринг",
-    "12": "Магистраль / Логистика",
-    "29": "Последняя миля",
-    "32": "Логистика (FBO)",
-    "38": "Прочие услуги (Ozon)",
-    "39": "Логистика (Доп. услуги)",
-    "41": "Реклама Ozon (Продвижение)",
-    "45": "Обработка отмен",
-    "46": "Хранение (Обработка возвратов)",
-    "59": "Доставка",
-    "74": "Хранение на складе",
-    "98": "Утилизация",
-    "101": "Реклама (Продвижение)",
-    "102": "Бонусы продавца",
-    "103": "Трафареты",
-    "104": "Вывод в топ",
-    "105": "Брендовая полка",
-    "120": "Продвижение (Акция)",
-    "305": "Доставка сторонними службами",
-}
-
-# Маппинг type_id → категория отчёта Ozon "Банк" / "Экономика".
-OZON_BANK_CATEGORY_MAP = {
-    "commission": "Комиссия МП",
-    "1": "Эквайринг",
-    "12": "Прочие расходы Ozon", # Магистраль часто в прочих
-    "29": "Прочие расходы Ozon", # Последняя миля часто в прочих
-    "32": "Логистика",
-    "38": "Прочие расходы Ozon",
-    "39": "Логистика",
-    "41": "Реклама Ozon",
-    "45": "Возвраты и отмены",
-    "46": "Хранение",
-    "59": "Логистика",
-    "74": "Хранение",
-    "98": "Прочие расходы Ozon",
-    "101": "Реклама Ozon",
-    "103": "Реклама Ozon",
-    "104": "Реклама Ozon",
-    "105": "Реклама Ozon",
-    "120": "Реклама Ozon",
-    "102": "Прочие доходы",
-    "305": "Логистика",
-}
-
-
-def get_type_name(tid) -> str:
-    """Возвращает человекочитаемое название типа операции."""
-    tid_str = str(tid).replace("type_id:", "")
-    return OZON_TYPE_NAMES.get(tid_str, f"Операция {tid_str}")
-
-
-def analyze_accruals(accruals: list, db: SessionLocal = None, user_id: int = None, date_str: str = None, raw: bool = False):
-    """Анализирует accruals и выводит отчёт по расходам."""
-    if raw:
-        print("\n" + "=" * 80)
-        print("RAW ВЫВОД КАЖДОЙ ТРАНЗАКЦИИ")
-        print("=" * 80)
-        for i, acc in enumerate(accruals):
-            print(f"\n--- #{i} ---")
-            print(f"  accrual_id:     {acc.get('accrual_id')}")
-            print(f"  unit_number:    {acc.get('unit_number')}")
-            print(f"  category:       {acc.get('accrued_category')}")
-            print(f"  total_amount:   {acc.get('total_amount')}")
-            if acc.get("posting"):
-                print(f"  posting:        {acc.get('posting')}")
-            if acc.get("item_fees"):
-                print(f"  item_fees:      {acc.get('item_fees')}")
-            if acc.get("non_item_fee"):
-                print(f"  non_item_fee:   {acc.get('non_item_fee')}")
-        return
-
-    # Агрегация
-    total_revenue = 0.0
-    total_expense = 0.0
+def analyze_accruals(accruals: list, db: SessionLocal, user_id: int, date_str: str):
     total_cost_price = 0.0
-    total_returns_amount = 0.0 # Сумма возвращенных товаров
+    target_date = datetime.strptime(date_str, "%Y-%m-%d")
     
-    target_date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
-
-    # По категориям
-    by_category = defaultdict(lambda: {"revenue": 0.0, "expense": 0.0, "count": 0})
-    # По type_id (для расходов)
-    by_type_id = defaultdict(float)
-    # По SKU (для расходов)
-    by_sku = defaultdict(float)
-    # Детально по POSTING: комиссия / доставка / доход
-    posting_breakdown = {
-        "revenue": 0.0,
-        "commission": 0.0,
-        "delivery_services": 0.0,
-        "returns": 0.0
-    }
+    sku_details = defaultdict(lambda: {"qty": 0, "cost": 0.0, "offer_id": "", "rev": 0.0})
+    
+    # Загружаем артикулы
+    all_skus = set()
+    for acc in accruals:
+        if acc.get("posting"):
+            for p in acc["posting"].get("products", []): all_skus.add(int(p["sku"]))
+        if acc.get("item_fees"):
+            for f in acc["item_fees"].get("fees", []): all_skus.add(int(f["sku"]))
+    
+    sku_to_offer = {}
+    if all_skus:
+        db_items = db.query(OrderProduct.sku, OrderProduct.offer_id).filter(
+            OrderProduct.user_id == user_id, OrderProduct.sku.in_(list(all_skus))
+        ).distinct().all()
+        sku_to_offer = {int(r[0]): r[1] for r in db_items}
 
     for acc in accruals:
-        category = acc.get("accrued_category") or "UNKNOWN"
-        amount_data = acc.get("total_amount") or {}
-        total_amount = parse_amount(amount_data)
-
-        by_category[category]["count"] += 1
-
-        if category == "POSTING" and acc.get("posting"):
-            # Распаковка POSTING
-            p_data = acc["posting"]
-            for prod in p_data.get("products", []):
-                sku = prod.get("sku")
+        cat = acc.get("accrued_category")
+        total_amt = parse_amount(acc.get("total_amount"))
+        
+        if cat == "POSTING" and acc.get("posting"):
+            for prod in acc["posting"].get("products", []):
+                sku = int(prod.get("sku") or 0)
                 qty = int(prod.get("quantity") or 1)
                 comm = prod.get("commission") or {}
-
-                # 1. Выручка и Возвраты товаров
+                
+                sku_details[sku]["offer_id"] = prod.get("offer_id") or sku_to_offer.get(sku, str(sku))
+                
+                # ЛОГИКА ОПРЕДЕЛЕНИЯ ПРОДАЖИ:
+                # 1. Есть явный sale_amount > 0
+                # 2. Или итоговая сумма транзакции за товар положительная (бывает при компенсациях)
                 sale_amt = parse_amount(comm.get("sale_amount"))
-                if sale_amt > 0:
-                    item_rev = sale_amt * qty
-                    total_revenue += item_rev
-                    by_category[category]["revenue"] += item_rev
-                    posting_breakdown["revenue"] += item_rev
-                    # Считаем себестоимость при продаже (используем дату транзакции!)
-                    if db and user_id and sku:
-                        cp = get_product_cost(db, user_id, int(sku), target_date)
-                        total_cost_price += cp * qty
+                
+                is_sale = sale_amt > 0
+                if not is_sale and total_amt > 0 and prod == acc["posting"]["products"][0]:
+                    # Если в транзакции нет sale_amount, но есть выплата (>0) - считаем продажей
+                    is_sale = True
+
+                if is_sale:
+                    cp = get_product_cost(db, user_id, sku, target_date)
+                    sku_details[sku]["qty"] += qty
+                    sku_details[sku]["cost"] += cp * qty
+                    sku_details[sku]["rev"] += (sale_amt or total_amt) * qty
+                    total_cost_price += cp * qty
                 elif sale_amt < 0:
-                    abs_ret = abs(sale_amt) * qty
-                    total_returns_amount += abs_ret
-                    posting_breakdown["returns"] += abs_ret
-                    # ВАЖНО: Вычитаем себестоимость при возврате (используем дату транзакции!)
-                    if db and user_id and sku:
-                        cp = get_product_cost(db, user_id, int(sku), target_date)
-                        total_cost_price -= cp * qty
+                    cp = get_product_cost(db, user_id, sku, target_date)
+                    sku_details[sku]["qty"] -= qty
+                    sku_details[sku]["cost"] -= cp * qty
+                    total_cost_price -= cp * qty
 
-                # 2. Комиссия (С учетом знака!)
-                comm_amt = parse_amount(comm.get("commission"))
-                if comm_amt != 0:
-                    expense_val = -comm_amt * qty
-                    total_expense += expense_val
-                    by_category[category]["expense"] += expense_val
-                    by_type_id["commission"] += expense_val
-                    by_sku[f"sku:{sku}"] += expense_val
-                    posting_breakdown["commission"] += expense_val
+        elif cat == "ITEM":
+            # Проверяем ITEM на наличие выплат (компенсации за утерю и т.д. Озон банк считает продажей)
+            fee_item = (acc.get("item_fees") or {}).get("fees", [{}])[0]
+            sku = int(fee_item.get("sku") or 0)
+            if sku and total_amt > 0:
+                cp = get_product_cost(db, user_id, sku, target_date)
+                sku_details[sku]["offer_id"] = sku_to_offer.get(sku, str(sku))
+                sku_details[sku]["qty"] += 1
+                sku_details[sku]["cost"] += cp
+                total_cost_price += cp
 
-                # 3. Доставка и сервисы (С учетом знака!)
-                deliv = prod.get("delivery") or {}
-                for srv in deliv.get("services", []):
-                    srv_amt = parse_amount(srv.get("accrued"))
-                    if srv_amt != 0:
-                        expense_val = -srv_amt * qty
-                        total_expense += expense_val
-                        by_category[category]["expense"] += expense_val
-                        type_id = srv.get("type_id", "unknown")
-                        by_type_id[f"type_id:{type_id}"] += expense_val
-                        by_sku[f"sku:{sku}"] += expense_val
-                        posting_breakdown["delivery_services"] += expense_val
-        else:
-            # ITEM и NON_ITEM
-            amount = total_amount
-            type_id = None
-            sku = None
-            if category == "ITEM":
-                item_fees = acc.get("item_fees") or {}
-                if item_fees.get("fees"):
-                    fee_item = item_fees["fees"][0]
-                    sku = fee_item.get("sku")
-                    if fee_item.get("fees"):
-                        type_id = fee_item["fees"][0].get("type_id")
-            elif category == "NON_ITEM":
-                ni_fee = acc.get("non_item_fee") or {}
-                type_id = ni_fee.get("type_id")
-
-            if type_id is not None:
-                expense_val = -amount
-                total_expense += expense_val
-                by_category[category]["expense"] += expense_val
-                by_type_id[f"type_id:{type_id}"] += expense_val
-            else:
-                if amount > 0:
-                    total_revenue += amount
-                    by_category[category]["revenue"] += amount
-                else:
-                    total_expense += abs(amount)
-                    by_category[category]["expense"] += abs(amount)
-
-    # Вывод отчёта
-    print("\n" + "=" * 80)
-    print("ОТЧЁТ ПО РАСХОДАМ (accrual/by-day)")
-    print("=" * 80)
-
-    print(f"\nВсего транзакций: {len(accruals)}")
-    print(f"Общий доход:   {total_revenue:>15.2f} руб")
-    print(f"Общий расход:  {total_expense:>15.2f} руб")
-    print(f"Себестоимость: {total_cost_price:>15.2f} руб")
-    print(f"Возвраты:      {total_returns_amount:>15.2f} руб")
-    print(f"Чистая выплата: {total_revenue - total_returns_amount - total_expense:>14.2f} руб")
-    print(f"Прибыль (Net):  {total_revenue - total_returns_amount - total_expense - total_cost_price:>14.2f} руб")
-
-    print("\n--- По категориям ---")
-    print(f"{'Категория':<15} {'Доход':>15} {'Расход':>15} {'Кол-во':>8}")
-    print("-" * 55)
-    for cat in sorted(by_category.keys()):
-        d = by_category[cat]
-        print(f"{cat:<15} {d['revenue']:>15.2f} {d['expense']:>15.2f} {d['count']:>8}")
-
-    print("\n--- Расшифровка POSTING ---")
-    print(f"  Доход (sale_amount):     {posting_breakdown['revenue']:>15.2f}")
-    print(f"  Возвраты товаров:        {posting_breakdown['returns']:>15.2f}")
-    print(f"  Комиссия:                {posting_breakdown['commission']:>15.2f}")
-    print(f"  Доставка и сервисы:      {posting_breakdown['delivery_services']:>15.2f}")
-
-    print("\n--- По типам операций (расходы) ---")
-    print(f"{'Тип операции':<35} {'Сумма':>15}")
-    print("-" * 52)
-    # Сортируем расходы от большего к меньшему (по абсолютному значению)
-    for tid in sorted(by_type_id.keys(), key=lambda x: -by_type_id[x]):
-        name = get_type_name(tid)
-        print(f"{name:<35} {by_type_id[tid]:>15.2f}")
-
-    print("\n--- По SKU (расходы) ---")
-    print(f"{'SKU':<25} {'Сумма':>15}")
-    print("-" * 42)
-    for sku in sorted(by_sku.keys(), key=lambda x: -by_sku[x])[:20]:
-        print(f"{sku:<25} {by_sku[sku]:>15.2f}")
-    if len(by_sku) > 20:
-        print(f"  ... и ещё {len(by_sku) - 20} SKU")
-
-    # ------------------------------------------------------------------
-    # Сверка с отчётом Ozon «Банк» / «Экономика»
-    # ------------------------------------------------------------------
-    by_bank_category = defaultdict(float)
-    for tid_key, amount in by_type_id.items():
-        tid_str = str(tid_key).replace("type_id:", "")
-        bank_cat = OZON_BANK_CATEGORY_MAP.get(tid_str, "Прочие расходы Ozon")
-        by_bank_category[bank_cat] += amount
-
-    print("\n" + "=" * 80)
-    print("СВЕРКА С ОТЧЁТОМ OZON «БАНК» / «ЭКОНОМИКА»")
-    print("=" * 80)
-    print(
-        "\nПримечание: API accrual/by-day НЕ возвращает себестоимость товара.\n"
-        "Поэтому «Прибыль» из API = «Прибыль» Ozon Банк + «Себестоимость».\n"
-        "Также «Доходы» API (sale_amount) могут отличаться от «Продаж» Банка\n"
-        "на сумму возвратов/отмен, которые в Банке учитываются отдельно."
-    )
-
-    print(f"\n{'Категория Ozon Банк':<30} {'Сумма':>15}")
-    print("-" * 47)
-    bank_order = [
-        "Комиссия МП",
-        "Эквайринг",
-        "Логистика",
-        "Хранение",
-        "Возвраты и отмены",
-        "Реклама Ozon",
-        "Прочие расходы Ozon",
-        "Прочие доходы",
-    ]
-    for cat in bank_order:
-        if cat in by_bank_category:
-            print(f"{cat:<30} {by_bank_category[cat]:>15.2f}")
-    for cat in sorted(by_bank_category.keys()):
-        if cat not in bank_order:
-            print(f"{cat:<30} {by_bank_category[cat]:>15.2f}")
-
-    bank_total_expense = sum(by_bank_category.values())
-    print("-" * 47)
-    print(f"{'ИТОГО расходы (API)':<30} {bank_total_expense:>15.2f}")
-    print(f"{'Себестоимость (БД)':<30} {total_cost_price:>15.2f}")
-    print(f"{'Доходы (sale_amount, API)':<30} {total_revenue:>15.2f}")
-    print(f"{'Возвраты (sale_amount < 0)':<30} {total_returns_amount:>15.2f}")
-    print(f"{'Прибыль (Net, финальная)':<30} {total_revenue - total_returns_amount - bank_total_expense - total_cost_price:>15.2f}")
-    
-    if total_cost_price == 0 and total_revenue > 0:
-        print(
-            "\nВНИМАНИЕ: Себестоимость равна 0.00. Проверьте, заполнены ли данные\n"
-            "в новой таблице product_costs для используемых SKU."
-        )
-
+    print(f"\n--- ОТЧЁТ ЗА {date_str} ---")
+    print(f"Итого себестоимость: {total_cost_price:10.2f}")
+    print(f"{'Артикул':<15} {'SKU':<12} {'Кол-во':>6} {'Итого Себ.':>12}")
+    print("-" * 50)
+    for s, d in sorted(sku_details.items(), key=lambda x: -x[1]["cost"]):
+        if d["qty"] == 0: continue
+        print(f"{str(d['offer_id']):<15} {s:<12} {d['qty']:>6} {d['cost']:>12.2f}")
 
 async def main():
-    parser = argparse.ArgumentParser(description="Тест расчёта расходов через accrual/by-day")
-    parser.add_argument("date", nargs="?", default="2026-06-27", help="Дата в формате YYYY-MM-DD (по умолчанию 2026-06-15)")
-    parser.add_argument("--user", type=int, default=None, help="ID пользователя (по умолчанию первый)")
-    parser.add_argument("--raw", action="store_true", help="Вывести сырые данные каждой транзакции")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("date", help="Дата YYYY-MM-DD")
     args = parser.parse_args()
-
-    session = SessionLocal()
-
-    # Получаем пользователя
-    if args.user:
-        user = session.query(User).filter(User.id == args.user).first()
-    else:
-        user = session.query(User).first()
-
-    if not user:
-        print("Пользователь не найден")
-        return
-
-    print(f"Пользователь: id={user.id}, email={getattr(user, 'email', 'N/A')}")
-
-    # Получаем credentials
-    cred = session.query(OzonCredential).filter(
-        OzonCredential.user_id == user.id,
-        OzonCredential.is_active == True
-    ).first()
-
-    if not cred:
-        print("Активные credentials не найдены")
-        return
-
-    client_id = decrypt_credential(cred.client_id_encrypted)
-    api_key = decrypt_credential(cred.api_key_encrypted)
-    print(f"Client-Id: {client_id[:4]}...")
-
-    print(f"\nДата: {args.date}")
-    print("Запрос к Ozon API: /v1/finance/accrual/by-day")
-
-    # Инициализируем httpx-клиент
+    db = SessionLocal()
+    user = db.query(User).first()
+    cred = db.query(OzonCredential).filter(OzonCredential.user_id == user.id, OzonCredential.is_active == True).first()
+    client_id, api_key = decrypt_credential(cred.client_id_encrypted), decrypt_credential(cred.api_key_encrypted)
     init_http_client()
-
     try:
         accruals = await fetch_all_accruals(client_id, api_key, args.date)
-        print(f"\nВсего получено accruals: {len(accruals)}")
-
-        if not accruals:
-            print("Нет данных за эту дату")
-            return
-
-        analyze_accruals(accruals, db=session, user_id=user.id, date_str=args.date, raw=args.raw)
-
+        analyze_accruals(accruals, db, user.id, args.date)
     finally:
         await close_http_client()
-        session.close()
-
+        db.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -3,10 +3,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from datetime import datetime, timedelta, timezone
 import logging
+from collections import defaultdict
 
 from db.database import get_db, User, Order, OrderPosting, OrderProduct, OzonAccrual, Cost
 from utils.auth import get_current_user
 from utils.common import to_msk, parse_ozon_datetime
+from services.costs import get_batch_product_costs
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 logger = logging.getLogger(__name__)
@@ -23,6 +25,7 @@ OZON_SERVICE_TYPES = {
     41: "Сборка заказа / Продвижение",
     45: "Обработка отмен",
     46: "Обработка возвратов / Хранение",
+    52: "Подписка Premium",
     54: "Продвижение (Реклама)",
     59: "Доставка",
     74: "Складское хранение",
@@ -126,24 +129,145 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
     return postings_map
 
 def get_expense_category(tid: int | None) -> str:
-    """Единая логика категоризации услуг Ozon для всех отчетов.
-    Синхронизировано с плитками раздела 'Экономика' в ЛК Ozon.
+    """Возвращает индивидуальное название услуги Ozon для детального отчета."""
+    if tid is None:
+        return "Возврат товара"
+    return OZON_SERVICE_TYPES.get(tid, f"Прочая услуга (ID {tid})")
+
+
+# Type_id услуг Озона, которые ДОСТОВЕРНО указывают на факт
+# продажи/отгрузки товара и могут служить сигналом «смещения»
+# (когда строки выручки за этот день ещё нет в API, но товар уже
+# продан/отгружен по банковской отчётности).
+#
+# Это комиссия (1000) и логистика/доставка (12/29/32/39/59/305).
+# Эквайринг (1), хранение (74), утилизация (98) и прочие мелкие
+# удержания НЕ являются признаком продажи.
+#
+# ПРИМЕЧАНИЕ: проверено эмпирически — на некоторых днях (напр. 26.06)
+# может быть единичное расхождение (1-2 единицы), связанное с
+# задержкой синхронизации данных в самом API Озона. Это ожидаемое
+# поведение, так как данные /v1/finance/accrual/by-day формируются
+# с задержкой и могут быть ещё не «закрыты» для некоторых постингов.
+_SALE_INDICATING_TYPE_IDS = frozenset(
+    {1000}                          # Комиссия за продажу
+    | {12, 29, 32, 39, 59, 305}     # Логистика / доставка / магистраль
+)
+
+
+def _calculate_cost_price_from_accruals(
+    db: Session,
+    user_id: int,
+    since_utc: datetime,
+    to_utc: datetime
+) -> tuple[float, list[dict]]:
     """
-    if tid == 1000:
-        return "Комиссия Ozon"
-    if tid in [32, 39, 59, 305]:
-        return "Логистика (FBO/FBS)"
-    if tid == 1:
-        return "Эквайринг"
-    if tid == 46: 
-        return "Хранение"
-    if tid in [41, 54, 101, 103, 104, 105, 106, 120]:
-        return "Реклама"
-    if tid == 45:
-        return "Возвраты и отмены"
-    # Все остальное (Магистраль 12, Последняя миля 29, Утилизация 98, Складское хранение 74, Прочие 22, 38)
-    # Озон объединяет в плитку 'Прочие расходы Ozon'
-    return "Прочие расходы Ozon"
+    Единый алгоритм расчета себестоимости «Как у Озон Банка».
+    Опирается ТОЛЬКО на финансовые транзакции из OzonAccrual.
+
+    КЛЮЧЕВАЯ ЛОГИКА — подсчёт по уникальным постингам (unit_number):
+      Для каждого SKU собираем множество уникальных unit_number, по
+      которым был зафиксирован факт продажи. Признаки продажи:
+        а) Явная строка продажи (type_id IS NULL, amount > 0)
+        б) Услуга type_id=98 (Утилизация) с amount < 0
+        в) Услуга комиссии/логистики (1000, 12, 29, 32, 39, 59, 305)
+           с amount < 0 — покрывает случай «смещения», когда выручки
+           ещё нет в API, но товар уже отгружен.
+      Возвраты (type_id IS NULL, amount < 0) и отмены (type_id=45)
+      исключают соответствующий unit_number из проданных.
+
+    Параметры since_utc / to_utc должны быть наивными datetime в UTC
+    (без tzinfo), как хранится в колонке OzonAccrual.date.
+
+    Returns: (total_cost_price, items)
+        items: [{"sku", "quantity", "cost_price", "amount"}, ...]
+    """
+    # Загружаем ВСЕ финансовые транзакции за период (доходы + расходы)
+    accrual_rows = db.query(
+        OzonAccrual.sku,              # r[0]
+        OzonAccrual.amount,           # r[1]
+        OzonAccrual.type_id,          # r[2]
+        OzonAccrual.quantity,         # r[3]
+        OzonAccrual.accrued_category, # r[4]
+        OzonAccrual.unit_number       # r[5]
+    ).filter(
+        OzonAccrual.user_id == user_id,
+        OzonAccrual.date >= since_utc,
+        OzonAccrual.date <= to_utc,
+    ).all()
+
+    # SKU -> множество уникальных unit_number с признаком продажи
+    sku_sold_units: dict[int, set] = defaultdict(set)
+    # SKU -> множество unit_number с возвратом (type_id=None, amount<0)
+    sku_returned_units: dict[int, set] = defaultdict(set)
+    # SKU -> множество unit_number с отменой (type_id=45)
+    sku_cancelled_units: dict[int, set] = defaultdict(set)
+
+    for r_sku, r_amt, r_tid, r_qty, r_cat, r_unit in accrual_rows:
+        if not r_sku:
+            continue
+        s_int = int(r_sku)
+        amt = float(r_amt or 0)
+        unit = r_unit  # может быть None
+
+        if r_tid is None:
+            # Строка продажи (>0) или возврата (<0) товара
+            if amt > 0:
+                # Явная продажа — добавляем unit в проданные
+                if unit:
+                    sku_sold_units[s_int].add(unit)
+                else:
+                    # Нет unit_number — используем синтетический ключ,
+                    # чтобы не потерять количество
+                    sku_sold_units[s_int].add(f"__sale_{s_int}_{r_qty}_{amt}")
+            elif amt < 0:
+                # Возврат
+                if unit:
+                    sku_returned_units[s_int].add(unit)
+        elif amt < 0 and r_tid == 98:
+            # Утилизация (98) — достоверный признак финализированной продажи.
+            # Появляется только когда товар окончательно «закрыт» банком.
+            # ВАЖНО: комиссия (1000) и логистика (32/29/59) НЕ добавляются
+            # как сигнал продажи — они дают ложноположительные результаты
+            # (начисляются и по отменённым/невыкупленным заказам).
+            if unit:
+                sku_sold_units[s_int].add(unit)
+        elif r_tid == 45:
+            # Обработка отмен — исключаем этот постинг из проданных
+            if unit:
+                sku_cancelled_units[s_int].add(unit)
+
+    # Все SKU, по которым были признаки продажи
+    all_skus = set(sku_sold_units.keys())
+    cost_cache = get_batch_product_costs(db, user_id, list(all_skus), to_utc)
+
+    total_cost_price = 0.0
+    items: list[dict] = []
+
+    for s_int in sorted(all_skus):
+        cp = cost_cache.get(s_int, 0.0)
+        if cp <= 0:
+            continue
+
+        # Чистое количество = проданные unit'ы минус возвращённые и отменённые
+        sold_set = sku_sold_units.get(s_int, set())
+        returned_set = sku_returned_units.get(s_int, set())
+        cancelled_set = sku_cancelled_units.get(s_int, set())
+        # Исключаем возвращённые и отменённые постинги из проданных
+        net_units = sold_set - returned_set - cancelled_set
+        qty_for_cost = len(net_units)
+
+        if qty_for_cost > 0:
+            item_total = cp * qty_for_cost
+            total_cost_price += item_total
+            items.append({
+                "sku": s_int,
+                "quantity": qty_for_cost,
+                "cost_price": round(cp, 2),
+                "amount": round(item_total, 2),
+            })
+
+    return round(total_cost_price, 2), items
 
 @router.get("/daily_stats")
 async def daily_stats(
@@ -322,7 +446,8 @@ async def sales_report_universal(
         OzonAccrual.sku,
         OzonAccrual.amount,
         OzonAccrual.type_id,
-        OzonAccrual.operation_type
+        OzonAccrual.operation_type,
+        OzonAccrual.quantity
     ).filter(
         OzonAccrual.user_id == current_user.id,
         OzonAccrual.date >= since_utc.replace(tzinfo=None),
@@ -341,7 +466,7 @@ async def sales_report_universal(
 
     accruals_by_type = {}
 
-    for r_sku, r_amt, r_tid, r_op_type in accrual_data_raw:
+    for r_sku, r_amt, r_tid, r_op_type, r_qty in accrual_data_raw:
         val = float(r_amt or 0)
         
         if r_tid is None:
@@ -352,27 +477,26 @@ async def sales_report_universal(
             # Накапливаем услуги
             accruals_by_type[r_tid] = accruals_by_type.get(r_tid, 0.0) + val
 
-    # Распределяем накопленные услуги по категориям
+    # Распределяем накопленные услуги по категориям для итоговой сводки
     for tid, amt_sum in accruals_by_type.items():
-        abs_expense = -float(amt_sum or 0) 
-        cat_name = get_expense_category(tid)
+        val = -float(amt_sum or 0) 
         
-        if cat_name == "Комиссия Ozon": total_commission += abs_expense
-        elif cat_name == "Эквайринг": total_acquiring += abs_expense
-        elif cat_name == "Логистика (FBO/FBS)": total_logistics += abs_expense
-        elif cat_name == "Реклама": total_advertising += abs_expense
-        elif cat_name == "Хранение": total_storage += abs_expense
-        elif cat_name == "Возвраты и отмены": total_returns_cancels_fee += abs_expense
-        else: total_other_expenses += abs_expense
+        if tid == 1000: total_commission += val
+        elif tid == 1: total_acquiring += val
+        elif tid in [12, 29, 32, 39, 59, 305]: total_logistics += val
+        elif tid in [41, 54, 101, 103, 104, 105, 106, 120]: total_advertising += val
+        elif tid in [46, 74]: total_storage += val
+        elif tid == 45: total_returns_cancels_fee += val
+        else: total_other_expenses += val
 
-    # 4. Расчет себестоимости проданных товаров
-    from services.costs import get_batch_product_costs
-    cost_cache = get_batch_product_costs(db, current_user.id, all_skus, to_utc.replace(tzinfo=None))
-    
-    total_cost_price = 0.0
-    for sku, item in items_map.items():
-        cp = cost_cache.get(sku, 0.0)
-        total_cost_price += (cp * item["quantity"])
+    # 4. Расчет себестоимости товаров ЕДИНЫМ алгоритмом «Как у Озон Банка»
+    # (используется и здесь, и в expenses_breakdown — всегда по OzonAccrual).
+    total_cost_price, _cost_items = _calculate_cost_price_from_accruals(
+        db,
+        current_user.id,
+        since_utc.replace(tzinfo=None),
+        to_utc.replace(tzinfo=None),
+    )
 
     items = list(items_map.values())
     items.sort(key=lambda x: -x["amount_raw"])
@@ -399,12 +523,17 @@ async def sales_report_universal(
         elif t == "commission": total_commission += val
         else: total_manual_expenses += val
 
+    # ВАЖНО: total_expenses включает ВСЕ расходы, включая возвраты товара,
+    # чтобы итог совпадал с expenses_breakdown (где «Возвраты и отмены»
+    # — это отдельная категория расходов, как в отчёте Озон Банка).
     total_expenses = (
         total_commission + total_logistics + total_advertising + 
         total_storage + total_acquiring + total_other_expenses + 
-        total_returns_cancels_fee + total_cost_price + total_manual_expenses
+        total_returns_cancels_fee + total_cost_price + total_manual_expenses +
+        total_returns_amount  # возвраты товара (type_id=None, amount<0)
     )
-    profit = total_sales_revenue - total_returns_amount - total_expenses
+    # Прибыль: выручка минус все расходы (возвраты уже внутри total_expenses)
+    profit = total_sales_revenue - total_expenses
 
     cancelled_pns = [pn for pn in final_postings if is_cancelled(postings_map.get(pn, {}).get("status"))]
     total_cancelled_amount = 0.0
@@ -461,48 +590,64 @@ async def expenses_breakdown(
     since_utc = since_dt.astimezone(timezone.utc).replace(tzinfo=None)
     to_utc = to_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
+    # Получаем все расходные транзакции: услуги (type_id IS NOT NULL)
+    # и возвраты товара (type_id IS NULL, amount < 0).
     accruals = db.query(OzonAccrual).filter(
         OzonAccrual.user_id == current_user.id,
         OzonAccrual.date >= since_utc,
         OzonAccrual.date <= to_utc,
-        or_(OzonAccrual.operation_type == 'expense', OzonAccrual.amount < 0)
+        or_(
+            OzonAccrual.type_id.is_not(None),             # услуги
+            (OzonAccrual.type_id.is_(None)) & (OzonAccrual.amount < 0)  # возвраты товара
+        )
     ).all()
 
-    by_category = {
-        "Комиссия Ozon": 0.0,
-        "Логистика (FBO/FBS)": 0.0,
-        "Эквайринг": 0.0,
-        "Хранение": 0.0,
-        "Реклама": 0.0,
-        "Возвраты и отмены": 0.0,
-        "Прочие расходы Ozon": 0.0
-    }
-    ops_by_category = {}
+    # Накапливаем суммы по категориям С УЧЁТОМ ЗНАКА (нетто).
+    # Это нужно, чтобы корректировки/сторно (положительные суммы среди
+    # расходов) правильно взаимозачитывались — как на главном экране
+    # и как в отчёте Озон Банка. Иначе +31.2 и −31.2 (отмена продажи)
+    # сложатся в 62.4 вместо правильных 0.
+    by_category_signed: dict[str, float] = {}
+    ops_by_category: dict[str, dict] = {}
 
     for acc in accruals:
         tid = acc.type_id
-        amount = abs(float(acc.amount or 0))
-        cat_name = get_expense_category(tid)
+        signed_amount = float(acc.amount or 0)
 
-        if cat_name not in by_category:
-            by_category[cat_name] = 0.0
-        by_category[cat_name] += amount
+        # Возвраты товара (type_id=None, amount<0) и обработка отмен (type_id=45)
+        # объединяем в категорию «Возвраты и отмены» — как в отчёте Озон Банка.
+        if tid is None or tid == 45:
+            cat_name = "Возвраты и отмены"
+        else:
+            cat_name = get_expense_category(tid)
+
+        by_category_signed[cat_name] = by_category_signed.get(cat_name, 0.0) + signed_amount
 
         if cat_name not in ops_by_category:
             ops_by_category[cat_name] = {"total": 0.0, "items": []}
-        
-        ops_by_category[cat_name]["total"] += amount
-        
+
+        # Для отображения берём модуль отдельной транзакции
+        display_amount = abs(signed_amount)
+        ops_by_category[cat_name]["total"] += display_amount
+
         note = f"Заказ {acc.unit_number}" if acc.unit_number else acc.accrued_category
         if tid and tid in OZON_SERVICE_TYPES:
             note += f" ({OZON_SERVICE_TYPES[tid]})"
 
         ops_by_category[cat_name]["items"].append({
-            "amount": round(amount, 2),
+            "amount": round(display_amount, 2),
             "date": acc.date.isoformat() if acc.date else None,
             "notes": note,
             "unit_number": acc.unit_number
         })
+
+    # Итоговые суммы по категориям — модуль нетто-суммы
+    by_category = {k: abs(v) for k, v in by_category_signed.items()}
+
+    # Синхронизируем итоги деталей с нетто-суммами категорий
+    for cat_name, net_total in by_category.items():
+        if cat_name in ops_by_category:
+            ops_by_category[cat_name]["total"] = net_total
 
     cost_rows = db.query(Cost).filter(
         Cost.user_id == current_user.id,
@@ -512,18 +657,19 @@ async def expenses_breakdown(
 
     for row in cost_rows:
         t = (row.type or "").lower()
+        # Если есть данные из API по основным категориям, ручные записи этих типов игнорируем
         if t in ["acquiring", "commission", "logistics", "advertising", "storage"] and len(accruals) > 0:
             continue
             
-        if t in ("advertising", "adv"): cat = "Реклама"
-        elif t == "storage": cat = "Хранение"
-        elif t == "logistics": cat = "Логистика (FBO/FBS)"
-        elif t == "acquiring": cat = "Эквайринг"
-        elif t == "commission": cat = "Комиссия Ozon"
+        if t in ("advertising", "adv"): cat = "Реклама (ручная)"
+        elif t == "storage": cat = "Хранение (ручное)"
+        elif t == "logistics": cat = "Логистика (ручная)"
+        elif t == "acquiring": cat = "Эквайринг (ручной)"
+        elif t == "commission": cat = "Комиссия (ручная)"
         else: cat = "Прочие расходы (ручные)"
         amount = abs(float(row.amount or 0))
         
-        by_category[cat] += amount
+        by_category[cat] = by_category.get(cat, 0.0) + amount
         if cat not in ops_by_category:
             ops_by_category[cat] = {"total": 0.0, "items": []}
         
@@ -533,6 +679,32 @@ async def expenses_breakdown(
             "date": row.date.isoformat() if row.date else None,
             "notes": row.notes or t,
         })
+
+    # --- РАСЧЕТ СЕБЕСТОИМОСТИ ТОВАРОВ ---
+    # Единый алгоритм «Как у Озон Банка» на основе транзакций
+    total_cp, cp_items = _calculate_cost_price_from_accruals(
+        db,
+        current_user.id,
+        since_utc,
+        to_utc,
+    )
+
+    if total_cp > 0:
+        cat_cp = "Себестоимость товаров"
+        by_category[cat_cp] = by_category.get(cat_cp, 0.0) + total_cp
+        if cat_cp not in ops_by_category:
+            ops_by_category[cat_cp] = {"total": 0.0, "items": []}
+        ops_by_category[cat_cp]["total"] += total_cp
+        ops_by_category[cat_cp]["items"].extend([
+            {
+                "amount": it["amount"],
+                "date": None,
+                "notes": f"SKU {it['sku']} (x{it['quantity']} шт.) — закупка {it['cost_price']} ₽",
+                "unit_number": str(it["sku"]),
+                "sku": it["sku"],
+            }
+            for it in cp_items
+        ])
 
     return {
         "by_category": {k: round(v, 2) for k, v in by_category.items() if v != 0},
