@@ -155,116 +155,70 @@ _SALE_INDICATING_TYPE_IDS = frozenset(
 )
 
 
-def _calculate_cost_price_from_accruals(
+def _calculate_cost_price_from_orders(
     db: Session,
     user_id: int,
     since_utc: datetime,
-    to_utc: datetime
+    to_utc: datetime,
+    tz_offset_hours: int = 3,
+    include_cancelled: bool = False
 ) -> tuple[float, list[dict]]:
     """
-    Единый алгоритм расчета себестоимости «Как у Озон Банка».
-    Опирается ТОЛЬКО на финансовые транзакции из OzonAccrual.
-
-    КЛЮЧЕВАЯ ЛОГИКА — подсчёт по уникальным постингам (unit_number):
-      Для каждого SKU собираем множество уникальных unit_number, по
-      которым был зафиксирован факт продажи. Признаки продажи:
-        а) Явная строка продажи (type_id IS NULL, amount > 0)
-        б) Услуга type_id=98 (Утилизация) с amount < 0
-        в) Услуга комиссии/логистики (1000, 12, 29, 32, 39, 59, 305)
-           с amount < 0 — покрывает случай «смещения», когда выручки
-           ещё нет в API, но товар уже отгружен.
-      Возвраты (type_id IS NULL, amount < 0) и отмены (type_id=45)
-      исключают соответствующий unit_number из проданных.
-
-    Параметры since_utc / to_utc должны быть наивными datetime в UTC
-    (без tzinfo), как хранится в колонке OzonAccrual.date.
-
-    Returns: (total_cost_price, items)
-        items: [{"sku", "quantity", "cost_price", "amount"}, ...]
+    Оперативный расчет себестоимости на основе ЗАКАЗОВ (OrderProduct).
+    Позволяет видеть расходы на закупку мгновенно, не дожидаясь транзакций Озона.
     """
-    # Загружаем ВСЕ финансовые транзакции за период (доходы + расходы)
-    accrual_rows = db.query(
-        OzonAccrual.sku,              # r[0]
-        OzonAccrual.amount,           # r[1]
-        OzonAccrual.type_id,          # r[2]
-        OzonAccrual.quantity,         # r[3]
-        OzonAccrual.accrued_category, # r[4]
-        OzonAccrual.unit_number       # r[5]
+    # 1. Получаем список всех постингов за этот период через унифицированный метод
+    postings_map = _get_unified_postings(db, user_id, since_utc, to_utc, include_cancelled)
+    
+    if not postings_map:
+        return 0.0, []
+
+    local_tz = timezone(timedelta(hours=tz_offset_hours))
+    date_since_l = since_utc.astimezone(local_tz).date()
+    date_to_l = to_utc.astimezone(local_tz).date()
+
+    # Фильтруем постинги, которые попадают в выбранные даты по местному времени (МСК)
+    final_pns = []
+    for pn, data in postings_map.items():
+        # Приоритет: дата обработки (отгрузки). Если нет - дата создания.
+        best_date = data.get("in_process_at") or data["created_at"]
+        dt_local = to_msk(best_date, tz_offset_hours)
+        if dt_local and date_since_l <= dt_local.date() <= date_to_l:
+            final_pns.append(pn)
+
+    if not final_pns:
+        return 0.0, []
+
+    # 2. Агрегируем количество товаров из этих заказов
+    product_stats = db.query(
+        OrderProduct.sku,
+        OrderProduct.name,
+        func.sum(OrderProduct.quantity).label("qty")
     ).filter(
-        OzonAccrual.user_id == user_id,
-        OzonAccrual.date >= since_utc,
-        OzonAccrual.date <= to_utc,
-    ).all()
+        OrderProduct.user_id == user_id,
+        OrderProduct.posting_number.in_(final_pns)
+    ).group_by(OrderProduct.sku, OrderProduct.name).all()
 
-    # SKU -> множество уникальных unit_number с признаком продажи
-    sku_sold_units: dict[int, set] = defaultdict(set)
-    # SKU -> множество unit_number с возвратом (type_id=None, amount<0)
-    sku_returned_units: dict[int, set] = defaultdict(set)
-    # SKU -> множество unit_number с отменой (type_id=45)
-    sku_cancelled_units: dict[int, set] = defaultdict(set)
-
-    for r_sku, r_amt, r_tid, r_qty, r_cat, r_unit in accrual_rows:
-        if not r_sku:
-            continue
-        s_int = int(r_sku)
-        amt = float(r_amt or 0)
-        unit = r_unit  # может быть None
-
-        if r_tid is None:
-            # Строка продажи (>0) или возврата (<0) товара
-            if amt > 0:
-                # Явная продажа — добавляем unit в проданные
-                if unit:
-                    sku_sold_units[s_int].add(unit)
-                else:
-                    # Нет unit_number — используем синтетический ключ,
-                    # чтобы не потерять количество
-                    sku_sold_units[s_int].add(f"__sale_{s_int}_{r_qty}_{amt}")
-            elif amt < 0:
-                # Возврат
-                if unit:
-                    sku_returned_units[s_int].add(unit)
-        elif amt < 0 and r_tid == 98:
-            # Утилизация (98) — достоверный признак финализированной продажи.
-            # Появляется только когда товар окончательно «закрыт» банком.
-            # ВАЖНО: комиссия (1000) и логистика (32/29/59) НЕ добавляются
-            # как сигнал продажи — они дают ложноположительные результаты
-            # (начисляются и по отменённым/невыкупленным заказам).
-            if unit:
-                sku_sold_units[s_int].add(unit)
-        elif r_tid == 45:
-            # Обработка отмен — исключаем этот постинг из проданных
-            if unit:
-                sku_cancelled_units[s_int].add(unit)
-
-    # Все SKU, по которым были признаки продажи
-    all_skus = set(sku_sold_units.keys())
-    cost_cache = get_batch_product_costs(db, user_id, list(all_skus), to_utc)
+    all_skus = [int(r[0]) for r in product_stats]
+    cost_cache = get_batch_product_costs(db, user_id, all_skus, to_utc)
 
     total_cost_price = 0.0
-    items: list[dict] = []
+    items = []
 
-    for s_int in sorted(all_skus):
+    for r_sku, r_name, r_qty in product_stats:
+        s_int = int(r_sku)
+        qty = int(r_qty or 0)
         cp = cost_cache.get(s_int, 0.0)
-        if cp <= 0:
-            continue
-
-        # Чистое количество = проданные unit'ы минус возвращённые и отменённые
-        sold_set = sku_sold_units.get(s_int, set())
-        returned_set = sku_returned_units.get(s_int, set())
-        cancelled_set = sku_cancelled_units.get(s_int, set())
-        # Исключаем возвращённые и отменённые постинги из проданных
-        net_units = sold_set - returned_set - cancelled_set
-        qty_for_cost = len(net_units)
-
-        if qty_for_cost > 0:
-            item_total = cp * qty_for_cost
-            total_cost_price += item_total
+        
+        if cp > 0 and qty > 0:
+            amount = cp * qty
+            total_cost_price += amount
             items.append({
                 "sku": s_int,
-                "quantity": qty_for_cost,
+                "name": r_name,
+                "quantity": qty,
                 "cost_price": round(cp, 2),
-                "amount": round(item_total, 2),
+                "amount": round(amount, 2),
             })
 
     return round(total_cost_price, 2), items
@@ -489,13 +443,14 @@ async def sales_report_universal(
         elif tid == 45: total_returns_cancels_fee += val
         else: total_other_expenses += val
 
-    # 4. Расчет себестоимости товаров ЕДИНЫМ алгоритмом «Как у Озон Банка»
-    # (используется и здесь, и в expenses_breakdown — всегда по OzonAccrual).
-    total_cost_price, _cost_items = _calculate_cost_price_from_accruals(
+    # 4. Оперативный расчет себестоимости на основе ЗАКАЗОВ
+    total_cost_price, _cost_items = _calculate_cost_price_from_orders(
         db,
         current_user.id,
-        since_utc.replace(tzinfo=None),
-        to_utc.replace(tzinfo=None),
+        since_utc,
+        to_utc,
+        tz_offset_hours=tz_offset_hours,
+        include_cancelled=False # Не считаем себестоимость отмененных
     )
 
     items = list(items_map.values())
@@ -680,13 +635,15 @@ async def expenses_breakdown(
             "notes": row.notes or t,
         })
 
-    # --- РАСЧЕТ СЕБЕСТОИМОСТИ ТОВАРОВ ---
-    # Единый алгоритм «Как у Озон Банка» на основе транзакций
-    total_cp, cp_items = _calculate_cost_price_from_accruals(
+    # --- ОПЕРАТИВНЫЙ РАСЧЕТ СЕБЕСТОИМОСТИ ТОВАРОВ ---
+    # Берем данные по заказам за этот период
+    total_cp, cp_items = _calculate_cost_price_from_orders(
         db,
         current_user.id,
-        since_utc,
-        to_utc,
+        since_utc.replace(tzinfo=None),
+        to_utc.replace(tzinfo=None),
+        tz_offset_hours=tz_offset_hours,
+        include_cancelled=False
     )
 
     if total_cp > 0:

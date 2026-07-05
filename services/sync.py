@@ -58,8 +58,9 @@ async def sync_user_orders(user: User, db: Session) -> bool:
         last_order_dt = get_latest_order_datetime(db, user.id)
 
         if last_order_dt:
-            # Если заказы были, берем с момента последнего заказа до сейчас
-            since_dt = last_order_dt
+            # Если заказы были, откатываемся на 12 часов назад от последнего,
+            # чтобы закрыть возможные "дыры" из-за задержек API.
+            since_dt = last_order_dt - timedelta(hours=12)
         else:
             # Если заказов нет, берем за последние 30 дней
             since_dt = now - timedelta(days=30)
@@ -153,12 +154,11 @@ async def sync_user_orders(user: User, db: Session) -> bool:
                 await run_enrichment_batch(list(new_pns), user.id)
 
         # Синхронизация детальных начислений (accruals v1) - ОСНОВНОЙ ИСТОЧНИК РАСХОДОВ
-        # Синхронизируем сегодня и вчера для надежности
-        today_s = now.strftime("%Y-%m-%d")
-        yesterday_s = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        
-        await enrich_accruals_from_ozon(user.id, today_s, db)
-        await enrich_accruals_from_ozon(user.id, yesterday_s, db)
+        # Синхронизируем последние 4 дня, так как реклама и логистика часто 
+        # прилетают с задержкой в 1-2 дня.
+        for i in range(4):
+            check_date = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+            await enrich_accruals_from_ozon(user.id, check_date, db)
 
         return total_saved > 0
     except Exception as e:
