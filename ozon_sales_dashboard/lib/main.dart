@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'providers/auth_provider.dart';
+import 'services/api.dart'; // Для доступа к rootScaffoldMessengerKey
 
 /**
  * Точка входа в приложение Flutter.
@@ -28,6 +29,7 @@ class MyApp extends StatelessWidget {
       ],
       child: MaterialApp(
         title: 'Sales Hub',
+        scaffoldMessengerKey: rootScaffoldMessengerKey,
         // Настройка визуальной темы приложения (Material 3)
         // Используем нейтральную профессиональную цветовую схему
         theme: ThemeData(

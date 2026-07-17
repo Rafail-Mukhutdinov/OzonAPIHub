@@ -43,32 +43,33 @@ async def sync_all_users_task(ctx):
 
         for user in users:
             status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
+            if not status:
+                status = SyncStatus(user_id=user.id)
+                db.add(status)
+                db.commit()
+                db.refresh(status)
 
             # --- ADAPTIVE POLLING LOGIC ---
-            # Надежно ищем последний заказ в обеих таблицах
             last_dt = get_latest_order_datetime(db, user.id)
-
-            interval_minutes = 15 # Эко: активности давно нет
+            interval_minutes = 15
 
             if last_dt:
                 try:
-                    diff = now - last_dt
-
                     # Сравниваем в MSК
-                    now_msk = to_msk(now)
+                    now_msk = to_msk(_get_now_utc())
                     last_order_msk = to_msk(last_dt)
+                    diff = _get_now_utc() - last_dt
 
                     if diff < timedelta(hours=1):
-                        interval_minutes = 1  # Турбо: продажа менее часа назад
+                        interval_minutes = 1
                     elif last_order_msk.date() == now_msk.date():
-                        interval_minutes = 5  # Стандарт: продажи были сегодня по МСК
+                        interval_minutes = 5
                 except Exception as e:
                     logger.warning(f"Error calculating adaptive interval for user {user.id}: {e}")
                     interval_minutes = 5
 
-            # Проверяем, пришло ли время для синхронизации
-            last_sync = status.updated_at if status and status.updated_at else (now - timedelta(days=1))
-            elapsed = now - last_sync
+            last_sync = status.last_sync_attempt_at if status.last_sync_attempt_at else (_get_now_utc() - timedelta(days=1))
+            elapsed = _get_now_utc() - last_sync
             if elapsed < timedelta(minutes=interval_minutes):
                 logger.debug(
                     f"User {user.id}: пропущен (с последней синхронизации прошло "
@@ -76,12 +77,38 @@ async def sync_all_users_task(ctx):
                 )
                 continue
 
-            logger.info(f"User {user.id}: Запуск адаптивной синхронизации (интервал {interval_minutes}м)")
-            activity_found = await sync_user_orders(user, db)
+            # 1. АТОМАРНАЯ УСТАНОВКА БЛОКИРОВКИ (Риск A)
+            updated = db.query(SyncStatus).filter(
+                SyncStatus.user_id == user.id, 
+                SyncStatus.is_syncing == False
+            ).update({
+                SyncStatus.is_syncing: True, 
+                SyncStatus.sync_started_at: _get_now_utc(),
+                SyncStatus.last_sync_attempt_at: _get_now_utc()
+            }, synchronize_session=False)
+            db.commit()
 
-            if status:
-                status.updated_at = _get_now_utc()
-                db.commit()
+            if not updated:
+                logger.warning(f"User {user.id}: Синхронизация уже занята другим воркером. Пропуск.")
+                continue
+
+            logger.info(f"User {user.id}: Запуск адаптивной синхронизации (интервал {interval_minutes}м)")
+
+            # 3. БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ
+            try:
+                activity_found = await sync_user_orders(user, db)
+            except Exception as e:
+                logger.error(f"User {user.id}: Критическая ошибка при синхронизации: {e}", exc_info=True)
+            finally:
+                # 4. СНЯТИЕ БЛОКИРОВКИ (Риск B: Гарантия сброса транзакции и снятия флага)
+                try:
+                    db.rollback() 
+                    db.refresh(status)
+                    status.is_syncing = False
+                    status.sync_completed_at = _get_now_utc()
+                    db.commit()
+                except Exception as ef:
+                    logger.error(f"User {user.id}: Failed to release lock: {ef}")
 
     except Exception as e:
         logger.error(f"Ошибка в адаптивном планировщике: {e}", exc_info=True)

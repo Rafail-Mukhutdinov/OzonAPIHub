@@ -13,6 +13,7 @@ import os
 import logging
 import httpx
 import asyncio
+import json
 
 logger = logging.getLogger("OzonAPIHub")
 
@@ -39,16 +40,20 @@ def init_http_client() -> httpx.AsyncClient:
     Вызывать в lifespan FastAPI и в on_startup воркера ARQ.
     """
     global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(
-            timeout=DEFAULT_TIMEOUT,
-            limits=httpx.Limits(
-                max_connections=int(os.getenv('OZON_MAX_CONNECTIONS', '50')),
-                max_keepalive_connections=int(os.getenv('OZON_KEEPALIVE_CONNECTIONS', '20')),
-                keepalive_expiry=float(os.getenv('OZON_KEEPALIVE_EXPIRY', '30')),
-            ),
-        )
-        logger.info("HTTP client for Ozon API initialized (connection pool)")
+    try:
+        if _client is None or _client.is_closed:
+            _client = httpx.AsyncClient(
+                timeout=DEFAULT_TIMEOUT,
+                limits=httpx.Limits(
+                    max_connections=int(os.getenv('OZON_MAX_CONNECTIONS', '50')),
+                    max_keepalive_connections=int(os.getenv('OZON_KEEPALIVE_CONNECTIONS', '20')),
+                    keepalive_expiry=float(os.getenv('OZON_KEEPALIVE_EXPIRY', '30')),
+                ),
+            )
+            logger.info("HTTP client for Ozon API initialized (connection pool)")
+    except Exception as e:
+        logger.error(f"Failed to initialize HTTP client: {e}")
+        raise
     return _client
 
 
@@ -58,9 +63,12 @@ async def close_http_client() -> None:
     Вызывать при остановке приложения/воркера (shutdown).
     """
     global _client
-    if _client is not None and not _client.is_closed:
-        await _client.aclose()
-        logger.info("HTTP client for Ozon API closed")
+    try:
+        if _client is not None and not _client.is_closed:
+            await _client.aclose()
+            logger.info("HTTP client for Ozon API closed")
+    except Exception as e:
+        logger.error(f"Error closing HTTP client: {e}")
     _client = None
 
 
@@ -115,7 +123,14 @@ async def _post_with_retry(
         try:
             r = await client.post(url, headers=headers, json=body, timeout=DEFAULT_TIMEOUT)
             r.raise_for_status()  # Вызывает httpx.HTTPStatusError для кодов 4xx/5xx
-            return r.json()
+            
+            try:
+                return r.json()
+            except (json.JSONDecodeError, httpx.DecodingError) as e:
+                logger.error(f"Ozon {op_label}: Failed to decode JSON response: {e}")
+                # Трактуем битый JSON как временную ошибку для ретрая
+                raise httpx.ReadError(f"Invalid JSON from Ozon: {e}")
+
         except httpx.HTTPStatusError as e:
             last_exc = e
             status = e.response.status_code
@@ -143,7 +158,7 @@ async def _post_with_retry(
             # Либо неретрябельный 4xx, либо исчерпаны попытки на ретрябельной ошибке
             logger.error(f"Ozon {op_label}: HTTP {status} после {attempt + 1} попытк(и/ок), запрос отменён{error_detail}")
             raise
-        except (httpx.TimeoutException, httpx.ConnectError) as e:
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
             last_exc = e
             if attempt < MAX_RETRIES:
                 backoff = RETRY_BACKOFF_SECONDS * (attempt + 1)
@@ -234,31 +249,6 @@ async def ozon_product_info_list_async(client_id: str, api_key: str, skus: list[
     )
 
 
-# Синхронные обёртки для вызова из старого кода или REPL.
-# ВАЖНО: asyncio.run() создаёт и уничтожает собственный цикл событий,
-# поэтому синглтон-клиент здесь НЕ переиспользуется — создаётся временный.
-def ozon_fbo_list(client_id: str, api_key: str, filter_dict: dict, limit: int, offset: int, with_flags: dict = None):
-    """Синхронная версия получения списка постингов (legacy/REPL)."""
-    url = f"{BASE_URL}/v2/posting/fbo/list"
-    body = {
-        "dir": "ASC",
-        "filter": filter_dict,
-        "limit": limit,
-        "offset": offset,
-        "with": with_flags or {"analytics_data": True, "financial_data": True},
-    }
-    headers = _get_headers(client_id, api_key)
-
-    async def _run():
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as tmp_client:
-            return await _post_with_retry(
-                tmp_client, url, headers, body,
-                op_label=f"fbo/list(sync) client={client_id[:4]}"
-            )
-
-    return asyncio.run(_run())
-
-
 async def ozon_transaction_list_async(
     client_id: str,
     api_key: str,
@@ -315,23 +305,3 @@ async def ozon_accruals_by_day_async(
         _get_client(), url, headers, body,
         op_label=f"finance/accrual/by-day date={date}"
     )
-
-
-def ozon_fbo_get(client_id: str, api_key: str, posting_number: str):
-    """Синхронная версия получения деталей постинга (legacy/REPL)."""
-    url = f"{BASE_URL}/v2/posting/fbo/get"
-    body = {
-        "posting_number": posting_number,
-        "translit": True,
-        "with": {"analytics_data": True, "financial_data": True, "legal_info": False},
-    }
-    headers = _get_headers(client_id, api_key)
-
-    async def _run():
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as tmp_client:
-            return await _post_with_retry(
-                tmp_client, url, headers, body,
-                op_label=f"fbo/get(sync) pn={posting_number}"
-            )
-
-    return asyncio.run(_run())

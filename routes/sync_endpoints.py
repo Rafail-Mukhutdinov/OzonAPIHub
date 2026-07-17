@@ -76,8 +76,11 @@ async def trigger_manual_sync(
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     cooldown = timedelta(minutes=5)
     
-    if status and status.updated_at:
-        elapsed = now - status.updated_at
+    # Проверка по last_sync_attempt_at, чтобы фоновые обновления статуса не сбрасывали кулдаун
+    last_attempt = status.last_sync_attempt_at if status else None
+    
+    if last_attempt:
+        elapsed = now - last_attempt
         if elapsed < cooldown:
             remaining = cooldown - elapsed
             seconds = int(remaining.total_seconds())
@@ -95,6 +98,7 @@ async def trigger_manual_sync(
     
     status.is_syncing = True
     status.sync_started_at = now
+    status.last_sync_attempt_at = now # Обновляем маркер попытки
     db.commit()
 
     try:

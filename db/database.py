@@ -226,6 +226,8 @@ class SyncStatus(Base):
     backfill_to = Column(DateTime, nullable=True)
     backfill_is_complete = Column(Boolean, default=False, nullable=False)
 
+    last_sync_attempt_at = Column(DateTime, nullable=True) # Без onupdate для точности планировщика
+
     user = relationship("User")
 
 def get_db():

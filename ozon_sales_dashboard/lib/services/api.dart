@@ -4,6 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/auth_provider.dart'; // Добавляем импорт
+import 'package:flutter/material.dart';
+
+// Глобальный ключ для показа SnackBar из любой части приложения (включая API клиент)
+final GlobalKey<ScaffoldMessengerState> rootScaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
 class OzonApiClient {
   final Dio dio;
@@ -58,10 +62,19 @@ class OzonApiClient {
       },
       onError: (DioException error, handler) async {
         if (error.response?.statusCode == 401) {
-          // Если получили 401, сообщаем об этом провайдеру
+          // Если получили 401, сообщаем об этом провайдеру (разлогинивание)
           if (authProvider != null) {
             authProvider!.handleSessionExpired();
           }
+        } else if (error.response?.statusCode == 403) {
+          // Если получили 403 (Нет прав), НЕ разлогиниваем, а просто уведомляем.
+          rootScaffoldMessengerKey.currentState?.showSnackBar(
+            const SnackBar(
+              content: Text('У вас нет прав для выполнения этого действия'),
+              backgroundColor: Color(0xFFE67E22), // Оранжевый (предупреждение)
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
         }
         return handler.next(error);
       },

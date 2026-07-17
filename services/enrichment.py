@@ -263,14 +263,11 @@ async def enrich_accruals_from_ozon(
 
     acc_date = datetime.strptime(date_str, "%Y-%m-%d")
 
-    # Удаляем ВСЕ старые записи за эту дату одним запросом (защита от дублей)
-    deleted_count = db.query(OzonAccrual).filter(
+    # Удаляем ВСЕ старые записи за эту дату (в рамках одной транзакции с новыми данными)
+    db.query(OzonAccrual).filter(
         OzonAccrual.user_id == user_id,
         OzonAccrual.date == acc_date
     ).delete(synchronize_session=False)
-    if deleted_count > 0:
-        logger.info(f"User {user_id}: удалено {deleted_count} старых accruals за {date_str}")
-    db.commit()
 
     last_id = ""
     total_accruals = 0  # Кол-во top-level транзакций от Ozon
@@ -282,26 +279,40 @@ async def enrich_accruals_from_ozon(
             response = await ozon_accruals_by_day_async(client_id, api_key, date_str, last_id)
             accruals = response.get("accruals") or []
 
-            if not accruals:
+            # Если на первой странице пусто и нет last_id - значит данных за день нет
+            if not accruals and not last_id:
+                db.rollback() # Откатываем предварительный DELETE, чтобы сохранить старые данные
+                logger.warning(f"Ozon API вернул пустой ответ для {acc_date}. Данные не удалены.")
                 break
+
+            if not accruals and last_id:
+                # Редкий случай: пустая страница с указателем на следующую
+                last_id = response.get("last_id")
+                continue
+
+            # Оптимизация N+1: Предварительная загрузка OrderPosting.id для всей пачки
+            unit_numbers = {acc.get("unit_number") for acc in accruals if acc.get("unit_number")}
+            if unit_numbers:
+                # Ищем только те, которых еще нет в кеше
+                missing_units = [u for u in unit_numbers if u not in posting_cache]
+                if missing_units:
+                    # По умолчанию помечаем как None, чтобы не искать повторно, если в БД пусто
+                    for u in missing_units:
+                        posting_cache[u] = None
+
+                    found_ops = db.query(OrderPosting.posting_number, OrderPosting.id).filter(
+                        OrderPosting.user_id == user_id,
+                        OrderPosting.posting_number.in_(missing_units)
+                    ).all()
+                    for pn, op_id in found_ops:
+                        posting_cache[pn] = op_id
 
             for acc in accruals:
                 acc_id = acc.get("accrual_id")
                 unit_number = acc.get("unit_number")
                 category = acc.get("accrued_category")
 
-                p_id = None
-                if unit_number:
-                    if unit_number in posting_cache:
-                        p_id = posting_cache[unit_number]
-                    else:
-                        op = db.query(OrderPosting.id).filter(
-                            OrderPosting.posting_number == unit_number,
-                            OrderPosting.user_id == user_id
-                        ).first()
-                        if op:
-                            p_id = op.id
-                            posting_cache[unit_number] = p_id
+                p_id = posting_cache.get(unit_number) if unit_number else None
 
                 amount_data = acc.get("total_amount") or {}
                 currency = amount_data.get("currency")

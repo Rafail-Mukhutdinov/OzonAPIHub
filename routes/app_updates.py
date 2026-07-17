@@ -46,11 +46,14 @@ async def get_latest_version():
 @router.get("/download/{filename}")
 async def download_app(filename: str):
     """Эндпоинт для скачивания APK файла"""
-    file_path = os.path.join("static", "apps", filename)
+    # Санитизация имени файла для защиты от Path Traversal
+    safe_filename = os.path.basename(filename)
+    file_path = os.path.join("static", "apps", safe_filename)
+    
     if os.path.exists(file_path):
         return FileResponse(
             path=file_path,
-            filename=filename,
+            filename=safe_filename,
             media_type='application/vnd.android.package-archive'
         )
     return {"error": "Файл не найден. Убедитесь, что вы положили APK в static/apps/"}

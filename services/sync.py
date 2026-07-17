@@ -42,6 +42,42 @@ def get_latest_order_datetime(db: Session, user_id: int) -> Union[datetime, None
     values = [v for v in [raw_max, posting_max] if v is not None]
     return max(values) if values else None
 
+def get_latest_accrual_date(db: Session, user_id: int) -> Union[datetime, None]:
+    """
+    Находит дату последнего загруженного начисления пользователя.
+    """
+    return db.query(func.max(OzonAccrual.date)).filter(
+        OzonAccrual.user_id == user_id
+    ).scalar()
+
+def find_accrual_date_gaps(db: Session, user_id: int, lookback_days: int = 30) -> list[str]:
+    """
+    Находит даты за последние N дней, для которых в OzonAccrual НЕТ записей.
+    Возвращает список строк в формате 'YYYY-MM-DD', отсортированных по возрастанию.
+    Игнорирует сегодняшний день (он синхронизируется обычным циклом).
+    """
+    now = _get_now_utc()
+    # Нормализуем since к началу дня (Недочет B)
+    since = (now - timedelta(days=lookback_days)).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Получаем множество дат, за которые есть данные
+    existing_dates = db.query(OzonAccrual.date).filter(
+        OzonAccrual.user_id == user_id,
+        OzonAccrual.date >= since
+    ).distinct().all()
+    existing_date_set = {d[0].date() for d in existing_dates}
+    
+    # Строим полный список дат за период и находим отсутствующие
+    gaps = []
+    check = since.date()
+    today = now.date()
+    while check < today:
+        if check not in existing_date_set:
+            gaps.append(check.strftime("%Y-%m-%d"))
+        check += timedelta(days=1)
+    
+    return gaps
+
 async def sync_user_orders(user: User, db: Session) -> bool:
     """Синхронизирует заказы для ОДНОГО пользователя с использованием Smart Gap Filling."""
     try:
@@ -107,8 +143,17 @@ async def sync_user_orders(user: User, db: Session) -> bool:
 
             if not items: break
             
+            # Оптимизация N+1: Предварительно загружаем существующие заказы для этой пачки
+            fetched_pns = [o.get('posting_number') for o in items if isinstance(o, dict) and o.get('posting_number')]
+            existing_orders_map = {}
+            if fetched_pns:
+                existing_rows = db.query(Order.posting_number, Order.status).filter(
+                    Order.user_id == user.id,
+                    Order.posting_number.in_(fetched_pns)
+                ).all()
+                existing_orders_map = {r[0]: r[1] for r in existing_rows}
+
             # Предварительно проверяем, какие из этих постингов уже обогащены
-            fetched_pns = [o.get('posting_number') for o in items if isinstance(o, dict) and valid_posting_number(o.get('posting_number'))]
             existing_norm_pns = set()
             if fetched_pns:
                 norm_rows = db.query(OrderPosting.posting_number).filter(
@@ -129,7 +174,10 @@ async def sync_user_orders(user: User, db: Session) -> bool:
                 try:
                     with db.begin_nested():
                         # Сохраняем в сессию (коммит сделаем ниже пачкой)
-                        is_active_change = save_order_for_user(db, user, o)
+                        # Передаем статус из кеша для оптимизации N+1
+                        # Используем sentinel "__NOT_FOUND__", если ключа нет в карте (новый заказ)
+                        current_existing_status = existing_orders_map.get(pn, "__NOT_FOUND__")
+                        is_active_change = save_order_for_user(db, user, o, existing_status=current_existing_status)
 
                         # Добавляем в очередь на обогащение если:
                         # - это новый заказ/изменение статуса
@@ -153,25 +201,58 @@ async def sync_user_orders(user: User, db: Session) -> bool:
             if ENRICH_ON_FETCH:
                 await run_enrichment_batch(list(new_pns), user.id)
 
-        # Синхронизация детальных начислений (accruals v1) - ОСНОВНОЙ ИСТОЧНИК РАСХОДОВ
-        # Синхронизируем последние 4 дня, так как реклама и логистика часто 
-        # прилетают с задержкой в 1-2 дня.
-        for i in range(4):
+        # --- Синхронизация начислений с обнаружением дыр ---
+        now = _get_now_utc()
+
+        # A) СТАНДАРТНОЕ ОКНО: последние дни + перехлест (как сейчас)
+        last_acc_dt = get_latest_accrual_date(db, user.id)
+        if last_acc_dt:
+            # Ограничиваем глубину поиска 30 днями, чтобы не перегружать API при долгом простое
+            start_sync_dt = max(last_acc_dt - timedelta(days=2), now - timedelta(days=30))
+        else:
+            start_sync_dt = now - timedelta(days=7)
+
+        days_to_sync = (now.date() - start_sync_dt.date()).days
+        days_to_sync = max(days_to_sync, 4)
+
+        logger.info(f"User {user.id}: Syncing accruals for last {days_to_sync} days (from {start_sync_dt.date()})")
+
+        # B) ОБНАРУЖЕНИЕ ДЫР: ищем отсутствующие даты за 30 дней
+        all_gaps = find_accrual_date_gaps(db, user.id, lookback_days=30)
+        
+        # Дедупликация: убираем даты, которые уже покроются стандартным окном (Недочет A)
+        window_dates = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_to_sync + 1)}
+        gaps_to_fill = [g for g in all_gaps if g not in window_dates]
+
+        if gaps_to_fill:
+            logger.info(f"User {user.id}: Found {len(gaps_to_fill)} date gaps in accruals: {gaps_to_fill}")
+
+        # C) СИНХРОНИЗАЦИЯ: сначала закрываем дыры, потом свежее окно
+        # Ограничиваем количество дыр за один цикл (Недочет C)
+        MAX_GAPS_PER_CYCLE = 10
+        for check_date in gaps_to_fill[:MAX_GAPS_PER_CYCLE]:
+            logger.info(f"User {user.id}: Filling accrual gap for {check_date}")
+            await enrich_accruals_from_ozon(user.id, check_date, db)
+
+        for i in range(days_to_sync + 1):
             check_date = (now - timedelta(days=i)).strftime("%Y-%m-%d")
             await enrich_accruals_from_ozon(user.id, check_date, db)
+
+        # D) Синхронизация прочих транзакций (v3) для полноты данных
+        # (Advertising, Storage и др. услуги, которые могут отсутствовать в v1)
+        await sync_ozon_transactions(user.id, db, days_back=days_to_sync + 1)
 
         return total_saved > 0
     except Exception as e:
         logger.error(f"User {user.id}: sync_user_orders error: {e}", exc_info=True)
         return False
 
-def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
+def save_order_for_user(db: Session, user: User, order_data: dict, existing_status: str = "__FALLBACK__") -> bool:
     if not isinstance(order_data, dict): return False
     posting_number = order_data.get('posting_number')
     if not posting_number: return False
     try:
         user_id = user.id if hasattr(user, 'id') else user
-        existing = db.query(Order).filter(Order.user_id == user_id, Order.posting_number == posting_number).first()
         status = order_data.get('status')
 
         # Конвертация даты в объект datetime для БД
@@ -180,12 +261,44 @@ def save_order_for_user(db: Session, user: User, order_data: dict) -> bool:
         if dt_created:
             dt_created = dt_created.astimezone(timezone.utc).replace(tzinfo=None)
 
+        # 1. ОПТИМИЗАЦИЯ: Пакетная синхронизация, заказ ГАРАНТИРОВАННО НОВЫЙ
+        if existing_status == "__NOT_FOUND__":
+            new_order = Order(
+                user_id=user_id,
+                order_id=order_data.get('order_id'),
+                posting_number=posting_number, status=status,
+                created_at=dt_created,
+                updated_at=dt_created,
+                data=order_data
+            )
+            db.add(new_order)
+            return True
+
+        # 2. ОПТИМИЗАЦИЯ: Пакетная синхронизация, заказ СУЩЕСТВУЕТ (обновляем если надо)
+        if existing_status != "__FALLBACK__":
+            if existing_status != status:
+                # Обновляем статус БЕЗ предварительного SELECT
+                db.query(Order).filter(
+                    Order.user_id == user_id, 
+                    Order.posting_number == posting_number
+                ).update({
+                    "status": status,
+                    "updated_at": dt_created,
+                    "data": order_data
+                }, synchronize_session=False)
+                return True
+            return False
+
+        # 3. ФОЛЛБЕК: Одиночный вызов без переданного кеша статусов
+        existing = db.query(Order).filter(Order.user_id == user_id, Order.posting_number == posting_number).first()
         if existing:
             if existing.status != status:
                 existing.status = status
                 existing.updated_at = dt_created
-                return True # Изменение статуса тоже считаем активностью
+                existing.data = order_data
+                return True
             return False
+        
         new_order = Order(
             user_id=user_id,
             order_id=order_data.get('order_id'),
@@ -224,6 +337,16 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
         if not isinstance(items, list):
             return {"saved": 0, "fetched": 0, "error": f"API 'result' is not a list: {type(items)}", "orders": []}
 
+        # Оптимизация N+1: пакетная загрузка существующих статусов
+        fetched_pns = [o.get('posting_number') for o in items if isinstance(o, dict) and o.get('posting_number')]
+        existing_map = {}
+        if fetched_pns:
+            rows = db.query(Order.posting_number, Order.status).filter(
+                Order.user_id == user_id,
+                Order.posting_number.in_(fetched_pns)
+            ).all()
+            existing_map = {r[0]: r[1] for r in rows}
+
         saved = 0
         valid_orders = []
         for o in items:
@@ -231,7 +354,9 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
             pn = o.get('posting_number', 'unknown')
             try:
                 with db.begin_nested():
-                    if save_order_for_user(db, user, o):
+                    # Передаем sentinel "__NOT_FOUND__", если ключа нет в карте (новый заказ)
+                    current_status = existing_map.get(pn, "__NOT_FOUND__")
+                    if save_order_for_user(db, user, o, existing_status=current_status):
                         saved += 1
                 valid_orders.append(o)
             except Exception as e:
@@ -331,14 +456,35 @@ async def sync_ozon_transactions(user_id: int, db: Session, days_back: int = 30)
 
         page = 1
         total_synced = 0
+        MAX_PAGES = 50 # Защита от бесконечного цикла
 
-        while page <= 5: # Ограничим 5 страницами для начала
+        while page <= MAX_PAGES:
             data = await ozon_transaction_list_async(client_id, api_key, from_iso, to_iso, page=page)
             result = data.get("result", {})
             operations = result.get("operations", [])
 
             if not operations:
                 break
+
+            # Оптимизация N+1: Предварительная проверка существующих транзакций всей пачкой
+            op_ids = [str(op.get("operation_id")) for op in operations if op.get("operation_id")]
+            existing_tags = set()
+            if op_ids:
+                # Ищем все записи, где в notes содержится любой из ID текущей пачки
+                like_patterns = [f"%[ID:{oid}]%" for oid in op_ids]
+                from sqlalchemy import or_
+                check_q = db.query(Cost.notes).filter(Cost.user_id == user_id)
+                
+                # Разбиваем на подзапросы по 100 условий для стабильности
+                found_notes = []
+                for i in range(0, len(like_patterns), 100):
+                    batch_patterns = like_patterns[i:i+100]
+                    found_notes.extend([r[0] for r in check_q.filter(or_(*(Cost.notes.like(p) for p in batch_patterns))).all()])
+                
+                for note in found_notes:
+                    for oid in op_ids:
+                        if f"[ID:{oid}]" in note:
+                            existing_tags.add(oid)
 
             for op in operations:
                 amount = float(op.get("amount") or 0)
@@ -348,48 +494,46 @@ async def sync_ozon_transactions(user_id: int, db: Session, days_back: int = 30)
                     continue
 
                 op_id = str(op.get("operation_id"))
+                
+                # Проверка по кешу вместо SELECT в цикле
+                if op_id in existing_tags:
+                    continue
+
                 op_date_raw = op.get("operation_date")
                 dt_op = parse_ozon_datetime(op_date_raw)
                 if dt_op:
                     dt_op = dt_op.replace(tzinfo=None)
 
-                # Проверяем дубликат по ID операции в поле notes
+                # Определяем категорию расхода
+                category = "other"
+                type_name = op.get("operation_type_name", "").lower()
+
+                # Проверяем вложенные услуги
+                services = op.get("services", [])
+                service_names = " ".join([s.get("name", "").lower() for s in services])
+
+                if "реклам" in type_name or "реклам" in service_names or "promotion" in service_names:
+                    category = "advertising"
+                elif "хранен" in type_name or "storage" in service_names or "inventory" in service_names:
+                    category = "storage"
+                elif "логистик" in type_name or "доставк" in type_name or "delivery" in type_name:
+                    category = "logistics"
+
+                # Собираем доп. инфо
                 check_tag = f"[ID:{op_id}]"
-                existing = db.query(Cost).filter(
-                    Cost.user_id == user_id,
-                    Cost.notes.contains(check_tag)
-                ).first()
+                notes = f"{op.get('operation_type_name')} {check_tag}"
+                if services:
+                    notes += " | Услуги: " + ", ".join([f"{s.get('name')}: {s.get('price')}" for s in services])
 
-                if not existing:
-                    # Определяем категорию расхода
-                    category = "other"
-                    type_name = op.get("operation_type_name", "").lower()
-
-                    # Проверяем вложенные услуги
-                    services = op.get("services", [])
-                    service_names = " ".join([s.get("name", "").lower() for s in services])
-
-                    if "реклам" in type_name or "реклам" in service_names or "promotion" in service_names:
-                        category = "advertising"
-                    elif "хранен" in type_name or "storage" in service_names or "inventory" in service_names:
-                        category = "storage"
-                    elif "логистик" in type_name or "доставк" in type_name or "delivery" in type_name:
-                        category = "logistics"
-
-                    # Собираем доп. инфо
-                    notes = f"{op.get('operation_type_name')} {check_tag}"
-                    if services:
-                        notes += " | Услуги: " + ", ".join([f"{s.get('name')}: {s.get('price')}" for s in services])
-
-                    new_cost = Cost(
-                        user_id=user_id,
-                        type=category,
-                        amount=int(abs(amount)),
-                        date=dt_op,
-                        notes=notes
-                    )
-                    db.add(new_cost)
-                    total_synced += 1
+                new_cost = Cost(
+                    user_id=user_id,
+                    type=category,
+                    amount=int(abs(amount)),
+                    date=dt_op,
+                    notes=notes
+                )
+                db.add(new_cost)
+                total_synced += 1
 
             db.commit()
             if len(operations) < 1000:

@@ -162,8 +162,14 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
     )
 
 @router.get("/debug/users-count")
-def get_users_count(db: Session = Depends(get_db)):
-    """Возвращает общее количество пользователей (только для отладки)."""
+def get_users_count(
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """Возвращает общее количество пользователей (только для администраторов)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+
     count = db.query(User).count()
     return {"total_users": count}
 

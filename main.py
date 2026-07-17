@@ -130,7 +130,12 @@ app.include_router(auth_router)
 app.include_router(app_updates_router)
 
 @app.get("/stats")
-def stats(db = Depends(get_db)):
+def stats(current_user: User = Depends(get_current_user), db = Depends(get_db)):
+    """Выдает общую статистику по записям (только для администраторов)."""
+    if not current_user.is_admin:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+
     total = db.query(Order).count()
     return {
         "total_rows": total,
