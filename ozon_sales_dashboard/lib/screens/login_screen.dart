@@ -81,7 +81,18 @@ class _LoginScreenState extends State<LoginScreen> {
           // Создаем новый клиент, чтобы интерцептор подхватил только что сохраненный токен
           final profileData = await OzonApiClient().getProfile();
           final bool isAdmin = profileData['is_admin'] ?? false;
-          await authProvider.setToken(token, email: email, isAdmin: isAdmin, pin: pin);
+          final bool isDemo = profileData['is_demo'] ?? false;
+          final String? subEndStr = profileData['subscription_end_date'];
+          DateTime? subEndDate;
+          if (subEndStr != null) {
+            subEndDate = DateTime.tryParse(subEndStr);
+          }
+          
+          await authProvider.updateProfile(
+            isAdmin: isAdmin,
+            isDemo: isDemo,
+            subscriptionEndDate: subEndDate,
+          );
         } catch (e) {
           debugPrint('Profile fetch error: $e');
           // Не прерываем вход, если профиль не загрузился

@@ -171,7 +171,7 @@ def is_cancelled(st):
 def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc: datetime, include_cancelled: bool = True):
     """
     Собирает уникальные постинги из сырых (Order) и нормализованных (OrderPosting) таблиц.
-    Оптимизировано для использования индексов: избегаем OR по разным колонкам.
+    Оптимизировано: используем UNION для эффективного выполнения в БД.
     """
     search_since = since_utc.replace(tzinfo=None)
     search_to = to_utc.replace(tzinfo=None)
@@ -179,7 +179,7 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
     postings_map = {}
 
     # 1. Собираем данные из нормализованной таблицы (Приоритетный источник)
-    # Используем UNION или раздельные запросы для эффективного использования индексов
+    # Используем UNION для эффективного использования индексов на стороне БД
     q1 = db.query(OrderPosting.posting_number, OrderPosting.created_at, OrderPosting.status, OrderPosting.in_process_at).filter(
         OrderPosting.user_id == user_id,
         OrderPosting.created_at.between(search_since, search_to)
@@ -189,9 +189,11 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
         OrderPosting.in_process_at.between(search_since, search_to)
     )
     
-    # Объединяем результаты в Python (быстрее, чем OR в БД без правильных индексов)
-    for pn, cr, st, in_proc in q1.all() + q2.all():
-        if not pn or pn in postings_map: continue
+    # Объединяем на стороне БД
+    unified_query = q1.union(q2)
+
+    for pn, cr, st, in_proc in unified_query.all():
+        if not pn: continue
         if not include_cancelled and is_cancelled(st): continue
 
         postings_map[pn] = {
@@ -250,10 +252,10 @@ def get_expense_category(tid: int | None) -> str:
 # задержкой синхронизации данных в самом API Озона. Это ожидаемое
 # поведение, так как данные /v1/finance/accrual/by-day формируются
 # с задержкой и могут быть ещё не «закрыты» для некоторых постингов.
-_SALE_INDICATING_TYPE_IDS = frozenset(
-    {1000}                          # Комиссия за продажу
-    | {12, 29, 32, 39, 59, 305}     # Логистика / доставка / магистраль
-)
+_SALE_INDICATING_TYPE_IDS = frozenset({
+    1000,                          # Комиссия за продажу
+    12, 29, 32, 39, 59, 305        # Логистика / доставка / магистраль
+})
 
 
 def _calculate_cost_price_from_orders(
@@ -262,14 +264,15 @@ def _calculate_cost_price_from_orders(
     since_utc: datetime,
     to_utc: datetime,
     tz_offset_hours: int = 3,
-    include_cancelled: bool = False
+    include_cancelled: bool = False,
+    postings_map: dict | None = None
 ) -> tuple[float, list[dict]]:
     """
     Оперативный расчет себестоимости на основе ЗАКАЗОВ (OrderProduct).
-    Позволяет видеть расходы на закупку мгновенно, не дожидаясь транзакций Озона.
     """
-    # 1. Получаем список всех постингов за этот период через унифицированный метод
-    postings_map = _get_unified_postings(db, user_id, since_utc, to_utc, include_cancelled)
+    # 1. Получаем список всех постингов за этот период (если не переданы готовые)
+    if postings_map is None:
+        postings_map = _get_unified_postings(db, user_id, since_utc, to_utc, include_cancelled)
     
     if not postings_map:
         return 0.0, []
@@ -558,7 +561,8 @@ async def sales_report_universal(
         since_utc,
         to_utc,
         tz_offset_hours=tz_offset_hours,
-        include_cancelled=False # Не считаем себестоимость отмененных
+        include_cancelled=False, # Не считаем себестоимость отмененных
+        postings_map=postings_map  # ОПТИМИЗАЦИЯ: повторно используем уже загруженные постинги
     )
 
     items = list(items_map.values())
@@ -744,14 +748,20 @@ async def expenses_breakdown(
         })
 
     # --- ОПЕРАТИВНЫЙ РАСЧЕТ СЕБЕСТОИМОСТИ ТОВАРОВ ---
-    # Берем данные по заказам за этот период
+    # Получаем постинги для расчета себестоимости (чтобы не дублировать логику)
+    # Используем расширенное окно поиска для корректного маппинга дат
+    search_since = since_utc - timedelta(hours=24)
+    search_to = to_utc + timedelta(hours=24)
+    p_map = _get_unified_postings(db, current_user.id, search_since, search_to, include_cancelled=False)
+
     total_cp, cp_items = _calculate_cost_price_from_orders(
         db,
         current_user.id,
-        since_utc.replace(tzinfo=None),
-        to_utc.replace(tzinfo=None),
+        since_utc,
+        to_utc,
         tz_offset_hours=tz_offset_hours,
-        include_cancelled=False
+        include_cancelled=False,
+        postings_map=p_map
     )
 
     if total_cp > 0:

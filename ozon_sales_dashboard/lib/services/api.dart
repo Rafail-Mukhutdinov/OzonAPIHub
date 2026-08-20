@@ -25,15 +25,21 @@ class OzonApiClient {
       if (host == 'localhost' || host == '127.0.0.1') {
         return 'http://localhost:8083';
       }
+      
+      // Если мы на основном домене, принудительно используем HTTPS для API
+      if (host == 'seller.home-me.online') {
+        return 'https://api-ozon.home-me.online';
+      }
+
       if (host.isNotEmpty) {
-        // Явно добавляем порт 8083, игнорируя порт из Uri.base
+        // Резерв для локального IP (192.168.1.105)
         return 'http://$host:8083';
       }
     }
     // Для мобильных приложений (Android/iOS)
     // ВАЖНО: Используйте --dart-define=BASE_URL=ваша_ссылка при сборке.
     // Если переменная не задана, используем значение по умолчанию.
-    return const String.fromEnvironment('BASE_URL', defaultValue: 'http://45.150.11.25:8083');
+    return const String.fromEnvironment('BASE_URL', defaultValue: 'https://api-ozon.home-me.online');
   }
 
   OzonApiClient({String? baseUrl, this.authProvider})

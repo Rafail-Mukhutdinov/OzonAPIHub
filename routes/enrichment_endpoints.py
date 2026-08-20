@@ -7,14 +7,15 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from db.database import Order, OrderPosting, get_db, User
 from services.enrichment import enrich_posting_from_ozon
 from services.sync import run_enrichment_batch
 from utils.common import valid_posting_number
-from utils.auth import get_current_user
+from utils.auth import get_current_user, verify_not_impersonating
+from utils.logging_config import log_user_event
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -34,8 +35,9 @@ class EnrichOrderIn(BaseModel):
     order_number: str
 
 
-@router.post("/get")
+@router.post("/get", dependencies=[Depends(verify_not_impersonating)])
 async def enrich_posting(
+    request: Request,
     item: EnrichPostingIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -44,19 +46,22 @@ async def enrich_posting(
     Принудительно обогатить информацию по конкретному номеру отправления.
     Полезно, если по какому-то заказу не подгрузились комиссии.
     """
+    admin_id = getattr(request.state, "impersonated_by", None)
     try:
         # Вызываем логику обогащения, которая сходит в Ozon API
         result = await enrich_posting_from_ozon(item.posting_number, current_user.id, db)
         db.commit() # Делаем коммит для одиночного запроса
+        log_user_event(current_user.id, f"Ручное обогащение отправления {item.posting_number}", admin_id=admin_id)
         return result
     except Exception as e:
         db.rollback()
         logger.error(f"Ошибка обогащения {item.posting_number}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Ошибка при получении детальных данных от Ozon API")
 
 
-@router.post("/get_for_order")
+@router.post("/get_for_order", dependencies=[Depends(verify_not_impersonating)])
 async def enrich_order(
+    request: Request,
     item: EnrichOrderIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -65,6 +70,7 @@ async def enrich_order(
     Находит все отправления (Postings), связанные с этим заказом,
     и запускает обогащение для каждого из них.
     """
+    admin_id = getattr(request.state, "impersonated_by", None)
 
     def get_postings():
         """Внутренняя функция для поиска всех связанных номеров постингов."""
@@ -90,7 +96,9 @@ async def enrich_order(
     
     if postings:
         await run_enrichment_batch(postings, current_user.id)
-    
+
+    log_user_event(current_user.id, f"Ручное обогащение заказа {item.order_number} ({len(postings)} отпр.)", admin_id=admin_id)
+
     return {
         "order_number": item.order_number,
         "count": len(postings),
@@ -98,8 +106,9 @@ async def enrich_order(
     }
 
 
-@router.post("/enrich_recent")
+@router.post("/enrich_recent", dependencies=[Depends(verify_not_impersonating)])
 async def enrich_recent(
+    request: Request,
     limit: int = 100,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -107,6 +116,7 @@ async def enrich_recent(
     """
     Массовое обогащение последних заказов (например, за последние 48 часов).
     """
+    admin_id = getattr(request.state, "impersonated_by", None)
     since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
     since_iso = since_dt.isoformat() + 'Z'
     
@@ -129,12 +139,15 @@ async def enrich_recent(
     
     if targets:
         await run_enrichment_batch(targets, current_user.id)
-    
+
+    log_user_event(current_user.id, f"Массовое обогащение недавних заказов ({len(targets)} шт.)", admin_id=admin_id)
+
     return {"processed": len(targets), "status": "ok"}
 
 
-@router.post("/enrich_changed_recent")
+@router.post("/enrich_changed_recent", dependencies=[Depends(verify_not_impersonating)])
 async def enrich_changed_recent(
+    request: Request,
     limit: int = 100,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -142,6 +155,7 @@ async def enrich_changed_recent(
     """
     Интеллектуальное обогащение: ищет заказы, у которых изменился статус.
     """
+    admin_id = getattr(request.state, "impersonated_by", None)
     since_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=RECENT_WINDOW_HOURS)
     since_iso = since_dt.isoformat() + 'Z'
     
@@ -170,5 +184,7 @@ async def enrich_changed_recent(
     
     if targets:
         await run_enrichment_batch(targets, current_user.id)
-    
+
+    log_user_event(current_user.id, f"Интеллектуальное обогащение недавних заказов ({len(targets)} шт.)", admin_id=admin_id)
+
     return {"processed": len(targets), "status": "ok"}

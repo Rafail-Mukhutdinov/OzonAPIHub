@@ -19,8 +19,12 @@ class AuthProvider extends ChangeNotifier {
   static const String _tokenKey = 'jwt_token';
   static const String _emailKey = 'user_email';
   static const String _isAdminKey = 'is_admin';
+  static const String _isDemoKey = 'is_demo';
+  static const String _subEndDateKey = 'subscription_end_date';
   static const String _biometricEnabledKey = 'biometric_enabled';
   static const String _pinKey = 'user_pin';
+  static const String _adminTokenBackupKey = 'admin_original_token';
+  static const String _adminEmailBackupKey = 'admin_original_email';
 
   final _secureStorage = const FlutterSecureStorage();
   final _localAuth = LocalAuthentication();
@@ -28,7 +32,10 @@ class AuthProvider extends ChangeNotifier {
   String? _token;
   String? _userEmail;
   String? _pinCode;
+  String? _originalAdminToken; // Для возврата из Impersonation
   bool _isAdmin = false;
+  bool _isDemo = false;
+  DateTime? _subscriptionEndDate;
   bool _isAuthenticated = false;
   bool _isLocalAuthenticated = false;
   bool _isLoading = true;
@@ -40,9 +47,12 @@ class AuthProvider extends ChangeNotifier {
   bool get isLocalAuthenticated => _isLocalAuthenticated;
   bool get isLoading => _isLoading;
   bool get needsBiometricPrompt => _needsBiometricPrompt;
+  bool get isImpersonating => _originalAdminToken != null;
   String? get token => _token;
   String? get userEmail => _userEmail;
   bool get isAdmin => _isAdmin;
+  bool get isDemo => _isDemo;
+  DateTime? get subscriptionEndDate => _subscriptionEndDate;
   bool get biometricEnabled => _biometricEnabled;
   bool get hasPin => _pinCode?.length == 4;
 
@@ -57,12 +67,14 @@ class AuthProvider extends ChangeNotifier {
       if (kIsWeb) {
         // На Web используем обычные настройки (SecureStorage не работает без HTTPS)
         _token = prefs.getString(_tokenKey);
+        _originalAdminToken = prefs.getString(_adminTokenBackupKey);
         _pinCode = null;
       } else {
         // На Mobile используем защищенное хранилище
         try {
           _token = await _secureStorage.read(key: _tokenKey);
           _pinCode = await _secureStorage.read(key: _pinKey);
+          _originalAdminToken = await _secureStorage.read(key: _adminTokenBackupKey);
         } catch (e) {
           debugPrint("_initAuth: secureStorage error: $e");
         }
@@ -70,6 +82,11 @@ class AuthProvider extends ChangeNotifier {
 
       _userEmail = prefs.getString(_emailKey);
       _isAdmin = prefs.getBool(_isAdminKey) ?? false;
+      _isDemo = prefs.getBool(_isDemoKey) ?? false;
+      final subDateStr = prefs.getString(_subEndDateKey);
+      if (subDateStr != null) {
+        _subscriptionEndDate = DateTime.tryParse(subDateStr);
+      }
       _biometricEnabled = prefs.getBool(_biometricEnabledKey) ?? false;
 
       // Локальная переменная нужна для null-promotion: поля класса не
@@ -147,6 +164,27 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> updateProfile({
+    bool? isAdmin,
+    bool? isDemo,
+    DateTime? subscriptionEndDate,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (isAdmin != null) {
+      _isAdmin = isAdmin;
+      await prefs.setBool(_isAdminKey, isAdmin);
+    }
+    if (isDemo != null) {
+      _isDemo = isDemo;
+      await prefs.setBool(_isDemoKey, isDemo);
+    }
+    if (subscriptionEndDate != null) {
+      _subscriptionEndDate = subscriptionEndDate;
+      await prefs.setString(_subEndDateKey, subscriptionEndDate.toIso8601String());
+    }
+    notifyListeners();
+  }
+
   Future<void> setToken(String token, {String? email, bool? isAdmin, String? pin}) async {
     final prefs = await SharedPreferences.getInstance();
     
@@ -190,6 +228,69 @@ class AuthProvider extends ChangeNotifier {
   /// Сброс флага запроса биометрии
   void dismissBiometricPrompt() {
     _needsBiometricPrompt = false;
+    notifyListeners();
+  }
+
+  /// Вход в режим Impersonation (подмена токена с сохранением админского)
+  Future<void> enterImpersonation(String impersonationToken, String targetEmail) async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Сохраняем текущий админский токен и email
+    _originalAdminToken = _token;
+    if (kIsWeb) {
+      await prefs.setString(_adminTokenBackupKey, _token!);
+      await prefs.setString(_adminEmailBackupKey, _userEmail!);
+    } else {
+      await _secureStorage.write(key: _adminTokenBackupKey, value: _token!);
+      await prefs.setString(_adminEmailBackupKey, _userEmail!); // Email не секретный, можно в prefs
+    }
+
+    // Переключаемся на токен пользователя
+    _token = impersonationToken;
+    _userEmail = targetEmail;
+    _isAdmin = false; // В режиме имитации мы как обычный юзер
+
+    if (kIsWeb) {
+      await prefs.setString(_tokenKey, impersonationToken);
+      await prefs.setString(_emailKey, targetEmail);
+      await prefs.setBool(_isAdminKey, false);
+    } else {
+      await _secureStorage.write(key: _tokenKey, value: impersonationToken);
+      await prefs.setString(_emailKey, targetEmail);
+      await prefs.setBool(_isAdminKey, false);
+    }
+
+    notifyListeners();
+  }
+
+  /// Выход из режима Impersonation (возврат к админскому токену)
+  Future<void> stopImpersonating() async {
+    if (_originalAdminToken == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final adminToken = _originalAdminToken!;
+    final adminEmail = prefs.getString(_adminEmailBackupKey) ?? 'Admin';
+
+    // Восстанавливаем админские данные
+    _token = adminToken;
+    _userEmail = adminEmail;
+    _originalAdminToken = null;
+    _isAdmin = true;
+
+    if (kIsWeb) {
+      await prefs.setString(_tokenKey, adminToken);
+      await prefs.setString(_emailKey, adminEmail);
+      await prefs.remove(_adminTokenBackupKey);
+      await prefs.remove(_adminEmailBackupKey);
+      await prefs.setBool(_isAdminKey, true);
+    } else {
+      await _secureStorage.write(key: _tokenKey, value: adminToken);
+      await prefs.setString(_emailKey, adminEmail);
+      await _secureStorage.delete(key: _adminTokenBackupKey);
+      await prefs.remove(_adminEmailBackupKey);
+      await prefs.setBool(_isAdminKey, true);
+    }
+
     notifyListeners();
   }
 
@@ -240,6 +341,7 @@ class AuthProvider extends ChangeNotifier {
     }
     _token = null;
     _pinCode = null;
+    _originalAdminToken = null;
     _isAuthenticated = false;
     _isLocalAuthenticated = false;
     notifyListeners();

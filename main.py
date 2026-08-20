@@ -16,6 +16,7 @@ from arq.connections import RedisSettings
 load_dotenv()
 
 from fastapi import FastAPI, Depends
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from db.database import get_db, Order, User, engine, Base, SessionLocal, SyncStatus, init_db
 from utils.rate_limit_middleware import setup_rate_limiting
@@ -90,16 +91,20 @@ setup_rate_limiting(app)
 
 # Настройка CORS
 # В production стоит ограничить список разрешенных доменов через переменную окружения CORS_ORIGINS
-cors_origins_str = os.getenv("CORS_ORIGINS", "*")
-if cors_origins_str == "*":
-    origins = ["*"]
+cors_origins_str = os.getenv("CORS_ORIGINS", "")
+if not cors_origins_str or cors_origins_str == "*":
+    # Если origins не заданы или стоят как "*", мы не можем использовать allow_credentials=True
+    # Для безопасности и корректности SaaS лучше явно перечислить домены.
+    origins = [] 
+    allow_all_origins = True
 else:
     origins = [o.strip() for o in cors_origins_str.split(",")]
+    allow_all_origins = False
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"] if allow_all_origins else origins,
+    allow_credentials=not allow_all_origins, # credentials запрещены при allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
     max_age=600
@@ -118,6 +123,7 @@ from routes.product_costs import router as product_costs_router
 from routes.enrichment_endpoints import router as enrichment_router
 from routes.auth_endpoints import router as auth_router
 from routes.app_updates import router as app_updates_router
+from routes.admin import router as admin_router
 
 # Подключение всех модулей API
 app.include_router(analytics_router)
@@ -128,26 +134,12 @@ app.include_router(product_costs_router)
 app.include_router(enrichment_router)
 app.include_router(auth_router)
 app.include_router(app_updates_router)
+app.include_router(admin_router)
 
-@app.get("/stats")
-def stats(current_user: User = Depends(get_current_user), db = Depends(get_db)):
-    """Выдает общую статистику по записям (только для администраторов)."""
-    if not current_user.is_admin:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-
-    total = db.query(Order).count()
-    return {
-        "total_rows": total,
-        "mode": "distributed_workers"
-    }
-
-@app.get("/users-count-debug")
-def get_users_count_global(current_user: User = Depends(get_current_user), db = Depends(get_db)):
-    if not current_user.is_admin:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=403, detail="Только для администраторов")
-
-    from db.database import User
-    count = db.query(User).count()
-    return {"total_users": count}
+# -----------------------------------------------------------------------------
+# Статические файлы (APK для OTA-обновлений мобильного приложения и пр.)
+# Прямая ссылка на скачивание APK: /static/apps/app-release.apk
+# (каталог static монтируется в контейнер через volume: ./static:/app/static)
+# -----------------------------------------------------------------------------
+os.makedirs(os.path.join("static", "apps"), exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")

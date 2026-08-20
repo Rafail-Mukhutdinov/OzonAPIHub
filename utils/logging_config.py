@@ -76,7 +76,7 @@ def get_user_logger(user_id: int):
 
     return u_logger
 
-def log_user_event(user_id: int, message: str, level: str = "info"):
+def log_user_event(user_id: int, message: str, level: str = "info", admin_id: int = None):
     """
     Удобная функция-обертка для логирования событий пользователя.
     Именно этот метод используется во всех сервисах и эндпоинтах.
@@ -85,8 +85,14 @@ def log_user_event(user_id: int, message: str, level: str = "info"):
         user_id: ID пользователя из БД.
         message: Текст сообщения.
         level: Уровень (info, warning, error, debug).
+        admin_id: (Опционально) ID администратора, если действие совершено через Impersonation.
     """
     u_logger = get_user_logger(user_id)
+
+    # Добавляем тег impersonation, если действие совершено админом
+    if admin_id is not None:
+        message = f"[IMPERSONATED by admin_{admin_id}] {message}"
+
     # Динамически получаем метод логгера (например, u_logger.info или u_logger.error)
     method = getattr(u_logger, level.lower(), u_logger.info)
     method(message)

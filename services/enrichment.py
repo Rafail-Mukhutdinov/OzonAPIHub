@@ -95,7 +95,7 @@ async def enrich_posting_from_ozon(
 
     except Exception as e:
         logger.error(f"Error fetching posting {posting_number} for user {user_id}: {e}")
-        return {"status": "api_error", "detail": str(e)}
+        return {"status": "api_error", "detail": "Ошибка при получении данных от Ozon API"}
 
     order_number = data.get("order_number")
     
@@ -207,6 +207,7 @@ async def enrich_posting_from_ozon(
         except Exception as e:
             logger.error(f"User {user_id}: Критическая ошибка при получении изображений Ozon: {e}")
 
+    new_products = []
     for pr in products_data:
         if not isinstance(pr, dict): continue
         sku = pr.get("sku")
@@ -236,7 +237,10 @@ async def enrich_posting_from_ozon(
             payout=_to_int((f or {}).get("payout")),
             image_url=image_map.get(str(sku))
         )
-        db.add(obj)
+        new_products.append(obj)
+    
+    if new_products:
+        db.add_all(new_products)
     
     if order_number:
         recalc_order_header(db, order_number, user_id)
@@ -307,6 +311,7 @@ async def enrich_accruals_from_ozon(
                     for pn, op_id in found_ops:
                         posting_cache[pn] = op_id
 
+            all_rows_to_add = []
             for acc in accruals:
                 acc_id = acc.get("accrual_id")
                 unit_number = acc.get("unit_number")
@@ -318,6 +323,8 @@ async def enrich_accruals_from_ozon(
                 currency = amount_data.get("currency")
 
                 rows_to_add = []
+                
+                # ... (inner logic same) ...
 
                 if category == "POSTING" and acc.get("posting"):
                     p_data = acc["posting"]
@@ -398,10 +405,12 @@ async def enrich_accruals_from_ozon(
                                 amount=amt, currency=currency, posting_id=p_id
                             ))
 
-                for row in rows_to_add:
-                    db.add(row)
+                all_rows_to_add.extend(rows_to_add)
                 total_accruals += 1
                 total_rows += len(rows_to_add)
+
+            if all_rows_to_add:
+                db.add_all(all_rows_to_add)
 
             db.commit()
             last_id = response.get("last_id")
@@ -411,7 +420,7 @@ async def enrich_accruals_from_ozon(
         except Exception as e:
             logger.error(f"Error enriching accruals for user {user_id} date {date_str}: {e}")
             db.rollback()
-            return {"status": "error", "detail": str(e)}
+            return {"status": "error", "detail": "Ошибка при синхронизации транзакций Ozon"}
 
     logger.info(f"User {user_id}: синхронизировано {total_accruals} accruals ({total_rows} строк) за {date_str}")
     return {"status": "ok", "synced": total_accruals, "rows": total_rows}

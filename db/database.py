@@ -207,6 +207,36 @@ class OzonAccrual(Base):
     user = relationship("User")
     posting = relationship("OrderPosting")
 
+class AdminActionLog(Base):
+    """
+    Audit trail действий администратора.
+    Логирует все чувствительные операции (impersonation, продление подписки,
+    блокировка, очистка данных и т.д.) для соответствия требованиям SaaS / 152-ФЗ.
+    """
+    __tablename__ = "admin_action_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    admin_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False, index=True)
+    target_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action_type = Column(String(50), nullable=False, index=True)
+    details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now, nullable=False, index=True)
+
+    admin_user = relationship("User", foreign_keys=[admin_user_id])
+    target_user = relationship("User", foreign_keys=[target_user_id])
+
+
+class SystemSetting(Base):
+    """
+    Глобальные настройки платформы (key-value): feature flags,
+    режим обслуживания, глобальные лимиты и т.д.
+    """
+    __tablename__ = "system_settings"
+    key = Column(String(100), primary_key=True)
+    value = Column(JSON, nullable=True)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
 class SyncStatus(Base):
     __tablename__ = "sync_status"
     id = Column(Integer, primary_key=True)

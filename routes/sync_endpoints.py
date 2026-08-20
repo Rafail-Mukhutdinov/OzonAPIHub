@@ -7,8 +7,9 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from db.database import get_db, User, SyncStatus
 from datetime import datetime, timezone, timedelta
-from utils.auth import get_current_user
+from utils.auth import get_current_user, verify_not_impersonating
 from utils.common import parse_ozon_datetime
+from utils.logging_config import log_user_event
 from services.sync import sync_user_orders
 
 logger = logging.getLogger("OzonAPIHub")
@@ -62,8 +63,9 @@ def get_sync_status(
         "backfill_is_complete": status.backfill_is_complete
     }
 
-@router.post("/manual")
+@router.post("/manual", dependencies=[Depends(verify_not_impersonating)])
 async def trigger_manual_sync(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -71,6 +73,7 @@ async def trigger_manual_sync(
     Запускает принудительную синхронизацию для пользователя.
     Ограничение: не чаще чем раз в 5 минут (300 секунд).
     """
+    admin_id = getattr(request.state, "impersonated_by", None)
     status = db.query(SyncStatus).filter(SyncStatus.user_id == current_user.id).first()
     
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -111,7 +114,9 @@ async def trigger_manual_sync(
         status.updated_at = status.sync_completed_at
         status.status_message = "ok"
         db.commit()
-        
+
+        log_user_event(current_user.id, f"Ручная синхронизация завершена. Найдено: {found_new}", admin_id=admin_id)
+
         return {
             "status": "ok", 
             "new_orders_found": found_new,
@@ -119,20 +124,21 @@ async def trigger_manual_sync(
         }
     except Exception as e:
         status.is_syncing = False
-        status.status_message = f"error: {str(e)}"
+        status.status_message = "error: internal error"
         db.commit()
         logger.error(f"Manual sync error for user {current_user.id}: {e}")
         raise HTTPException(status_code=500, detail="Ошибка при синхронизации")
 
 
-@router.post("/initial")
-@router.post("/initial/force")
+@router.post("/initial", dependencies=[Depends(verify_not_impersonating)])
+@router.post("/initial/force", dependencies=[Depends(verify_not_impersonating)])
 async def run_initial_sync(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Запуск полной загрузки истории заказов через ARQ воркер."""
+    admin_id = getattr(request.state, "impersonated_by", None)
     # Проверка доступности пула ARQ
     arq_pool = getattr(request.app.state, "arq_pool", None)
     if arq_pool is None:
@@ -172,6 +178,7 @@ async def run_initial_sync(
     db.commit()
 
     logger.info(f"Добавление задачи Backfill в очередь для пользователя {current_user.id} (force={is_force})")
+    log_user_event(current_user.id, f"Запущена полная загрузка истории (force={is_force})", admin_id=admin_id)
 
     try:
         # Используем уникальный ID задачи, чтобы избежать блокировок в Redis при перезапусках
@@ -192,7 +199,7 @@ async def run_initial_sync(
     return {"status": "ok", "message": "Загрузка добавлена в очередь"}
 
 
-@router.post("/history")
+@router.post("/history", dependencies=[Depends(verify_not_impersonating)])
 async def run_history_sync(
     request: Request,
     start: str,
@@ -202,6 +209,7 @@ async def run_history_sync(
     """
     Ручной запуск импорта за конкретный выбранный пользователем период через воркер.
     """
+    admin_id = getattr(request.state, "impersonated_by", None)
     try:
         start_dt = _iso_to_dt(start)
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -235,5 +243,7 @@ async def run_history_sync(
         start_dt.isoformat(),
         end_dt.isoformat()
     )
+
+    log_user_event(current_user.id, f"Запущена докачка истории: {start} - {end or 'now'}", admin_id=admin_id)
 
     return {"status": "ok", "message": "Задача на импорт истории добавлена в очередь"}

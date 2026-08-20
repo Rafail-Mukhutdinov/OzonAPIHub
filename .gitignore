@@ -1,16 +1,41 @@
+# Secrets & data (никогда в git)
 .env
-__pycache__/
-*.pyc
-*.xlsx
 *.db
 *.db.bak
 .initial_sync_done
-*.png
+
+# Python
+__pycache__/
+*.pyc
+*.xlsx
 venv/
+.venv/
+env/
+
+# Дубликаты проекта (qty/ — полная копия, не должна отслеживаться)
+qty/
 
 # Logs
 logs/
+*.log
 
 # App builds
 *.apk
 static/apps/*.apk
+*.png
+
+# IDE & tooling
+.idea/
+.vscode/
+.pytest_cache/
+.qoder/
+
+# Session artifacts & temp files
+.artifacts/
+_search_result.txt
+
+# Deploy helper (локальный скрипт, не для репозитория)
+deploy_apk.ps1
+
+# Flutter Android generated settings
+ozon_sales_dashboard/android/.settings/

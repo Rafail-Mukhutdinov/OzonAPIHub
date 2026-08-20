@@ -112,6 +112,8 @@ async def get_current_user(
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
+        # Phase 4: извлекаем claim impersonated_by (если админ вошёл под пользователем)
+        impersonated_by = payload.get("impersonated_by")
     except JWTError:
         raise credentials_exception
     
@@ -123,6 +125,9 @@ async def get_current_user(
     # Сохраняем пользователя в state, чтобы Rate Limiter его увидел
     if isinstance(request, Request):
         request.state.user = user
+        # Phase 4: сохраняем ID админа, если это impersonation-сессия
+        if impersonated_by is not None:
+            request.state.impersonated_by = impersonated_by
 
     if not user.is_active:
         raise HTTPException(
@@ -138,6 +143,35 @@ async def get_current_active_user(
 ) -> User:
     """Обертка над get_current_user для явной проверки активности."""
     return current_user
+
+
+async def get_current_admin(
+    current_user: User = Depends(get_current_active_user)
+) -> User:
+    """
+    Dependency для всех admin-эндпоинтов.
+    Декларативная проверка прав администратора (вместо ручных `if not is_admin`).
+    Используется через dependencies=[Depends(get_current_admin)] на уровне роутера.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Требуются права администратора"
+        )
+    return current_user
+
+
+def verify_not_impersonating(request: Request):
+    """
+    Защитная проверка для деструктивных эндпоинтов.
+    Запрещает выполнение действий, если администратор вошёл под пользователем (Impersonation).
+    """
+    if hasattr(request.state, "impersonated_by") and request.state.impersonated_by is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Это действие запрещено в режиме имитации (Impersonation). "
+                   "Пожалуйста, вернитесь в аккаунт администратора."
+        )
 
 
 def check_subscription(user: User) -> bool:

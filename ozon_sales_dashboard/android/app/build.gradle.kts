@@ -7,7 +7,8 @@ plugins {
 
 android {
     namespace = "com.example.ozon_sales_dashboard"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36 // androidx.core 1.17+ и browser 1.9 требуют API 36
+    buildToolsVersion = "36.0.0"
     ndkVersion = "27.0.12077973"
 
     compileOptions {
@@ -21,12 +22,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.ozon_sales_dashboard"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        targetSdk = 36 // Явно указываем современную версию
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }

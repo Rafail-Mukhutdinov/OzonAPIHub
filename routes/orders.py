@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
+from collections import defaultdict
 from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User
 from utils.auth import get_current_user
 from datetime import datetime, timezone
@@ -34,8 +35,8 @@ def list_orders(
     try:
         since_iso = normalize_iso(since) if since else None
         to_iso = normalize_iso(to) if to else None
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Некорректный формат даты.")
 
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
@@ -131,11 +132,17 @@ def get_order_summary(
     # 3. Берем все товары для всех найденных отправлений
     posting_numbers = [p.posting_number for p in postings]
     products = []
+    products_by_posting = defaultdict(list)
+    
     if posting_numbers:
         products = db.query(OrderProduct).filter(
             OrderProduct.user_id == current_user.id,
             OrderProduct.posting_number.in_(posting_numbers)
         ).all()
+        
+        # Группируем товары по номеру отправления для O(1) поиска
+        for pr in products:
+            products_by_posting[pr.posting_number].append(pr)
 
     # Считаем промежуточные итоги, если заголовка нет в БД
     total_payout = sum((p.payout or 0) for p in products)
@@ -175,7 +182,7 @@ def get_order_summary(
                         "total_discount_value": pr.total_discount_value,
                         "total_discount_percent": pr.total_discount_percent,
                     }
-                    for pr in products if pr.posting_number == p.posting_number
+                    for pr in products_by_posting.get(p.posting_number, [])
                 ],
             }
             for p in postings

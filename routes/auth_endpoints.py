@@ -8,12 +8,13 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, field_validator, Field, AliasChoices, ConfigDict
 from datetime import datetime, timedelta, timezone
-from db.database import get_db, User, OzonCredential, Order, OrderPosting, OrderProduct, OrderHeader, Cost, SyncStatus
+from db.database import get_db, User, OzonCredential, Order, OrderPosting, OrderProduct, OrderHeader, Cost, SyncStatus, OzonAccrual, ProductCost
 from utils.auth import (
     authenticate_user,
     create_access_token,
     get_current_user,
     get_password_hash,
+    verify_not_impersonating,
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from utils.encryption import encrypt_credential, decrypt_credential
@@ -138,7 +139,6 @@ def register(request: Request, user_data: UserRegister, db: Session = Depends(ge
 @limiter.limit("10/minute")
 def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Авторизация пользователя (выдача JWT токена)."""
-    logger.info(f"Login attempt for user: {form_data.username}")
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
@@ -161,18 +161,6 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         has_credentials=has_creds
     )
 
-@router.get("/debug/users-count")
-def get_users_count(
-    current_user: User = Depends(get_current_user), 
-    db: Session = Depends(get_db)
-):
-    """Возвращает общее количество пользователей (только для администраторов)."""
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-
-    count = db.query(User).count()
-    return {"total_users": count}
-
 @router.get("/admin/users", response_model=list[UserResponse])
 def get_all_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Возвращает список всех пользователей системы (только для админа)."""
@@ -180,10 +168,13 @@ def get_all_users(current_user: User = Depends(get_current_user), db: Session = 
         raise HTTPException(status_code=403, detail="Доступ запрещен")
     
     users = db.query(User).all()
-    # Для каждого пользователя нужно проверить наличие ключей
+    # Оптимизация N+1: получаем ID всех пользователей, у которых есть ключи, одним запросом
+    user_ids_with_creds = {
+        row[0] for row in db.query(OzonCredential.user_id).distinct().all()
+    }
+    
     result = []
     for user in users:
-        has_creds = db.query(OzonCredential).filter(OzonCredential.user_id == user.id).first() is not None
         result.append(UserResponse(
             id=user.id,
             email=user.email,
@@ -191,7 +182,7 @@ def get_all_users(current_user: User = Depends(get_current_user), db: Session = 
             is_admin=user.is_admin,
             subscription_end_date=user.subscription_end_date,
             is_active=user.is_active,
-            has_credentials=has_creds
+            has_credentials=user.id in user_ids_with_creds
         ))
     return result
 
@@ -222,7 +213,7 @@ async def _initial_sync_task(user_id: int):
     finally: db.close()
 
 
-@router.post("/me/ozon-credentials", status_code=status.HTTP_201_CREATED)
+@router.post("/me/ozon-credentials", status_code=status.HTTP_201_CREATED, dependencies=[Depends(verify_not_impersonating)])
 async def create_ozon_credential(
     request: Request,
     data: OzonCredentialCreate,
@@ -230,6 +221,7 @@ async def create_ozon_credential(
     db: Session = Depends(get_db)
 ):
     """Добавляет новый набор API-ключей Ozon или обновляет существующий по имени."""
+    admin_id = getattr(request.state, "impersonated_by", None)
     try:
         # Ищем существующий набор ключей по имени в рамках этого пользователя
         existing = db.query(OzonCredential).filter(
@@ -243,7 +235,7 @@ async def create_ozon_credential(
             existing.api_key_encrypted = encrypt_credential(data.api_key)
             existing.marketplace = data.marketplace
             db.commit()
-            log_user_event(current_user.id, f"Ключи для магазина '{data.name}' обновлены.")
+            log_user_event(current_user.id, f"Ключи для магазина '{data.name}' обновлены.", admin_id=admin_id)
             return {"status": "updated"}
 
         # Деактивируем все остальные ключи этого пользователя перед добавлением новых
@@ -262,7 +254,7 @@ async def create_ozon_credential(
         db.add(new_cred)
         db.commit()
 
-        log_user_event(current_user.id, f"Добавлен новый магазин: {data.name}")
+        log_user_event(current_user.id, f"Добавлен новый магазин: {data.name}", admin_id=admin_id)
 
         # Запускаем первичную синхронизацию через воркер (Redis) с уникальным ID задачи
         if hasattr(request.app.state, "arq_pool"):
@@ -277,37 +269,43 @@ async def create_ozon_credential(
     except Exception as e:
         db.rollback()
         logger.error(f"Error adding credentials: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Ошибка при сохранении API-ключей. Убедитесь в корректности данных.")
 
 
-@router.put("/me/ozon-credentials/{credential_id}/activate")
-def activate_ozon_credential(credential_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.put("/me/ozon-credentials/{credential_id}/activate", dependencies=[Depends(verify_not_impersonating)])
+def activate_ozon_credential(request: Request, credential_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Делает выбранный магазин активным."""
+    admin_id = getattr(request.state, "impersonated_by", None)
     db.query(OzonCredential).filter(OzonCredential.user_id == current_user.id).update({OzonCredential.is_active: False})
     db.query(OzonCredential).filter(OzonCredential.id == credential_id, OzonCredential.user_id == current_user.id).update({OzonCredential.is_active: True})
     db.commit()
-    log_user_event(current_user.id, "Магазин переключен.")
+    log_user_event(current_user.id, "Магазин переключен.", admin_id=admin_id)
     return {"status": "ok"}
 
 
-@router.delete("/me/ozon-credentials/{credential_id}")
-def delete_ozon_credential(credential_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.delete("/me/ozon-credentials/{credential_id}", dependencies=[Depends(verify_not_impersonating)])
+def delete_ozon_credential(request: Request, credential_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Удаляет ключи магазина."""
+    admin_id = getattr(request.state, "impersonated_by", None)
     db.query(OzonCredential).filter(OzonCredential.id == credential_id, OzonCredential.user_id == current_user.id).delete()
     db.commit()
+    log_user_event(current_user.id, f"Удалены ключи магазина (ID: {credential_id})", admin_id=admin_id)
     return {"status": "ok"}
 
 
-@router.post("/me/data/purge")
-def purge_user_data(payload: DataPurgeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.post("/me/data/purge", dependencies=[Depends(verify_not_impersonating)])
+def purge_user_data(request: Request, payload: DataPurgeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Полная очистка данных пользователя."""
+    admin_id = getattr(request.state, "impersonated_by", None)
     db.query(OrderProduct).filter(OrderProduct.user_id == current_user.id).delete()
     db.query(OrderPosting).filter(OrderPosting.user_id == current_user.id).delete()
     db.query(OrderHeader).filter(OrderHeader.user_id == current_user.id).delete()
     db.query(Order).filter(Order.user_id == current_user.id).delete()
     db.query(Cost).filter(Cost.user_id == current_user.id).delete()
+    db.query(OzonAccrual).filter(OzonAccrual.user_id == current_user.id).delete()
+    db.query(ProductCost).filter(ProductCost.user_id == current_user.id).delete()
     db.commit()
-    log_user_event(current_user.id, "ВНИМАНИЕ: Все данные маркетплейса удалены пользователем.", "warning")
+    log_user_event(current_user.id, "ВНИМАНИЕ: Все данные маркетплейса удалены пользователем.", "warning", admin_id=admin_id)
     return {"status": "ok"}
 
 

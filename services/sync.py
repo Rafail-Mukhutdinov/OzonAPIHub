@@ -24,9 +24,6 @@ RECENT_WINDOW_HOURS = int(os.getenv('RECENT_WINDOW_HOURS', '24'))
 ENRICH_ON_FETCH = os.getenv('ENRICH_ON_FETCH', 'true').lower() in ('1', 'true', 'yes')
 ENRICH_CONCURRENCY = int(os.getenv('ENRICH_CONCURRENCY', '2')) # Берем из env, по умолчанию 2
 
-def _get_now_utc():
-    return get_now_utc()
-
 def get_latest_order_datetime(db: Session, user_id: int) -> Union[datetime, None]:
     """
     Находит дату последнего заказа пользователя, используя нативную агрегацию SQL.
@@ -56,7 +53,7 @@ def find_accrual_date_gaps(db: Session, user_id: int, lookback_days: int = 30) -
     Возвращает список строк в формате 'YYYY-MM-DD', отсортированных по возрастанию.
     Игнорирует сегодняшний день (он синхронизируется обычным циклом).
     """
-    now = _get_now_utc()
+    now = get_now_utc()
     # Нормализуем since к началу дня (Недочет B)
     since = (now - timedelta(days=lookback_days)).replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -88,7 +85,7 @@ async def sync_user_orders(user: User, db: Session) -> bool:
         
         if not active_cred: return False
 
-        now = _get_now_utc()
+        now = get_now_utc()
 
         # Smart Gap Filling Logic - надежный поиск последней даты
         last_order_dt = get_latest_order_datetime(db, user.id)
@@ -202,7 +199,7 @@ async def sync_user_orders(user: User, db: Session) -> bool:
                 await run_enrichment_batch(list(new_pns), user.id)
 
         # --- Синхронизация начислений с обнаружением дыр ---
-        now = _get_now_utc()
+        now = get_now_utc()
 
         # A) СТАНДАРТНОЕ ОКНО: последние дни + перехлест (как сейчас)
         last_acc_dt = get_latest_accrual_date(db, user.id)
@@ -368,7 +365,7 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
         return {"saved": saved, "fetched": len(items), "orders": valid_orders}
     except Exception as e:
         logger.error(f"fetch_and_save_orders_async error: {e}")
-        return {"saved": 0, "fetched": 0, "error": str(e), "orders": []}
+        return {"saved": 0, "fetched": 0, "error": "Ошибка при получении данных от Ozon", "orders": []}
 
 async def run_enrichment_batch(pns: list[str], user_id: int):
     """
@@ -486,6 +483,7 @@ async def sync_ozon_transactions(user_id: int, db: Session, days_back: int = 30)
                         if f"[ID:{oid}]" in note:
                             existing_tags.add(oid)
 
+            costs_to_add = []
             for op in operations:
                 amount = float(op.get("amount") or 0)
 
@@ -525,15 +523,17 @@ async def sync_ozon_transactions(user_id: int, db: Session, days_back: int = 30)
                 if services:
                     notes += " | Услуги: " + ", ".join([f"{s.get('name')}: {s.get('price')}" for s in services])
 
-                new_cost = Cost(
+                costs_to_add.append(Cost(
                     user_id=user_id,
                     type=category,
                     amount=int(abs(amount)),
                     date=dt_op,
                     notes=notes
-                )
-                db.add(new_cost)
+                ))
                 total_synced += 1
+
+            if costs_to_add:
+                db.add_all(costs_to_add)
 
             db.commit()
             if len(operations) < 1000:
@@ -570,7 +570,7 @@ async def sync_range_for_user(user_id: int, start_dt: datetime, end_dt: datetime
         db.add(sync_status)
     sync_status.is_syncing = True
     sync_status.status_message = f"Range sync: {start_dt.strftime('%Y-%m-%d')} — {end_dt.strftime('%Y-%m-%d')}"
-    sync_status.sync_started_at = _get_now_utc()
+    sync_status.sync_started_at = get_now_utc()
     db.commit()
 
     try:
@@ -609,8 +609,8 @@ async def sync_range_for_user(user_id: int, start_dt: datetime, end_dt: datetime
         db.refresh(sync_status)
         sync_status.is_syncing = False
         sync_status.status_message = "ok"
-        sync_status.sync_completed_at = _get_now_utc()
-        sync_status.updated_at = _get_now_utc()
+        sync_status.sync_completed_at = get_now_utc()
+        sync_status.updated_at = get_now_utc()
         db.commit()
 
 
@@ -648,7 +648,7 @@ async def initial_backfill_for_user(user: User, db: Session):
         # Убираем проверку if sync_status.is_syncing, так как она блокирует запуск задачи,
         # которая сама же и установила этот флаг через API.
 
-        now = _get_now_utc()
+        now = get_now_utc()
         logger.info(f"User {user_id}: Starting/Resuming backfill process at {now}")
 
         start_limit = now - timedelta(days=365)
@@ -743,8 +743,8 @@ async def initial_backfill_for_user(user: User, db: Session):
 
         if sync_status.backfill_cursor and sync_status.backfill_cursor <= sync_status.backfill_from:
             sync_status.backfill_is_complete = True
-            sync_status.backfill_completed_at = _get_now_utc()
-            sync_status.sync_completed_at = _get_now_utc()
+            sync_status.backfill_completed_at = get_now_utc()
+            sync_status.sync_completed_at = get_now_utc()
             sync_status.status_message = "Backfill completed"
 
         sync_status.is_syncing = False

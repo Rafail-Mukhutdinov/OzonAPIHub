@@ -18,15 +18,12 @@ import os
 
 logger = logging.getLogger("OzonAPIHub.worker")
 
-def _get_now_utc():
-    return get_now_utc()
-
 async def sync_all_users_task(ctx):
     """
     Задача по расписанию: синхронизация всех активных пользователей.
     Реализует Adaptive Polling: частота зависит от времени последней продажи (МСК).
     """
-    now = _get_now_utc()
+    now = get_now_utc()
     db = SessionLocal()
     try:
         from db.database import OzonCredential
@@ -56,9 +53,9 @@ async def sync_all_users_task(ctx):
             if last_dt:
                 try:
                     # Сравниваем в MSК
-                    now_msk = to_msk(_get_now_utc())
+                    now_msk = to_msk(get_now_utc())
                     last_order_msk = to_msk(last_dt)
-                    diff = _get_now_utc() - last_dt
+                    diff = get_now_utc() - last_dt
 
                     if diff < timedelta(hours=1):
                         interval_minutes = 1
@@ -68,8 +65,8 @@ async def sync_all_users_task(ctx):
                     logger.warning(f"Error calculating adaptive interval for user {user.id}: {e}")
                     interval_minutes = 5
 
-            last_sync = status.last_sync_attempt_at if status.last_sync_attempt_at else (_get_now_utc() - timedelta(days=1))
-            elapsed = _get_now_utc() - last_sync
+            last_sync = status.last_sync_attempt_at if status.last_sync_attempt_at else (get_now_utc() - timedelta(days=1))
+            elapsed = get_now_utc() - last_sync
             if elapsed < timedelta(minutes=interval_minutes):
                 logger.debug(
                     f"User {user.id}: пропущен (с последней синхронизации прошло "
@@ -83,8 +80,8 @@ async def sync_all_users_task(ctx):
                 SyncStatus.is_syncing == False
             ).update({
                 SyncStatus.is_syncing: True, 
-                SyncStatus.sync_started_at: _get_now_utc(),
-                SyncStatus.last_sync_attempt_at: _get_now_utc()
+                SyncStatus.sync_started_at: get_now_utc(),
+                SyncStatus.last_sync_attempt_at: get_now_utc()
             }, synchronize_session=False)
             db.commit()
 
@@ -105,7 +102,7 @@ async def sync_all_users_task(ctx):
                     db.rollback() 
                     db.refresh(status)
                     status.is_syncing = False
-                    status.sync_completed_at = _get_now_utc()
+                    status.sync_completed_at = get_now_utc()
                     db.commit()
                 except Exception as ef:
                     logger.error(f"User {user.id}: Failed to release lock: {ef}")

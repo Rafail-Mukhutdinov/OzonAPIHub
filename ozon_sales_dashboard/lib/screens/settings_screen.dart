@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
+import 'package:intl/intl.dart';
 import 'package:dio/dio.dart';
 import 'package:provider/provider.dart';
 import '../services/api.dart';
@@ -201,6 +202,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final authProvider = context.watch<AuthProvider>();
+    final isImpersonating = authProvider.isImpersonating;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Настройки'), backgroundColor: Theme.of(context).colorScheme.inversePrimary),
@@ -209,6 +211,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (isImpersonating)
+                  Card(
+                    color: Colors.orange.shade100,
+                    child: const ListTile(
+                      leading: Icon(Icons.warning_amber, color: Colors.orange),
+                      title: Text('Режим поддержки активен'),
+                      subtitle: Text('Внесение изменений в настройки магазина ограничено.'),
+                    ),
+                  ),
+
                 if (_errorMessage != null)
                   Card(color: Colors.red.shade50, child: ListTile(leading: const Icon(Icons.error, color: Colors.red), title: Text(_errorMessage!))),
                 
@@ -222,7 +234,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       subtitle: const Text('Использовать биометрию вместо ввода пароля'),
                       secondary: const Icon(Icons.fingerprint),
                       value: authProvider.biometricEnabled,
-                      onChanged: (bool value) {
+                      onChanged: isImpersonating ? null : (bool value) {
                         authProvider.setBiometricEnabled(value);
                       },
                     ),
@@ -241,6 +253,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
 
                 const SizedBox(height: 16),
+                const Text('Ваша подписка', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Card(
+                  child: ListTile(
+                    leading: Icon(
+                      authProvider.isDemo ? Icons.timer_outlined : Icons.verified_user,
+                      color: authProvider.isDemo ? Colors.orange : Colors.blue,
+                    ),
+                    title: Text(authProvider.isDemo ? 'Демо-период' : 'Премиум подписка'),
+                    subtitle: Text(
+                      authProvider.subscriptionEndDate != null
+                          ? 'Активна до: ${DateFormat('dd.MM.yyyy HH:mm').format(authProvider.subscriptionEndDate!.toLocal())}'
+                          : 'Срок не ограничен',
+                    ),
+                    trailing: authProvider.isDemo
+                        ? const Chip(label: Text('DEMO'))
+                        : const Chip(label: Text('PREMIUM'), backgroundColor: Colors.blue, labelStyle: TextStyle(color: Colors.white)),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
                 const Text('Управление данными', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 
@@ -252,16 +285,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         leading: Icon(Icons.sync, color: Theme.of(context).secondaryHeaderColor),
                         title: const Text('Загрузить историю'),
                         subtitle: const Text('Скачать все заказы за последний год'),
-                        trailing: ElevatedButton(onPressed: _runInitialSync, child: const Text('Старт')),
+                        trailing: ElevatedButton(
+                          onPressed: isImpersonating ? null : _runInitialSync, 
+                          child: const Text('Старт')
+                        ),
                       ),
                       const Divider(height: 1),
                       ListTile(
                         leading: const Icon(Icons.delete_sweep, color: Colors.red),
                         title: const Text('Очистить базу данных'),
                         subtitle: const Text('Удалить все локальные данные Ozon'),
-                        trailing: OutlinedButton(onPressed: _purgeData, 
+                        trailing: OutlinedButton(
+                          onPressed: isImpersonating ? null : _purgeData, 
                           style: OutlinedButton.styleFrom(foregroundColor: Colors.red), 
-                          child: const Text('Удалить')),
+                          child: const Text('Удалить')
+                        ),
                       ),
                     ],
                   ),
@@ -288,10 +326,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            if (!isActive) IconButton(icon: Icon(Icons.play_circle_outline, color: Theme.of(context).primaryColor),
-                              onPressed: () => _activateCredential(cred['id'])),
-                            IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), 
-                              onPressed: () => _deleteCredential(cred['id'], cred['name'])),
+                            if (!isActive) IconButton(
+                              icon: Icon(Icons.play_circle_outline, color: Theme.of(context).primaryColor),
+                              onPressed: isImpersonating ? null : () => _activateCredential(cred['id'])
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red), 
+                              onPressed: isImpersonating ? null : () => _deleteCredential(cred['id'], cred['name'])
+                            ),
                           ],
                         ),
                       ),
@@ -299,7 +341,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   }).toList(),
               ],
             ),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: isImpersonating ? null : FloatingActionButton.extended(
         onPressed: _addCredential,
         icon: const Icon(Icons.add),
         label: const Text('Подключить магазин'),

@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from db.database import OzonCredential, User
 from utils.encryption import decrypt_credential
+from utils.logging_config import logger
 from typing import Tuple
 
 
@@ -64,7 +65,7 @@ def get_user_active_credentials(db: Session, user: User) -> Tuple[str, str]:
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка получения ключей: {str(e)}"
+            detail="Ошибка получения ключей. Обратитесь к администратору."
         )
 
 
@@ -107,7 +108,8 @@ def get_user_credential_by_id(db: Session, user: User, credential_id: int) -> Tu
         return client_id, api_key
         
     except Exception as e:
+        logger.error(f"Error getting credentials by id for user {user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка получения ключей: {str(e)}"
+            detail="Ошибка получения ключей. Обратитесь к администратору."
         )

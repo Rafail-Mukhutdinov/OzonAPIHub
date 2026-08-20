@@ -4,11 +4,11 @@
 которые затем могут учитываться в итоговой прибыли (Profit).
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from db.database import Cost, get_db, User
-from utils.auth import get_current_user
+from utils.auth import get_current_user, verify_not_impersonating
 from utils.logging_config import log_user_event
 from utils.common import normalize_iso
 
@@ -28,14 +28,16 @@ class CostIn(BaseModel):
     notes: str | None = None # Произвольный комментарий
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(verify_not_impersonating)])
 def add_cost(
+    request: Request,
     cost: CostIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Создает новую запись о расходе пользователя."""
-    log_user_event(current_user.id, f"Добавление расхода: {cost.type} - {cost.amount} {cost.currency}")
+    admin_id = getattr(request.state, "impersonated_by", None)
+    log_user_event(current_user.id, f"Добавление расхода: {cost.type} - {cost.amount} {cost.currency}", admin_id=admin_id)
 
     obj = Cost(
         user_id=current_user.id, # Привязка к текущему пользователю
@@ -53,7 +55,7 @@ def add_cost(
     db.commit()
     db.refresh(obj)
 
-    log_user_event(current_user.id, f"Расход сохранен (ID: {obj.id})")
+    log_user_event(current_user.id, f"Расход сохранен (ID: {obj.id})", admin_id=admin_id)
     return {"status": "ok", "id": obj.id}
 
 
@@ -84,8 +86,8 @@ def list_costs(
     try:
         since_iso = normalize_iso(since) if since else None
         to_iso = normalize_iso(to) if to else None
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Некорректный формат даты. Используйте ГГГГ-ММ-ДД.")
     
     if since_iso: q = q.filter(Cost.date >= since_iso)
     if to_iso: q = q.filter(Cost.date <= to_iso)
