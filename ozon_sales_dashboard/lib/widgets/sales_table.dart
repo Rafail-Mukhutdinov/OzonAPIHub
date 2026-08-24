@@ -112,15 +112,13 @@ class SalesTable extends StatelessWidget {
           // Футер таблицы с дополнительной статистикой от сервера
           if (totals != null)
             Padding(
-              padding: const EdgeInsets.only(top: 8, left: 12),
-              child: Row(
+              padding: const EdgeInsets.only(top: 8, left: 12, right: 12, bottom: 12),
+              child: Wrap(
+                spacing: 24, runSpacing: 8,
                 children: [
-                  Text('Уникальных товаров: ${items.length}'),
-                  const SizedBox(width: 24),
+                  Text('Уникальных: ${items.length}'),
                   Text('Всего штук: ${totals?['total_items'] ?? '-'}'),
-                  const SizedBox(width: 24),
                   Text('Всего заказов: ${totals?['total_orders'] ?? '-'}'),
-                  const SizedBox(width: 24),
                   Text(
                     delivered
                         ? 'К выплате: ${totals?['total_payout'] ?? '-'} ₽'

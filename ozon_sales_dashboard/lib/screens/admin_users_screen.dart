@@ -110,10 +110,11 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   Widget _buildFilterBar() {
     return Container(
       padding: const EdgeInsets.all(16),
-      child: Row(
+      child: Wrap(
+        spacing: 16, runSpacing: 16,
         children: [
-          Expanded(
-            flex: 3,
+          SizedBox(
+            width: double.infinity,
             child: TextField(
               controller: _searchController,
               decoration: const InputDecoration(
@@ -124,43 +125,39 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               onSubmitted: (_) => _applyFilters(),
             ),
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              initialValue: _filterActive,
-              decoration: const InputDecoration(
-                labelText: 'Статус',
-                border: OutlineInputBorder(),
-              ),
-              items: const [
-                DropdownMenuItem(value: null, child: Text('Все')),
-                DropdownMenuItem(value: 'true', child: Text('Активные')),
-                DropdownMenuItem(value: 'false', child: Text('Заблокированные')),
-              ],
-              onChanged: (v) => setState(() => _filterActive = v),
+          DropdownButtonFormField<String>(
+            initialValue: _filterActive,
+            decoration: const InputDecoration(
+              labelText: 'Статус',
+              border: OutlineInputBorder(),
             ),
+            items: const [
+              DropdownMenuItem(value: null, child: Text('Все')),
+              DropdownMenuItem(value: 'true', child: Text('Активные')),
+              DropdownMenuItem(value: 'false', child: Text('Заблокированные')),
+            ],
+            onChanged: (v) => setState(() => _filterActive = v),
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              initialValue: _filterDemo,
-              decoration: const InputDecoration(
-                labelText: 'Тип',
-                border: OutlineInputBorder(),
-              ),
-              items: const [
-                DropdownMenuItem(value: null, child: Text('Все')),
-                DropdownMenuItem(value: 'true', child: Text('Demo')),
-                DropdownMenuItem(value: 'false', child: Text('Paid')),
-              ],
-              onChanged: (v) => setState(() => _filterDemo = v),
+          DropdownButtonFormField<String>(
+            initialValue: _filterDemo,
+            decoration: const InputDecoration(
+              labelText: 'Тип',
+              border: OutlineInputBorder(),
             ),
+            items: const [
+              DropdownMenuItem(value: null, child: Text('Все')),
+              DropdownMenuItem(value: 'true', child: Text('Demo')),
+              DropdownMenuItem(value: 'false', child: Text('Paid')),
+            ],
+            onChanged: (v) => setState(() => _filterDemo = v),
           ),
-          const SizedBox(width: 16),
-          ElevatedButton.icon(
-            onPressed: _applyFilters,
-            icon: const Icon(Icons.filter_list),
-            label: const Text('Применить'),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _applyFilters,
+              icon: const Icon(Icons.filter_list),
+              label: const Text('Применить'),
+            ),
           ),
         ],
       ),

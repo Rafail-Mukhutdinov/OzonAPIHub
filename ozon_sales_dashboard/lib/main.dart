@@ -4,6 +4,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'providers/auth_provider.dart';
 import 'services/api.dart'; // Для доступа к rootScaffoldMessengerKey
+import 'widgets/web_frame.dart'; // Обёртка для мобильного вида в Web
 
 /**
  * Точка входа в приложение Flutter.
@@ -59,6 +60,7 @@ class MyApp extends StatelessWidget {
         ],
         // Начальный экран: проверяет наличие токена и перенаправляет на Login или Dashboard
         home: const AuthGate(),
+        builder: (context, child) => WebFrame(child: child),
       ),
     );
   }
