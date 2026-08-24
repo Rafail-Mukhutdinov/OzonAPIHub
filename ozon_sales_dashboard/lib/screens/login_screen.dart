@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
+import '../utils/platform_nav.dart'; // Условный импорт для навигации
 import '../services/auth_service.dart';
 import '../services/api.dart';
 import 'register_screen.dart';
-import 'dashboard_screen.dart';
 
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
@@ -132,7 +132,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       Icon(Icons.account_circle, size: 80, color: Theme.of(context).primaryColor),
                       const SizedBox(height: 16),
                       Text(
-                        'Sales Hub',
+                        'Seller Hub',
                         style: Theme.of(context).textTheme.headlineSmall,
                         textAlign: TextAlign.center,
                       ),
@@ -140,6 +140,21 @@ class _LoginScreenState extends State<LoginScreen> {
                       const Text('Вход в систему', textAlign: TextAlign.center),
                       const SizedBox(height: 32),
                       
+                      if (kIsWeb)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 24.0),
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              goToLanding();
+                            },
+                            icon: const Icon(Icons.arrow_back),
+                            label: const Text('На главную страницу'),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ),
+
                       // Поле ввода Email
                       TextFormField(
                         controller: _emailController,

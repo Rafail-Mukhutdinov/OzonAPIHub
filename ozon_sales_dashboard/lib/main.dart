@@ -28,7 +28,7 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
       ],
       child: MaterialApp(
-        title: 'Sales Hub',
+        title: 'Seller Hub',
         scaffoldMessengerKey: rootScaffoldMessengerKey,
         // Настройка визуальной темы приложения (Material 3)
         // Используем нейтральную профессиональную цветовую схему

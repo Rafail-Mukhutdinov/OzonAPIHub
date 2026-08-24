@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seller Hub — Аналитика и автоматизация маркетплейсов</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" type="image/png" href="/dashboard/favicon.png">
+</head>
+<body>
+    <header>
+        <nav class="container">
+            <div class="logo">Seller<span>Hub</span></div>
+            <ul class="nav-links">
+                <li><a href="#features">Возможности</a></li>
+                <li><a href="#mobile">Приложение</a></li>
+            </ul>
+            <div id="auth-buttons" class="nav-auth">
+                <a href="/dashboard/" class="btn-outline">Войти</a>
+                <a href="/dashboard/" class="btn-primary">Регистрация</a>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="container">
+                <h1>Управляйте продажами на всех маркетплейсах</h1>
+                <p>Единый инструмент для селлеров: автоматическая синхронизация заказов, аналитика и контроль прибыли для Ozon, Wildberries и Яндекс Маркета.</p>
+                <div class="hero-actions">
+                    <a href="/dashboard/" class="btn-primary btn-lg">Начать бесплатно</a>
+                </div>
+            </div>
+        </section>
+
+        <section id="features" class="features">
+            <div class="container">
+                <h2>Почему выбирают Seller Hub?</h2>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="icon">📊</div>
+                        <h3>Глубокая аналитика</h3>
+                        <p>Отчеты по продажам, прибыльности и возвратам в реальном времени.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="icon">🔄</div>
+                        <h3>Авто-синхронизация</h3>
+                        <p>Ваши заказы всегда актуальны. Автоматическое получение данных через Ozon API.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="icon">💸</div>
+                        <h3>Контроль затрат</h3>
+                        <p>Учет логистики, комиссий и прочих расходов для точного расчета чистой прибыли.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="mobile" class="mobile-app">
+            <div class="container">
+                <div class="mobile-flex">
+                    <div class="mobile-text">
+                        <h2>Аналитика всегда под рукой</h2>
+                        <p>Скачайте наше мобильное приложение для Android, чтобы контролировать свой бизнес из любой точки мира.</p>
+                        <div class="app-info">
+                            <span class="version-tag">Версия: <span id="app-version">загрузка...</span></span>
+                            <a href="/static/apps/app-release.apk" class="btn-download">
+                                <span>Скачать APK</span>
+                            </a>
+                        </div>
+                    </div>
+                    <div class="mobile-mockup">
+                        <!-- Здесь можно вставить изображение смартфона -->
+                        <div class="phone-frame">
+                            <div class="phone-screen"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-info">
+                    <div class="logo">Seller<span>Hub</span></div>
+                    <p>Профессиональная автоматизация для маркетплейсов.</p>
+                </div>
+                <div class="footer-contacts">
+                    <h4>Разработчик</h4>
+                    <p id="dev-details">Индивидуальный предприниматель [ФИО]<br>
+                    ИНН: [Ваш ИНН]<br>
+                    Email: support@ozonapihub.ru</p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; <span id="current-year"></span> Seller Hub. Все права защищены.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

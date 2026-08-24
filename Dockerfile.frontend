@@ -1,13 +1,5 @@
-# ЭТАП 1: Сборка Flutter Web
-FROM debian:latest AS build-env
-
-# Установка зависимостей
-RUN apt-get update && apt-get install -y curl git unzip xz-utils libglu1-mesa python3 libsqlite3-dev && rm -rf /var/lib/apt/lists/*
-
-# Установка Flutter
-RUN git clone --depth 1 https://github.com/flutter/flutter.git -b stable /usr/local/flutter
-ENV PATH="/usr/local/flutter/bin:/usr/local/flutter/bin/cache/dart-sdk/bin:${PATH}"
-RUN flutter doctor -v
+# Используем фиксированную версию Flutter 3.35.6
+FROM ghcr.io/cirruslabs/flutter:3.35.6 AS build-env
 
 # Копирование кода
 WORKDIR /app
@@ -15,11 +7,23 @@ COPY ozon_sales_dashboard/ .
 
 RUN flutter pub get
 
-# Сборка без жестко заданного API_BASE_URL, чтобы работала динамика в api.dart
-RUN flutter build web --release
+# Сборка с base-href и API_BASE_URL
+RUN flutter build web --release --base-href /dashboard/ --dart-define=API_BASE_URL=/api
 
 # ЭТАП 2: Nginx
 FROM nginx:alpine
-COPY --from=build-env /app/build/web /usr/share/nginx/html
+
+# Копируем конфиг
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+
+# Копируем Flutter Web
+COPY --from=build-env /app/build/web /usr/share/nginx/html/dashboard
+
+# Копируем Лендинг
+COPY landing/ /usr/share/nginx/html/landing
+
+# Статика будет монтироваться через volume, но создадим директорию
+RUN mkdir -p /usr/share/nginx/html/static
+
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

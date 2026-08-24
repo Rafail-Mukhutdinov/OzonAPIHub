@@ -5,10 +5,8 @@
 **/.git
 **/*.pyc
 **/__pycache__
-venv
+venv/
+.venv/
 .env
-
-# Keep the built frontend artifacts for Docker frontend image
-!ozon_sales_dashboard/build
-!ozon_sales_dashboard/build/web
-!ozon_sales_dashboard/build/web/**
+static/apps/
+ozon_sales_dashboard/build/

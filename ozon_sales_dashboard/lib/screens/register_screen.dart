@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
+import '../utils/platform_nav.dart'; // Условный импорт для навигации
 import '../services/auth_service.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
-import 'dashboard_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -118,6 +118,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       const SizedBox(height: 32),
                       
+                      if (kIsWeb)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 24.0),
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              goToLanding();
+                            },
+                            icon: const Icon(Icons.arrow_back),
+                            label: const Text('На главную страницу'),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ),
+
                       // Email поле
                       TextFormField(
                         controller: _emailController,
