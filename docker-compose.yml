@@ -31,9 +31,12 @@ services:
       dockerfile: Dockerfile
     container_name: ozon_backend
     restart: always
-    # Порт 8083 теперь закрыт снаружи, доступ только через nginx или localhost
+    # Порт 8083 открыт наружу: через него внешний прокси (openresty на роутере,
+    # домен api-ozon.home-me.online) обслуживает мобильное приложение.
+    # /api/ и /app/ уже проксируются nginx на порту 80 — после переключения
+    # внешнего прокси на порт 80 вернуть привязку "127.0.0.1:8083:8083".
     ports:
-      - "127.0.0.1:8083:8083"
+      - "8083:8083"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
