@@ -6,8 +6,6 @@ import 'package:dio/dio.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../services/api.dart';
 import '../widgets/mobile_dashboard_view.dart';
-import '../widgets/expenses_widget.dart';
-import '../widgets/sales_table.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import 'shipments_screen.dart';
@@ -479,49 +477,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildDesktopLayout() {
-    final auth = Provider.of<AuthProvider>(context);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Sales Hub - Desktop'),
-        actions: [
-          IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()))),
-          IconButton(icon: const Icon(Icons.refresh), onPressed: () => _loadAllData()),
-        ],
-      ),
-      drawer: _buildDrawer(auth),
-      body: Column(
-        children: [
-          if (auth.isImpersonating) _buildSupportBanner(auth),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  // Для десктопа просто выводим кнопки управления и таблицу
-                  if (loading) const LinearProgressIndicator(),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      ElevatedButton(onPressed: () { setState(() => selectedPeriod = 'today'); _loadAllData(); }, child: const Text('Сегодня')),
-                      const SizedBox(width: 8),
-                      ElevatedButton(onPressed: () { setState(() => selectedPeriod = 'week'); _loadAllData(); }, child: const Text('Неделя')),
-                      const SizedBox(width: 8),
-                      ElevatedButton(onPressed: () { setState(() => selectedPeriod = 'month'); _loadAllData(); }, child: const Text('Месяц')),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  ExpensesWidget(
-                    api: api, 
-                    since: (totals?['current_since'] as String?) ?? _getIso(drillDownDate ?? activeDate, false),
-                    to: (totals?['current_to'] as String?) ?? _getIso(drillDownDate ?? activeDate, true),
-                  ),
-                  const SizedBox(height: 20),
-                  SalesTable(items: items, delivered: true, totals: totals),
-                ],
-              ),
-            ),
-          ),
-        ],
+    // Десктоп: тот же полноценный дашборд (карточки, график, периоды, детализация),
+    // отцентрованный колонкой до 1100px на всю высоту окна — стандартный веб-паттерн.
+    // Полноценный широкополосный десктоп-UI (в несколько колонок) можно сделать позже.
+    return Container(
+      color: const Color(0xFFF5F7FA),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1100),
+          child: _buildMobileLayout(),
+        ),
       ),
     );
   }
