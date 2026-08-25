@@ -39,3 +39,6 @@ deploy_apk.ps1
 
 # Flutter Android generated settings
 ozon_sales_dashboard/android/.settings/
+# Удалённые legacy-файлы (не возвращать)
+install.ps1
+test_api.py

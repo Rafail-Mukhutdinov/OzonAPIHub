@@ -10,3 +10,5 @@ venv/
 .env
 static/apps/
 ozon_sales_dashboard/build/
+
+qty/
