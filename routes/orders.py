@@ -113,17 +113,16 @@ async def list_unfulfilled_fbs_orders(
         )
         if raw: return data
 
-        result = data.get("result", [])
-        if not isinstance(result, list): return []
-
+        result_raw = data.get("result")
         flat_postings = []
-        for status_group in result:
-            status = status_group.get("status")
-            postings = status_group.get("postings", [])
+
+        if isinstance(result_raw, dict):
+            # Формат v3 или специфичный v2 dict
+            postings = result_raw.get("postings", [])
             for p in postings:
                 flat_postings.append({
                     "posting_number": p.get("posting_number"),
-                    "status": status,
+                    "status": p.get("status"),
                     "shipment_date": p.get("shipment_date"),
                     "in_process_at": p.get("in_process_at"),
                     "is_express": p.get("is_express", False),
@@ -132,6 +131,25 @@ async def list_unfulfilled_fbs_orders(
                     "tpl_provider": (p.get("delivery_method") or {}).get("tpl_provider"),
                     "delivery_method_name": (p.get("delivery_method") or {}).get("name"),
                 })
+        elif isinstance(result_raw, list):
+            # Формат v2 list of status groups
+            for status_group in result_raw:
+                status = status_group.get("status")
+                postings = status_group.get("postings", [])
+                for p in postings:
+                    flat_postings.append({
+                        "posting_number": p.get("posting_number"),
+                        "status": status,
+                        "shipment_date": p.get("shipment_date"),
+                        "in_process_at": p.get("in_process_at"),
+                        "is_express": p.get("is_express", False),
+                        "products_count": len(p.get("products", [])),
+                        "products": p.get("products", []),
+                        "tpl_provider": (p.get("delivery_method") or {}).get("tpl_provider"),
+                        "delivery_method_name": (p.get("delivery_method") or {}).get("name"),
+                    })
+        else:
+            return []
         
         # Сортируем: горящие (ближайшая дата отгрузки) — первыми
         flat_postings.sort(key=lambda x: x.get("shipment_date") or "9999")

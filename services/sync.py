@@ -137,8 +137,15 @@ async def _sync_scheme_orders(user: User, db: Session, cred: OzonCredential, sch
             )
 
         if not isinstance(data, dict): break
-        items = data.get("result", [])
-        if not isinstance(items, list) or not items: break
+        res_val = data.get("result")
+        if isinstance(res_val, dict):
+            items = res_val.get("postings", [])
+        elif isinstance(res_val, list):
+            items = res_val
+        else:
+            items = []
+
+        if not items: break
 
         fetched_pns = [o.get('posting_number') for o in items if o.get('posting_number')]
         existing_orders_map = {}
@@ -275,7 +282,14 @@ async def fetch_and_save_orders_async(since: str, to: str, status_f: str, limit:
             res = await ozon_fbs_list_async(client_id, api_key, filter_dict, limit, offset)
 
         if not isinstance(res, dict): return {"saved": 0, "fetched": 0, "error": "Bad API response", "orders": []}
-        items = res.get("result", [])
+        res_val = res.get("result")
+        if isinstance(res_val, dict):
+            items = res_val.get("postings", [])
+        elif isinstance(res_val, list):
+            items = res_val
+        else:
+            items = []
+
         if not isinstance(items, list): return {"saved": 0, "fetched": 0, "error": "Result not a list", "orders": []}
 
         fetched_pns = [o.get('posting_number') for o in items if isinstance(o, dict) and o.get('posting_number')]

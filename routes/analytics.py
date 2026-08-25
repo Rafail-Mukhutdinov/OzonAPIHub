@@ -557,14 +557,23 @@ async def sales_report_universal(
 
     items.sort(key=lambda x: -x["amount_raw"])
 
-    costs_by_type = db.query(
+    costs_q = db.query(
         Cost.type,
         func.sum(Cost.amount)
     ).filter(
         Cost.user_id == current_user.id,
         Cost.date >= since_utc.replace(tzinfo=None),
         Cost.date <= to_utc.replace(tzinfo=None)
-    ).group_by(Cost.type).all()
+    )
+
+    if scheme != 'all':
+        # Фильтруем расходы по схеме, если есть привязка к постингу
+        costs_q = costs_q.join(
+            OrderPosting,
+            (OrderPosting.posting_number == Cost.scope_posting_number) & (OrderPosting.user_id == Cost.user_id)
+        ).filter(OrderPosting.scheme == scheme)
+
+    costs_by_type = costs_q.group_by(Cost.type).all()
 
     for c_type, c_amt in costs_by_type:
         t = (c_type or "").lower()
@@ -710,11 +719,22 @@ async def expenses_breakdown(
         if cat_name in ops_by_category:
             ops_by_category[cat_name]["total"] = net_total
 
-    cost_rows = db.query(Cost).filter(
+    cost_q = db.query(Cost).filter(
         Cost.user_id == current_user.id,
         Cost.date >= since_utc,
         Cost.date <= to_utc
-    ).all()
+    )
+
+    if scheme != 'all':
+        # Соединяем с OrderPosting для фильтрации по схеме.
+        # Расходы без scope_posting_number (например, общий эквайринг)
+        # будут показаны только в режиме "Все".
+        cost_q = cost_q.join(
+            OrderPosting,
+            (OrderPosting.posting_number == Cost.scope_posting_number) & (OrderPosting.user_id == Cost.user_id)
+        ).filter(OrderPosting.scheme == scheme)
+
+    cost_rows = cost_q.all()
 
     for row in cost_rows:
         t = (row.type or "").lower()
