@@ -1,8 +1,8 @@
 import os
 import logging
-from services.ozon import ozon_fbo_get_async, ozon_product_info_list_async, ozon_accruals_by_day_async
+from services.ozon import ozon_fbo_get_async, ozon_fbs_get_async, ozon_product_info_list_async, ozon_accruals_by_day_async
 from sqlalchemy.orm import Session
-from db.database import OrderHeader, OrderPosting, OrderProduct, User, OzonCredential, OzonAccrual
+from db.database import OrderHeader, OrderPosting, Order, OrderProduct, User, OzonCredential, OzonAccrual
 from utils.encryption import decrypt_credential
 from datetime import datetime, timezone
 from utils.logging_config import log_user_event
@@ -70,142 +70,115 @@ async def enrich_posting_from_ozon(
     user_id: int,
     db: Session,
     client_id: str = None,
-    api_key: str = None
+    api_key: str = None,
+    scheme: str = None
 ):
-    # Если ключи не переданы, ищем их в базе (для одиночных вызовов)
+    """
+    Обогащает данные постинга (FBO или FBS) детальной информацией о товарах и финансах.
+    """
+    # 1. Определяем схему, если она не передана
+    if not scheme:
+        # Fallback: ищем схему в таблице Order (она там точно есть, так как создается первой)
+        o_existing = db.query(Order.scheme).filter(
+            Order.posting_number == posting_number,
+            Order.user_id == user_id
+        ).first()
+        scheme = o_existing[0] if o_existing else 'fbo'
+
+    # 2. Получаем ключи
     if not client_id or not api_key:
         active_cred = db.query(OzonCredential).filter(OzonCredential.user_id == user_id, OzonCredential.is_active == True).first()
         if not active_cred: return {"status": "no_credentials"}
-
         client_id = decrypt_credential(active_cred.client_id_encrypted)
         api_key = decrypt_credential(active_cred.api_key_encrypted)
 
     try:
-        response = await ozon_fbo_get_async(client_id, api_key, posting_number)
+        if scheme == 'fbo':
+            response = await ozon_fbo_get_async(client_id, api_key, posting_number)
+        else:
+            response = await ozon_fbs_get_async(client_id, api_key, posting_number)
 
-        # Robust parsing
         if not isinstance(response, dict):
-            logger.warning(f"Ozon API returned {type(response)} instead of dict for {posting_number}")
             return {"status": "api_error", "detail": "Unexpected response format"}
 
         data = response.get("result")
         if not isinstance(data, dict):
-            logger.warning(f"Ozon API result is {type(data)} instead of dict for {posting_number}")
             return {"status": "no_result"}
 
     except Exception as e:
-        logger.error(f"Error fetching posting {posting_number} for user {user_id}: {e}")
-        return {"status": "api_error", "detail": "Ошибка при получении данных от Ozon API"}
+        logger.error(f"Error fetching {scheme} posting {posting_number}: {e}")
+        return {"status": "api_error", "detail": str(e)}
 
     order_number = data.get("order_number")
     
-    # Пытаемся найти существующий или создаем новый максимально безопасно
+    # 3. Обновляем OrderPosting
     op = db.query(OrderPosting).filter(
         OrderPosting.posting_number == posting_number, 
         OrderPosting.user_id == user_id
-    ).with_for_update().first() # Блокируем строку для обновления
+    ).with_for_update().first()
     
     if not op:
-        # Если заказа все еще нет, создаем его
-        # Используем flush и вложенную транзакцию для обработки гонки
         try:
             with db.begin_nested():
-                op = OrderPosting(posting_number=posting_number, user_id=user_id)
+                op = OrderPosting(posting_number=posting_number, user_id=user_id, scheme=scheme)
                 db.add(op)
                 db.flush()
         except Exception:
-            # Если кто-то успел вставить параллельно, просто берем его
             db.rollback()
-            op = db.query(OrderPosting).filter(
-                OrderPosting.posting_number == posting_number, 
-                OrderPosting.user_id == user_id
-            ).first()
+            op = db.query(OrderPosting).filter(OrderPosting.posting_number == posting_number, OrderPosting.user_id == user_id).first()
     
-    if not op:
-        return {"status": "error", "detail": "Could not create or find OrderPosting"}
+    if not op: return {"status": "error", "detail": "Could not create/find OrderPosting"}
 
     op.order_number = order_number
     op.status = data.get("status")
     op.substatus = data.get("substatus")
+    op.scheme = scheme # Гарантируем актуальность схемы
 
-    # Конвертация дат в объекты datetime для БД
     def to_dt(raw):
         dt = parse_ozon_datetime(raw)
-        if dt:
-            return dt.astimezone(timezone.utc).replace(tzinfo=None)
-        return None
+        return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt else None
 
     op.created_at = to_dt(data.get("created_at"))
     op.in_process_at = to_dt(data.get("in_process_at"))
     op.fact_delivery_date = to_dt(data.get("fact_delivery_date"))
 
+    # Специфичные поля FBS
+    if scheme != 'fbo':
+        op.shipment_date = to_dt(data.get("shipment_date"))
+        op.is_express = data.get("is_express", False)
+        dm = data.get("delivery_method") or {}
+        op.delivery_method_id = dm.get("id")
+        op.delivery_method_name = dm.get("name")
+        op.tpl_provider = dm.get("tpl_provider")
+        op.tracking_number = data.get("tracking_number")
+
     op.financial_data = data.get("financial_data")
     op.analytics_data = data.get("analytics_data")
 
-    # Удаляем старые товары перед добавлением новых
+    # 4. Обновляем товары
     db.query(OrderProduct).filter(OrderProduct.posting_number == posting_number, OrderProduct.user_id == user_id).delete()
     
     products_data = data.get("products", [])
-    if not isinstance(products_data, list):
-        logger.warning(f"Products data is not a list for {posting_number}: {type(products_data)}")
-        products_data = []
-
     fin_data = data.get("financial_data") or {}
-    fin_products = fin_data.get("products") if isinstance(fin_data, dict) else []
-    if not isinstance(fin_products, list):
-        fin_products = []
+    
+    # У FBS структура financial_data может отличаться, но в v2/get она обычно совпадает с FBO
+    fin_products = fin_data.get("products", []) if isinstance(fin_data, dict) else []
+    fin_map = {str(f.get("sku") or f.get("product_id") or ""): f for f in fin_products if isinstance(f, dict)}
 
-    fin_map = {}
-    for f in fin_products:
-        if isinstance(f, dict):
-            sku_key = str(f.get("sku") or f.get("product_id") or "")
-            if sku_key:
-                fin_map[sku_key] = f
-
-    # --- ПОЛУЧЕНИЕ ИЗОБРАЖЕНИЙ ТОВАРОВ ---
-    skus = []
-    for pr in products_data:
-        if isinstance(pr, dict) and pr.get("sku"):
-            skus.append(_to_int(pr.get("sku")))
-
+    skus = [_to_int(pr.get("sku")) for pr in products_data if isinstance(pr, dict) and pr.get("sku")]
     image_map = {}
     if skus:
         try:
             prod_info = await ozon_product_info_list_async(client_id, api_key, skus)
-
-            # В API v3 список товаров обычно лежит прямо в корне в 'items'
-            # Проверяем оба варианта (корень и внутри 'result') для максимальной совместимости
-            items = prod_info.get("items")
-            if items is None and isinstance(prod_info.get("result"), dict):
-                items = prod_info.get("result", {}).get("items")
-
-            if not isinstance(items, list):
-                items = []
-
+            items = prod_info.get("items") or prod_info.get("result", {}).get("items") or []
             for item in items:
-                s_id = item.get("sku")
-                # ПРИОРИТЕТ: сначала ищем главную картинку (primary_image),
-                # если её нет — берем первую из списка images
                 raw_img = item.get("primary_image") or (item.get("images", [])[0] if item.get("images") else None)
-
-                # Озон может вернуть ссылку как строку или как список из одной строки.
-                # Нам нужна именно строка.
-                img_url = None
-                if isinstance(raw_img, list) and raw_img:
-                    img_url = raw_img[0]
-                elif isinstance(raw_img, str):
-                    img_url = raw_img
-
+                img_url = raw_img[0] if isinstance(raw_img, list) and raw_img else raw_img
                 if img_url:
-                    # Санитарная проверка: Ozon иногда возвращает // вместо https://
-                    if isinstance(img_url, str) and img_url.startswith("//"):
-                        img_url = "https:" + img_url
-                    image_map[str(s_id)] = img_url
-
-            if image_map:
-                logger.debug(f"User {user_id}: Успешно получено {len(image_map)} изображений для SKU.")
+                    if isinstance(img_url, str) and img_url.startswith("//"): img_url = "https:" + img_url
+                    image_map[str(item.get("sku"))] = img_url
         except Exception as e:
-            logger.error(f"User {user_id}: Критическая ошибка при получении изображений Ozon: {e}")
+            logger.error(f"Error fetching images: {e}")
 
     new_products = []
     for pr in products_data:
@@ -213,39 +186,20 @@ async def enrich_posting_from_ozon(
         sku = pr.get("sku")
         f = fin_map.get(str(sku))
 
-        # ПРИОРИТЕТ: берем цену из финансового блока (она в рублях, даже если заказ в KZT/BYN)
-        # Если в фин. блоке пусто, берем из общего списка товаров
-        price = 0
-        if f and f.get("price") is not None:
-            price = _to_int(f.get("price"))
-        else:
-            price = _to_int(pr.get("price"))
-
-        if price == 0:
-            logger.warning(f"Ozon returned zero price for SKU {sku} in posting {posting_number} (user {user_id})")
-
-        obj = OrderProduct(
-            user_id=user_id,
-            posting_number=posting_number,
-            sku=_to_int(sku),
-            offer_id=pr.get("offer_id"),
-            name=pr.get("name"),
-            quantity=_to_int(pr.get("quantity")),
-            price=price,
+        price = _to_int(f.get("price")) if f and f.get("price") is not None else _to_int(pr.get("price"))
+        
+        new_products.append(OrderProduct(
+            user_id=user_id, posting_number=posting_number, sku=_to_int(sku),
+            offer_id=pr.get("offer_id"), name=pr.get("name"),
+            quantity=_to_int(pr.get("quantity")), price=price,
             currency_code=pr.get("currency_code"),
             commission_amount=_to_int((f or {}).get("commission_amount")),
             payout=_to_int((f or {}).get("payout")),
             image_url=image_map.get(str(sku))
-        )
-        new_products.append(obj)
+        ))
     
-    if new_products:
-        db.add_all(new_products)
-    
-    if order_number:
-        recalc_order_header(db, order_number, user_id)
+    if order_number: recalc_order_header(db, order_number, user_id)
 
-    # Больше НЕ делаем здесь db.commit(), это ответственность вызывающего кода
     return {"status": "ok"}
 
 
@@ -294,22 +248,21 @@ async def enrich_accruals_from_ozon(
                 last_id = response.get("last_id")
                 continue
 
-            # Оптимизация N+1: Предварительная загрузка OrderPosting.id для всей пачки
+            # Оптимизация N+1: Предварительная загрузка OrderPosting.id и scheme для всей пачки
             unit_numbers = {acc.get("unit_number") for acc in accruals if acc.get("unit_number")}
             if unit_numbers:
                 # Ищем только те, которых еще нет в кеше
                 missing_units = [u for u in unit_numbers if u not in posting_cache]
                 if missing_units:
-                    # По умолчанию помечаем как None, чтобы не искать повторно, если в БД пусто
                     for u in missing_units:
-                        posting_cache[u] = None
+                        posting_cache[u] = (None, 'fbo')
 
-                    found_ops = db.query(OrderPosting.posting_number, OrderPosting.id).filter(
+                    found_ops = db.query(OrderPosting.posting_number, OrderPosting.id, OrderPosting.scheme).filter(
                         OrderPosting.user_id == user_id,
                         OrderPosting.posting_number.in_(missing_units)
                     ).all()
-                    for pn, op_id in found_ops:
-                        posting_cache[pn] = op_id
+                    for pn, op_id, op_scheme in found_ops:
+                        posting_cache[pn] = (op_id, op_scheme)
 
             all_rows_to_add = []
             for acc in accruals:
@@ -317,7 +270,7 @@ async def enrich_accruals_from_ozon(
                 unit_number = acc.get("unit_number")
                 category = acc.get("accrued_category")
 
-                p_id = posting_cache.get(unit_number) if unit_number else None
+                p_id, p_scheme = posting_cache.get(unit_number, (None, 'fbo')) if unit_number else (None, 'fbo')
 
                 amount_data = acc.get("total_amount") or {}
                 currency = amount_data.get("currency")
@@ -341,7 +294,7 @@ async def enrich_accruals_from_ozon(
                                 unit_number=unit_number, accrued_category=category,
                                 operation_type='revenue' if rev_amount > 0 else 'expense', 
                                 amount=round(rev_amount * qty, 2), currency=currency,
-                                quantity=qty, sku=sku, posting_id=p_id
+                                quantity=qty, sku=sku, posting_id=p_id, scheme=p_scheme
                             ))
 
                         # 2. КОМИССИЯ (Специальный ID 1000. Отрицательная - расход, Положительная - возврат денег)
@@ -352,7 +305,7 @@ async def enrich_accruals_from_ozon(
                                 unit_number=unit_number, accrued_category=category,
                                 operation_type='expense', # Комиссия всегда относится к расходам (даже если она с плюсом)
                                 amount=round(comm_amount * qty, 2), currency=currency,
-                                quantity=qty, type_id=1000, sku=sku, posting_id=p_id
+                                quantity=qty, type_id=1000, sku=sku, posting_id=p_id, scheme=p_scheme
                             ))
 
                         # 3. ДОСТАВКА И СЕРВИСЫ
@@ -365,7 +318,7 @@ async def enrich_accruals_from_ozon(
                                     unit_number=unit_number, accrued_category=category,
                                     operation_type='expense', 
                                     amount=round(srv_amount * qty, 2), currency=currency,
-                                    quantity=qty, type_id=srv.get("type_id"), sku=sku, posting_id=p_id
+                                    quantity=qty, type_id=srv.get("type_id"), sku=sku, posting_id=p_id, scheme=p_scheme
                                 ))
                 else:
                     # ДЛЯ ITEM и NON_ITEM: Собираем ВСЕ услуги (исправлено)
@@ -381,7 +334,7 @@ async def enrich_accruals_from_ozon(
                                         unit_number=unit_number, accrued_category=category,
                                         operation_type='revenue' if amt > 0 else 'expense',
                                         amount=amt, currency=currency,
-                                        type_id=srv.get("type_id"), sku=sku, posting_id=p_id
+                                        type_id=srv.get("type_id"), sku=sku, posting_id=p_id, scheme=p_scheme
                                     ))
                     elif category == "NON_ITEM":
                         ni_fee = acc.get("non_item_fee") or {}
@@ -392,7 +345,7 @@ async def enrich_accruals_from_ozon(
                                 unit_number=unit_number, accrued_category=category,
                                 operation_type='revenue' if amt > 0 else 'expense',
                                 amount=amt, currency=currency,
-                                type_id=ni_fee.get("type_id"), posting_id=p_id
+                                type_id=ni_fee.get("type_id"), posting_id=p_id, scheme=p_scheme
                             ))
                     else:
                         # Фоллбек для неизвестных категорий
@@ -402,7 +355,7 @@ async def enrich_accruals_from_ozon(
                                 ozon_accrual_id=acc_id, user_id=user_id, date=acc_date,
                                 unit_number=unit_number, accrued_category=category,
                                 operation_type='revenue' if amt > 0 else 'expense',
-                                amount=amt, currency=currency, posting_id=p_id
+                                amount=amt, currency=currency, posting_id=p_id, scheme=p_scheme
                             ))
 
                 all_rows_to_add.extend(rows_to_add)

@@ -168,18 +168,16 @@ def is_cancelled(st):
     status = (st or "").lower()
     return any(x in status for x in ["cancelled", "отменен", "отменён", "canceled"])
 
-def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc: datetime, include_cancelled: bool = True):
+def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc: datetime, include_cancelled: bool = True, scheme: str = 'all'):
     """
     Собирает уникальные постинги из сырых (Order) и нормализованных (OrderPosting) таблиц.
-    Оптимизировано: используем UNION для эффективного выполнения в БД.
     """
     search_since = since_utc.replace(tzinfo=None)
     search_to = to_utc.replace(tzinfo=None)
 
     postings_map = {}
 
-    # 1. Собираем данные из нормализованной таблицы (Приоритетный источник)
-    # Используем UNION для эффективного использования индексов на стороне БД
+    # 1. Собираем данные из нормализованной таблицы
     q1 = db.query(OrderPosting.posting_number, OrderPosting.created_at, OrderPosting.status, OrderPosting.in_process_at).filter(
         OrderPosting.user_id == user_id,
         OrderPosting.created_at.between(search_since, search_to)
@@ -189,45 +187,30 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
         OrderPosting.in_process_at.between(search_since, search_to)
     )
     
-    # Объединяем на стороне БД
+    if scheme != 'all':
+        q1 = q1.filter(OrderPosting.scheme == scheme)
+        q2 = q2.filter(OrderPosting.scheme == scheme)
+
     unified_query = q1.union(q2)
 
     for pn, cr, st, in_proc in unified_query.all():
         if not pn: continue
         if not include_cancelled and is_cancelled(st): continue
+        postings_map[pn] = {"posting_number": pn, "created_at": cr, "in_process_at": in_proc, "status": st}
 
-        postings_map[pn] = {
-            "posting_number": pn,
-            "created_at": cr,
-            "in_process_at": in_proc,
-            "status": st,
-            "source": "normalized"
-        }
-
-    # 2. Дозаполняем из сырой таблицы только если нет в нормализованной
-    # (Фоллбек для постингов, которые еще не прошли энричмент)
+    # 2. Дозаполняем из сырой таблицы
     q3 = db.query(Order.posting_number, Order.created_at, Order.status, Order.data).filter(
         Order.user_id == user_id,
         Order.created_at.between(search_since, search_to)
     )
-    # Мы не берем здесь по updated_at, так как это обычно техническое поле, 
-    # а основные события (создание/обработка) покрыты выше.
+    if scheme != 'all':
+        q3 = q3.filter(Order.scheme == scheme)
     
     for pn, cr, st, data in q3.all():
         if not pn or pn in postings_map: continue
         if not include_cancelled and is_cancelled(st): continue
-
-        in_proc = None
-        if data and isinstance(data, dict):
-            in_proc = data.get("in_process_at")
-
-        postings_map[pn] = {
-            "posting_number": pn,
-            "created_at": cr,
-            "in_process_at": in_proc,
-            "status": st,
-            "source": "raw"
-        }
+        in_proc = data.get("in_process_at") if data and isinstance(data, dict) else None
+        postings_map[pn] = {"posting_number": pn, "created_at": cr, "in_process_at": in_proc, "status": st}
 
     return postings_map
 
@@ -332,6 +315,7 @@ async def daily_stats(
     since: str,
     to: str,
     include_cancelled: bool = Query(True),
+    scheme: str = Query('fbo'), # Защита метрик: по умолчанию только FBO
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -353,7 +337,7 @@ async def daily_stats(
     search_since_dt = since_utc - timedelta(hours=24)
     search_to_dt = to_utc + timedelta(hours=24)
 
-    postings_map = _get_unified_postings(db, current_user.id, search_since_dt, search_to_dt, include_cancelled)
+    postings_map = _get_unified_postings(db, current_user.id, search_since_dt, search_to_dt, include_cancelled, scheme=scheme)
 
     if not postings_map:
         return {"data": []}
@@ -434,6 +418,7 @@ async def sales_report_universal(
     since: str,
     to: str,
     include_cancelled: bool = Query(True),
+    scheme: str = Query('fbo'), # Защита метрик: по умолчанию только FBO
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -454,7 +439,7 @@ async def sales_report_universal(
     search_to_dt = to_utc + timedelta(hours=24)
 
     # 1. Получаем список отправлений и заказов для статистики по количеству и статусам
-    postings_map = _get_unified_postings(db, current_user.id, search_since_dt, search_to_dt, include_cancelled)
+    postings_map = _get_unified_postings(db, current_user.id, search_since_dt, search_to_dt, include_cancelled, scheme=scheme)
 
     local_tz = timezone(timedelta(hours=tz_offset_hours))
     date_since_local = since_dt.astimezone(local_tz).date()
@@ -475,32 +460,32 @@ async def sales_report_universal(
         OrderProduct.name,
         OrderProduct.offer_id,
         OrderProduct.image_url,
+        OrderPosting.scheme,
         func.sum(OrderProduct.quantity).label("qty"),
         func.sum(OrderProduct.price * OrderProduct.quantity).label("rev")
-    ).filter(
+    ).join(OrderPosting, (OrderPosting.posting_number == OrderProduct.posting_number) & (OrderPosting.user_id == OrderProduct.user_id)).filter(
         OrderProduct.user_id == current_user.id,
         OrderProduct.posting_number.in_(final_postings)
-    ).group_by(OrderProduct.sku, OrderProduct.name, OrderProduct.offer_id, OrderProduct.image_url).all()
+    ).group_by(OrderProduct.sku, OrderProduct.name, OrderProduct.offer_id, OrderProduct.image_url, OrderPosting.scheme).all()
 
-    items_map = {}
+    items = []
     total_sales_revenue = 0.0
-    all_skus = []
 
-    for r_sku, r_name, r_oid, r_img, r_qty, r_rev in product_stats:
+    for r_sku, r_name, r_oid, r_img, r_scheme, r_qty, r_rev in product_stats:
         s = int(r_sku)
-        items_map[s] = {
+        items.append({
             "sku": s,
             "name": r_name,
             "offer_id": r_oid,
             "image_url": r_img,
+            "scheme": r_scheme,
             "quantity": int(r_qty or 0),
             "amount_raw": float(r_rev or 0)
-        }
+        })
         total_sales_revenue += float(r_rev or 0)
-        all_skus.append(s)
 
     # 3. Агрегируем расходы и возвраты из OzonAccrual (Финансовый первоисточник для услуг)
-    accrual_data_raw = db.query(
+    accruals_q = db.query(
         OzonAccrual.sku,
         OzonAccrual.amount,
         OzonAccrual.type_id,
@@ -510,7 +495,12 @@ async def sales_report_universal(
         OzonAccrual.user_id == current_user.id,
         OzonAccrual.date >= since_utc.replace(tzinfo=None),
         OzonAccrual.date <= to_utc.replace(tzinfo=None)
-    ).all()
+    )
+
+    if scheme != 'all':
+        accruals_q = accruals_q.filter(OzonAccrual.scheme == scheme)
+
+    accrual_data_raw = accruals_q.all()
 
     total_returns_amount = 0.0
     total_commission = 0.0
@@ -565,7 +555,6 @@ async def sales_report_universal(
         postings_map=postings_map  # ОПТИМИЗАЦИЯ: повторно используем уже загруженные постинги
     )
 
-    items = list(items_map.values())
     items.sort(key=lambda x: -x["amount_raw"])
 
     costs_by_type = db.query(
@@ -641,6 +630,7 @@ async def sales_report_universal(
 async def expenses_breakdown(
     since: str,
     to: str,
+    scheme: str = Query('fbo'), # Защита метрик
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -657,17 +647,21 @@ async def expenses_breakdown(
     since_utc = since_dt.astimezone(timezone.utc).replace(tzinfo=None)
     to_utc = to_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # Получаем все расходные транзакции: услуги (type_id IS NOT NULL)
-    # и возвраты товара (type_id IS NULL, amount < 0).
-    accruals = db.query(OzonAccrual).filter(
+    # Получаем все расходные транзакции
+    accruals_q = db.query(OzonAccrual).filter(
         OzonAccrual.user_id == current_user.id,
         OzonAccrual.date >= since_utc,
         OzonAccrual.date <= to_utc,
         or_(
-            OzonAccrual.type_id.is_not(None),             # услуги
-            (OzonAccrual.type_id.is_(None)) & (OzonAccrual.amount < 0)  # возвраты товара
+            OzonAccrual.type_id.is_not(None),
+            (OzonAccrual.type_id.is_(None)) & (OzonAccrual.amount < 0)
         )
-    ).all()
+    )
+    
+    if scheme != 'all':
+        accruals_q = accruals_q.filter(OzonAccrual.scheme == scheme)
+    
+    accruals = accruals_q.all()
 
     # Накапливаем суммы по категориям С УЧЁТОМ ЗНАКА (нетто).
     # Это нужно, чтобы корректировки/сторно (положительные суммы среди
@@ -752,7 +746,7 @@ async def expenses_breakdown(
     # Используем расширенное окно поиска для корректного маппинга дат
     search_since = since_utc - timedelta(hours=24)
     search_to = to_utc + timedelta(hours=24)
-    p_map = _get_unified_postings(db, current_user.id, search_since, search_to, include_cancelled=False)
+    p_map = _get_unified_postings(db, current_user.id, search_since, search_to, include_cancelled=False, scheme=scheme)
 
     total_cp, cp_items = _calculate_cost_price_from_orders(
         db,
@@ -791,6 +785,7 @@ async def expenses_breakdown(
 async def expenses_summary(
     since: str,
     to: str,
+    scheme: str = Query('fbo'), # Защита метрик
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -798,7 +793,7 @@ async def expenses_summary(
     """
     Возвращает сумму расходов за указанный период с разбивкой по категориям.
     """
-    res = await expenses_breakdown(since=since, to=to, tz_offset_hours=tz_offset_hours, db=db, current_user=current_user)
+    res = await expenses_breakdown(since=since, to=to, scheme=scheme, tz_offset_hours=tz_offset_hours, db=db, current_user=current_user)
 
     total = res["total"]
     categories = []

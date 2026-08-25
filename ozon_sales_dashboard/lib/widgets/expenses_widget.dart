@@ -6,12 +6,14 @@ class ExpensesWidget extends StatefulWidget {
   final OzonApiClient api;
   final String since;
   final String to;
+  final String scheme;
 
   const ExpensesWidget({
     super.key,
     required this.api,
     required this.since,
     required this.to,
+    this.scheme = 'fbo',
   });
 
   @override
@@ -32,7 +34,7 @@ class _ExpensesWidgetState extends State<ExpensesWidget> {
   @override
   void didUpdateWidget(ExpensesWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.since != widget.since || oldWidget.to != widget.to) {
+    if (oldWidget.since != widget.since || oldWidget.to != widget.to || oldWidget.scheme != widget.scheme) {
       _loadData();
     }
   }
@@ -41,7 +43,11 @@ class _ExpensesWidgetState extends State<ExpensesWidget> {
     if (!mounted) return;
     setState(() => _isLoading = true);
     try {
-      final res = await widget.api.getExpensesSummary(since: widget.since, to: widget.to);
+      final res = await widget.api.getExpensesSummary(
+        since: widget.since, 
+        to: widget.to,
+        scheme: widget.scheme,
+      );
       if (mounted) {
         setState(() {
           _summary = res;

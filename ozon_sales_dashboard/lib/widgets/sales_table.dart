@@ -9,12 +9,14 @@ class SalesTable extends StatelessWidget {
   final List<Map<String, dynamic>> items; // Список товаров
   final bool delivered;                   // Флаг режима (Финансы или Отгрузки)
   final Map<String, dynamic>? totals;     // Общие итоги от сервера
+  final String scheme;                    // Текущая выбранная схема
   
   const SalesTable({
     super.key,
     required this.items,
     required this.delivered,
     this.totals,
+    this.scheme = 'fbo',
   });
 
   // Вспомогательная функция для локализации статусов
@@ -74,9 +76,32 @@ class SalesTable extends StatelessWidget {
                     ? (it['total_payout'] ?? 0)
                     : (it['amount_raw'] ?? 0);
                 
+                final itemScheme = it['scheme'];
+
                 return DataRow(
                   cells: [
-                    DataCell(Text('${it['offer_id'] ?? ''}')),
+                    DataCell(Row(
+                      children: [
+                        Text('${it['offer_id'] ?? ''}'),
+                        if (scheme == 'all' && itemScheme != null)
+                          Container(
+                            margin: const EdgeInsets.only(left: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: itemScheme == 'fbo' ? Colors.blue.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              itemScheme.toString().toUpperCase(),
+                              style: TextStyle(
+                                fontSize: 8, 
+                                fontWeight: FontWeight.bold, 
+                                color: itemScheme == 'fbo' ? Colors.blue[700] : Colors.orange[700]
+                              ),
+                            ),
+                          ),
+                      ],
+                    )),
                     DataCell(SizedBox(width: 360, child: Text('${it['name'] ?? ''}', maxLines: 2, overflow: TextOverflow.ellipsis))),
                     DataCell(Text('$quantity')),
                     DataCell(Text('$orders')),

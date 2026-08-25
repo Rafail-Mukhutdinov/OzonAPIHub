@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import 'dart:async';
 import '../providers/auth_provider.dart';
 import '../services/api.dart';
+
+import 'order_details_screen.dart';
 
 class ShipmentsScreen extends StatefulWidget {
   const ShipmentsScreen({Key? key}) : super(key: key);
@@ -11,277 +15,241 @@ class ShipmentsScreen extends StatefulWidget {
 }
 
 class _ShipmentsScreenState extends State<ShipmentsScreen> {
-  final TextEditingController _skuController = TextEditingController();
-  final TextEditingController _startDateController = TextEditingController();
-  final TextEditingController _endDateController = TextEditingController();
   late OzonApiClient _apiClient;
-  List<dynamic> _shipments = [];
-  int _currentPage = 0;
-  int _totalItems = 0;
-  int _limit = 50;
+  List<dynamic> _orders = [];
   bool _isLoading = false;
+  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
     final auth = Provider.of<AuthProvider>(context, listen: false);
     _apiClient = OzonApiClient(authProvider: auth);
+    _loadData();
+    // Обновляем таймеры каждую минуту
+    _timer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      if (mounted) setState(() {});
+    });
   }
 
-  Future<void> _loadShipments() async {
-    setState(() {
-      _isLoading = true;
-    });
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
 
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
     try {
-      final result = await _apiClient.getShipments(
-        skus: _skuController.text.isNotEmpty ? _skuController.text : null,
-        since: _startDateController.text.isNotEmpty ? '${_startDateController.text}T00:00:00Z' : null,
-        to: _endDateController.text.isNotEmpty ? '${_endDateController.text}T23:59:59Z' : null,
-        limit: _limit,
-        offset: _currentPage * _limit,
-      );
-
+      final res = await _apiClient.getUnfulfilledOrders();
       setState(() {
-        _shipments = result['items'] ?? [];
-        _totalItems = result['total'] ?? 0;
+        _orders = res;
         _isLoading = false;
       });
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка при загрузке данных: $e')),
+        SnackBar(content: Text('Ошибка загрузки: $e')),
       );
     }
   }
 
-  Future<void> _selectDate(TextEditingController controller) async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2101),
-    );
-    if (picked != null) {
-      controller.text = picked.toString().split(' ')[0]; // yyyy-mm-dd
+  String _getTimeLeft(String? shipmentDate) {
+    if (shipmentDate == null) return '-';
+    try {
+      final dt = DateTime.parse(shipmentDate).toLocal();
+      final now = DateTime.now();
+      final diff = dt.difference(now);
+
+      if (diff.isNegative) return 'Просрочено';
+      
+      final hours = diff.inHours;
+      final minutes = diff.inMinutes % 60;
+      return '${hours}ч ${minutes}м';
+    } catch (_) {
+      return '-';
+    }
+  }
+
+  Color _getSlaColor(String? shipmentDate) {
+    if (shipmentDate == null) return Colors.grey;
+    try {
+      final dt = DateTime.parse(shipmentDate).toLocal();
+      final now = DateTime.now();
+      final diff = dt.difference(now);
+
+      if (diff.isNegative) return Colors.red;
+      if (diff.inHours < 2) return Colors.orange;
+      return Colors.green;
+    } catch (_) {
+      return Colors.grey;
+    }
+  }
+
+  String _statusRu(String code) {
+    switch (code) {
+      case 'awaiting_assembly': return 'Сборка';
+      case 'awaiting_packaging': return 'Упаковка';
+      case 'awaiting_deliver': return 'Отгрузка';
+      default: return code;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final authProvider = Provider.of<AuthProvider>(context);
-
     return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
-        title: const Text('Отгрузки'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        foregroundColor: Theme.of(context).colorScheme.onSurface, // Исправлено: заменено onInversePrimary на onSurface
+        title: const Text('Горящие заказы FBS', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadData,
+          ),
+        ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _skuController,
-                            decoration: const InputDecoration(
-                              labelText: 'Артикулы (через запятую)',
-                              border: OutlineInputBorder(),
-                              hintText: 'Например: 12345,67890',
+      body: RefreshIndicator(
+        onRefresh: _loadData,
+        child: _isLoading && _orders.isEmpty
+            ? const Center(child: CircularProgressIndicator())
+            : _orders.isEmpty
+                ? const Center(child: Text('Нет активных заказов для сборки'))
+                : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _orders.length,
+                    itemBuilder: (context, index) {
+                      final order = _orders[index];
+                      final slaText = _getTimeLeft(order['shipment_date']);
+                      final slaColor = _getSlaColor(order['shipment_date']);
+                      final isExpress = order['is_express'] ?? false;
+
+                      return InkWell(
+                        onTap: () {
+                          // Чтобы не зависеть от задержки синхронизации БД, передаем данные напрямую из API Ozon
+                          final Map<String, dynamic> preloaded = {
+                            "order_number": order['posting_number'],
+                            "header": {
+                              "first_created_at": order['in_process_at'],
+                              "total_payout": 0, // Неизвестно до сборки
+                              "profit": 0,
+                            },
+                            "postings": [
+                              {
+                                "posting_number": order['posting_number'],
+                                "status": order['status'],
+                                "scheme": "fbs",
+                                "is_express": order['is_express'],
+                                "shipment_date": order['shipment_date'],
+                                "tpl_provider": order['tpl_provider'],
+                                "delivery_method_name": order['delivery_method_name'],
+                                "products": order['products'] ?? [],
+                              }
+                            ]
+                          };
+
+                          Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => OrderDetailsScreen(
+                              orderNumber: order['posting_number'],
+                              preloadedData: preloaded,
                             ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _startDateController,
-                            readOnly: true,
-                            decoration: const InputDecoration(
-                              labelText: 'Дата начала',
-                              border: OutlineInputBorder(),
-                              hintText: 'Выберите дату',
-                            ),
-                            onTap: () => _selectDate(_startDateController),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: TextField(
-                            controller: _endDateController,
-                            readOnly: true,
-                            decoration: const InputDecoration(
-                              labelText: 'Дата окончания',
-                              border: OutlineInputBorder(),
-                              hintText: 'Выберите дату',
-                            ),
-                            onTap: () => _selectDate(_endDateController),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: _isLoading ? null : _loadShipments,
-                      child: _isLoading
-                          ? const CircularProgressIndicator()
-                          : const Text('Применить фильтры'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: _isLoading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _shipments.isEmpty
-                      ? const Center(child: Text('Нет данных об отгрузках'))
-                      : Column(
-                          children: [
-                            Flexible(
-                              child: SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: DataTable(
-                                  columnSpacing: 16,
-                                  horizontalMargin: 16,
-                                  columns: const [
-                                    DataColumn(
-                                      label: Text(
-                                        'SKU',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
+                          ));
+                        },
+                        child: Card(
+                          margin: const EdgeInsets.only(bottom: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '№ ${order['posting_number']}',
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: Colors.blue.withOpacity(0.1),
+                                                borderRadius: BorderRadius.circular(4),
+                                              ),
+                                              child: Text(
+                                                _statusRu(order['status']),
+                                                style: const TextStyle(fontSize: 12, color: Colors.blue, fontWeight: FontWeight.bold),
+                                              ),
+                                            ),
+                                            if (isExpress) ...[
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.orange.withOpacity(0.1),
+                                                  borderRadius: BorderRadius.circular(4),
+                                                ),
+                                                child: const Text(
+                                                  'EXPRESS',
+                                                  style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.bold),
+                                                ),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ],
                                     ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Название',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Номер отправления',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Дата отгрузки',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Количество',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Статус',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Цена',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Выплата',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
-                                    DataColumn(
-                                      label: Text(
-                                        'Комиссия',
-                                        style: TextStyle(fontWeight: FontWeight.bold),
-                                      ),
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      children: [
+                                        const Text('Осталось:', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                                        Text(
+                                          slaText,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 18,
+                                            color: slaColor,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ],
-                                  rows: _shipments.map((shipment) {
-                                    return DataRow(cells: [
-                                      DataCell(Text(shipment['sku'].toString())),
-                                      DataCell(Text(shipment['name'] ?? '')),
-                                      DataCell(Text(shipment['posting_number'] ?? '')),
-                                      DataCell(Text(
-                                          shipment['shipment_date']?.toString() ?? '')),
-                                      DataCell(Text(shipment['quantity'].toString())),
-                                      DataCell(Text(shipment['status'] ?? '')),
-                                      DataCell(Text(shipment['price'].toString())),
-                                      DataCell(Text(shipment['payout'].toString())),
-                                      DataCell(Text(shipment['commission'].toString())),
-                                    ]);
-                                  }).toList(),
                                 ),
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  'Всего: $_totalItems | Страница: ${_currentPage + 1}',
-                                ),
-                                const Spacer(),
+                                const Divider(height: 24),
                                 Row(
                                   children: [
-                                    IconButton(
-                                      icon: const Icon(Icons.arrow_back_ios),
-                                      onPressed: _currentPage > 0
-                                          ? () {
-                                              setState(() {
-                                                _currentPage--;
-                                              });
-                                              _loadShipments();
-                                            }
-                                          : null,
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(Icons.arrow_forward_ios),
-                                      onPressed: (_currentPage + 1) * _limit < _totalItems
-                                          ? () {
-                                              setState(() {
-                                                _currentPage++;
-                                              });
-                                              _loadShipments();
-                                            }
-                                          : null,
+                                    const Icon(Icons.inventory_2_outlined, size: 16, color: Colors.grey),
+                                    const SizedBox(width: 8),
+                                    Text('${order['products_count']} тов.', style: const TextStyle(fontSize: 13)),
+                                    const Spacer(),
+                                    const Icon(Icons.local_shipping_outlined, size: 16, color: Colors.grey),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      '${order['tpl_provider'] ?? order['delivery_method_name'] ?? 'Ozon'}',
+                                      style: const TextStyle(fontSize: 13),
                                     ),
                                   ],
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'Отгрузка: ${order['shipment_date'] != null ? DateFormat('dd.MM HH:mm').format(DateTime.parse(order['shipment_date']).toLocal()) : '-'}',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                                 ),
                               ],
                             ),
-                          ],
+                          ),
                         ),
-            ),
-          ],
-        ),
+                      );
+                    },
+                  ),
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _skuController.dispose();
-    _startDateController.dispose();
-    _endDateController.dispose();
-    super.dispose();
   }
 }

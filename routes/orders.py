@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from collections import defaultdict
-from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User
+from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User, OzonCredential
 from utils.auth import get_current_user
 from datetime import datetime, timezone
 from utils.logging_config import log_user_event
@@ -20,8 +20,9 @@ def list_orders(
     since: str | None = None,
     to: str | None = None,
     status: str | None = None,
+    scheme: str | None = None, # fbo, fbs, rfbs
     posting_number: str | None = None,
-    contains: str | None = None, # Поиск по части номера отправления
+    contains: str | None = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "-created_at",
@@ -29,8 +30,7 @@ def list_orders(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Получает список всех заказов (постингов) пользователя из таблицы Orders.
-    Это 'сырой' список, который приходит первым при синхронизации.
+    Получает список всех заказов пользователя из таблицы Orders.
     """
     try:
         since_iso = normalize_iso(since) if since else None
@@ -41,20 +41,19 @@ def list_orders(
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
-    # Логируем действие пользователя для аналитики использования
     filters = []
     if status: filters.append(f"status={status}")
+    if scheme: filters.append(f"scheme={scheme}")
     if posting_number: filters.append(f"pn={posting_number}")
-    if contains: filters.append(f"contains={contains}")
-    log_user_event(current_user.id, f"Запрос списка заказов. Фильтры: {', '.join(filters) if filters else 'нет'}. Limit: {limit}")
+    
+    log_user_event(current_user.id, f"Запрос списка заказов. Фильтры: {', '.join(filters)}. Limit: {limit}")
 
-    # Строим запрос с учетом принадлежности данных пользователю (SaaS изоляция)
     q = db.query(Order).filter(Order.user_id == current_user.id)
 
-    # Применяем фильтры
     if since_iso: q = q.filter(Order.created_at >= since_iso)
     if to_iso: q = q.filter(Order.created_at <= to_iso)
     if status: q = q.filter(Order.status == status)
+    if scheme and scheme != 'all': q = q.filter(Order.scheme == scheme)
     if posting_number: q = q.filter(Order.posting_number == posting_number)
     if contains: q = q.filter(Order.posting_number.like(f"%{contains}%"))
 
@@ -78,6 +77,7 @@ def list_orders(
                 "order_id": r.order_id,
                 "posting_number": r.posting_number,
                 "status": r.status,
+                "scheme": r.scheme,
                 "created_at": r.created_at,
                 "updated_at": r.updated_at,
                 "data": r.data, # Возвращаем сырой JSON от Ozon
@@ -85,6 +85,63 @@ def list_orders(
             for r in rows
         ]
     }
+
+@router.get("/orders/unfulfilled")
+async def list_unfulfilled_fbs_orders(
+    raw: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Получает список 'горящих' FBS заказов, которые нужно собрать или отгрузить.
+    Данные нормализуются в плоский список для удобства UI.
+    """
+    cred = db.query(OzonCredential).filter(
+        OzonCredential.user_id == current_user.id,
+        OzonCredential.is_active == True
+    ).first()
+    
+    if not cred:
+        raise HTTPException(status_code=400, detail="API ключи не настроены")
+
+    from services.ozon import ozon_fbs_unfulfilled_list_async
+    from utils.encryption import decrypt_credential
+    try:
+        data = await ozon_fbs_unfulfilled_list_async(
+            client_id=decrypt_credential(cred.client_id_encrypted),
+            api_key=decrypt_credential(cred.api_key_encrypted)
+        )
+        if raw: return data
+
+        result = data.get("result", [])
+        if not isinstance(result, list): return []
+
+        flat_postings = []
+        for status_group in result:
+            status = status_group.get("status")
+            postings = status_group.get("postings", [])
+            for p in postings:
+                flat_postings.append({
+                    "posting_number": p.get("posting_number"),
+                    "status": status,
+                    "shipment_date": p.get("shipment_date"),
+                    "in_process_at": p.get("in_process_at"),
+                    "is_express": p.get("is_express", False),
+                    "products_count": len(p.get("products", [])),
+                    "products": p.get("products", []),
+                    "tpl_provider": (p.get("delivery_method") or {}).get("tpl_provider"),
+                    "delivery_method_name": (p.get("delivery_method") or {}).get("name"),
+                })
+        
+        # Сортируем: горящие (ближайшая дата отгрузки) — первыми
+        flat_postings.sort(key=lambda x: x.get("shipment_date") or "9999")
+        return flat_postings
+    except Exception as e:
+        import logging
+        logger = logging.getLogger("OzonAPIHub")
+        logger.error(f"Error fetching unfulfilled orders: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка при запросе к Ozon")
+
 
 @router.get("/orders/{posting_number}")
 def get_order_by_posting(
@@ -103,6 +160,7 @@ def get_order_by_posting(
         raise HTTPException(status_code=404, detail="Заказ не найден")
 
     return row
+
 
 @router.get("/order/{order_number}")
 def get_order_summary(
@@ -162,6 +220,11 @@ def get_order_summary(
             {
                 "posting_number": p.posting_number,
                 "status": p.status,
+                "scheme": p.scheme,
+                "is_express": p.is_express,
+                "shipment_date": p.shipment_date,
+                "tpl_provider": p.tpl_provider,
+                "delivery_method_name": p.delivery_method_name,
                 "created_at": p.created_at,
                 "in_process_at": p.in_process_at,
                 "fact_delivery_date": p.fact_delivery_date,

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api.dart';
 import '../widgets/mobile_dashboard_view.dart';
 import 'package:provider/provider.dart';
@@ -25,6 +26,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   
   // ЕДИНОЕ СОСТОЯНИЕ ДЛЯ ВСЕХ ВЕРСИЙ
   String selectedPeriod = 'today'; 
+  String selectedScheme = 'fbo'; // 'fbo', 'fbs', 'all'
+  bool isFbsBackfillComplete = true; // Для индикатора загрузки
   DateTime activeDate = DateTime.now(); 
   DateTime? drillDownDate; 
 
@@ -46,15 +49,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Передаем authProvider напрямую для централизованной обработки 401
     final auth = Provider.of<AuthProvider>(context, listen: false);
     api = OzonApiClient(authProvider: auth);
-    _loadAllData();
+    _loadSettings().then((_) => _loadAllData());
     _refreshProfile(); // Добавляем обновление профиля при входе
     _initPackageInfo();
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadAllData(isSilent: true));
   }
 
+  Future<void> _loadSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final scheme = prefs.getString('selected_scheme');
+      if (scheme != null && (scheme == 'fbo' || scheme == 'fbs')) {
+        setState(() {
+          selectedScheme = scheme;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading settings: $e');
+    }
+  }
+
+  Future<void> _saveScheme(String scheme) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // Не сохраняем 'all', сбрасываем на 'fbo'
+      if (scheme == 'all') {
+        await prefs.remove('selected_scheme');
+      } else {
+        await prefs.setString('selected_scheme', scheme);
+      }
+    } catch (e) {
+      debugPrint('Error saving scheme: $e');
+    }
+  }
+
   Future<void> _refreshProfile() async {
     try {
       final profileData = await api.getProfile();
+      
+      // Проверяем статус синхронизации для FBS
+      final syncStatus = await api.getSyncStatus();
+      final fbsComplete = syncStatus['fbs_backfill_is_complete'] ?? true;
+
       if (mounted) {
         final auth = Provider.of<AuthProvider>(context, listen: false);
         final bool isAdmin = profileData['is_admin'] ?? false;
@@ -64,6 +100,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         if (subEndStr != null) {
           subEndDate = DateTime.tryParse(subEndStr);
         }
+
+        setState(() {
+          isFbsBackfillComplete = fbsComplete;
+        });
 
         await auth.updateProfile(
           isAdmin: isAdmin,
@@ -142,16 +182,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final toStr = _getIso(reportEnd, true);
 
       // ЕДИНЫЙ ЗАПРОС ДЛЯ ОТЧЕТА (Товары и итоги)
-      final reportResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
-        'since': sinceStr,
-        'to': toStr,
-      });
+      final reportResponse = await api.getSalesRange(
+        since: sinceStr,
+        to: toStr,
+        scheme: selectedScheme,
+      );
 
       final diff = reportEnd.difference(reportStart).inDays + 1;
-      final prevResponse = await api.dio.get('/analytics/sales_report', queryParameters: {
-        'since': _getIso(reportStart.subtract(Duration(days: diff)), false),
-        'to': _getIso(reportEnd.subtract(Duration(days: diff)), true),
-      });
+      final prevResponse = await api.getSalesRange(
+        since: _getIso(reportStart.subtract(Duration(days: diff)), false),
+        to: _getIso(reportEnd.subtract(Duration(days: diff)), true),
+        scheme: selectedScheme,
+      );
 
       // 3. ЗАПРОС ДЛЯ ГРАФИКА (Всегда за весь период)
       DateTime statsStart = periodStart;
@@ -161,23 +203,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
         statsEnd = activeDate;
       }
 
-      final statsResponse = await api.dio.get('/analytics/daily_stats', queryParameters: {
-        'since': _getIso(statsStart, false),
-        'to': _getIso(statsEnd, true),
-      });
+      final statsResponse = await api.getDailyStats(
+        since: _getIso(statsStart, false),
+        to: _getIso(statsEnd, true),
+        scheme: selectedScheme,
+      );
 
       if (!mounted) return;
       setState(() {
-        items = (reportResponse.data['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-        totals = reportResponse.data;
+        items = (reportResponse['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        totals = reportResponse;
         // Сохраняем ISO строки для виджетов (безопасно)
         if (totals != null) {
           totals!['current_since'] = sinceStr;
           totals!['current_to'] = toStr;
         }
 
-        yesterdayTotals = prevResponse.data;
-        weeklyStats = (statsResponse.data['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        yesterdayTotals = prevResponse;
+        weeklyStats = (statsResponse['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
         loading = false;
       });
     } catch (e) {
@@ -428,17 +471,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onPressed: _handleManualSync,
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(50),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8.0, left: 16, right: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'fbo', label: Text('FBO'), icon: Icon(Icons.inventory_2, size: 16)),
+                      ButtonSegment(value: 'fbs', label: Text('FBS'), icon: Icon(Icons.local_shipping, size: 16)),
+                      ButtonSegment(value: 'all', label: Text('Все')),
+                    ],
+                    selected: {selectedScheme},
+                    onSelectionChanged: (Set<String> newSelection) {
+                      setState(() {
+                        selectedScheme = newSelection.first;
+                      });
+                      _saveScheme(selectedScheme);
+                      _loadAllData();
+                    },
+                    style: SegmentedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       drawer: _buildDrawer(auth),
       body: Column(
         children: [
           if (auth.isImpersonating) _buildSupportBanner(auth),
+          if (!isFbsBackfillComplete && (selectedScheme == 'fbs' || selectedScheme == 'all'))
+            _buildBackfillBanner(),
           Expanded(
             child: RefreshIndicator(
               onRefresh: () => _loadAllData(),
               child: MobileDashboardView(
                 api: api,
                 getIso: _getIso,
+                scheme: selectedScheme,
                 sinceStr: (totals?['current_since'] as String?) ?? _getIso(DateTime.now(), false),
                 toStr: (totals?['current_to'] as String?) ?? _getIso(DateTime.now(), true),
                 items: items, totals: totals, yesterdayTotals: yesterdayTotals, weeklyStats: weeklyStats,
@@ -469,6 +546,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _loadAllData();
                 },
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBackfillBanner() {
+    return Container(
+      width: double.infinity,
+      color: Colors.amber[100],
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: const Row(
+        children: [
+          Icon(Icons.info_outline, color: Colors.amber, size: 18),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Идёт загрузка истории FBS, данные могут быть неполными.',
+              style: TextStyle(fontSize: 12, color: Colors.brown, fontWeight: FontWeight.bold),
             ),
           ),
         ],

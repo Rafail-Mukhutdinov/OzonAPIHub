@@ -103,6 +103,11 @@ class SyncStatusResponse(BaseModel):
     backfill_to: datetime | None = None
     backfill_is_complete: bool = False
 
+    # Поля FBS
+    fbs_last_sync_at: datetime | None = None
+    fbs_backfill_cursor: datetime | None = None
+    fbs_backfill_is_complete: bool = False
+
 
 # ============================================================================
 # Эндпоинты (Маршруты API)

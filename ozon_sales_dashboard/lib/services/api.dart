@@ -110,11 +110,13 @@ class OzonApiClient {
     required String to,
     String includeStatuses = 'awaiting_assembly,awaiting_packaging,awaiting_deliver,delivering,delivered,canceled',
     String? status,
+    String scheme = 'fbo',
   }) async {
     final resp = await dio.get('/analytics/sales_today_raw', queryParameters: {
       'since': since,
       'to': to,
       'include_statuses': includeStatuses,
+      'scheme': scheme,
       if (status != null) 'status': status,
     });
     return _toJson(resp);
@@ -124,31 +126,31 @@ class OzonApiClient {
     required String since,
     required String to,
     String? status,
+    String scheme = 'fbo',
   }) async {
     final resp = await dio.get(
       '/analytics/sales_range',
       queryParameters: {
         'since': since,
         'to': to,
+        'scheme': scheme,
         if (status != null) 'status': status,
       },
     );
     return _toJson(resp);
   }
 
-  Future<Map<String, dynamic>> getSalesBySkuMonthly({
-    String? offerId,
-    String? sku,
-    int monthsBack = 12,
-    String mode = 'delivered',
+  Future<Map<String, dynamic>> getDailyStats({
+    required String since,
+    required String to,
+    String scheme = 'fbo',
   }) async {
     final resp = await dio.get(
-      '/analytics/sales_by_sku_monthly',
+      '/analytics/daily_stats',
       queryParameters: {
-        if (offerId != null) 'offer_id': offerId,
-        if (sku != null) 'sku': sku,
-        'months_back': monthsBack,
-        'mode': mode,
+        'since': since,
+        'to': to,
+        'scheme': scheme,
       },
     );
     return _toJson(resp);
@@ -164,35 +166,29 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
-  Future<Map<String, dynamic>> getShipments({
-    String? skus,
-    String? since,
-    String? to,
-    int limit = 50,
-    int offset = 0,
-  }) async {
-    final resp = await dio.get(
-      '/analytics/shipments',
-      queryParameters: {
-        if (skus != null) 'skus': skus,
-        if (since != null) 'since': since,
-        if (to != null) 'to': to,
-        'limit': limit,
-        'offset': offset,
-      },
-    );
+  Future<List<dynamic>> getUnfulfilledOrders() async {
+    final resp = await dio.get('/orders/unfulfilled');
+    if (resp.data is List) return resp.data;
+    if (resp.data is Map && resp.data['items'] is List) return resp.data['items'];
+    return [];
+  }
+
+  Future<Map<String, dynamic>> getOrderSummary(String orderNumber) async {
+    final resp = await dio.get('/order/$orderNumber');
     return _toJson(resp);
   }
 
   Future<Map<String, dynamic>> getExpensesSummary({
     required String since,
     required String to,
+    String scheme = 'fbo',
   }) async {
     final resp = await dio.get(
       '/analytics/expenses_summary',
       queryParameters: {
         'since': since,
         'to': to,
+        'scheme': scheme,
       },
     );
     return _toJson(resp);

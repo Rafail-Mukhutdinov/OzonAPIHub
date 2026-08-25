@@ -9,6 +9,7 @@ import 'expenses_widget.dart';
 class MobileDashboardView extends StatefulWidget {
   final OzonApiClient api;
   final String Function(DateTime, bool) getIso;
+  final String scheme;
   final String sinceStr;
   final String toStr;
   final List<Map<String, dynamic>> items;
@@ -33,6 +34,7 @@ class MobileDashboardView extends StatefulWidget {
     super.key,
     required this.api,
     required this.getIso,
+    required this.scheme,
     required this.sinceStr,
     required this.toStr,
     required this.items,
@@ -370,6 +372,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
               api: widget.api, 
               since: widget.sinceStr, 
               to: widget.toStr,
+              scheme: widget.scheme,
             ),
 
             const SizedBox(height: 24),
@@ -413,6 +416,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                   final total = item['amount_raw'] ?? 0;
                   final avgItemPrice = qty > 0 ? total / qty : 0; // СРЕДНЯЯ ЦЕНА ТОВАРА
                   final imageUrl = item['image_url'];
+                  final itemScheme = item['scheme'];
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(12),
@@ -432,7 +436,28 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                         ),
                         const SizedBox(width: 12),
                         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text(item['name'] ?? 'Товар', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, height: 1.2)),
+                            Row(
+                              children: [
+                                Expanded(child: Text(item['name'] ?? 'Товар', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, height: 1.2))),
+                                if (widget.scheme == 'all' && itemScheme != null)
+                                  Container(
+                                    margin: const EdgeInsets.only(left: 8),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: itemScheme == 'fbo' ? Colors.blue.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      itemScheme.toString().toUpperCase(),
+                                      style: TextStyle(
+                                        fontSize: 9, 
+                                        fontWeight: FontWeight.bold, 
+                                        color: itemScheme == 'fbo' ? Colors.blue[700] : Colors.orange[700]
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
                             const SizedBox(height: 4),
                             // Добавили среднюю цену в строку инфо
                             Text('$qty шт × ${f.format(avgItemPrice.toInt())} ₽  =  ${f.format(total)} ₽', style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 11)),

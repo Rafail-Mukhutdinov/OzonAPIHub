@@ -84,6 +84,7 @@ class Order(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     order_id = Column(BigInteger, index=True)
     posting_number = Column(String(255), index=True)
+    scheme = Column(String(20), default='fbo') # Индексируется в составе композитного индекса
     status = Column(String(100))
     created_at = Column(DateTime, index=True)
     updated_at = Column(DateTime, index=True)
@@ -91,7 +92,8 @@ class Order(Base):
     user = relationship("User", back_populates="orders")
     __table_args__ = (
         sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting'),
-        Index('idx_order_user_created', 'user_id', 'created_at'), # Составной индекс для аналитики
+        Index('idx_order_user_created', 'user_id', 'created_at'),
+        Index('idx_order_scheme_user', 'scheme', 'user_id', 'created_at'),
     )
 
 class OrderHeader(Base):
@@ -112,10 +114,20 @@ class OrderPosting(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     order_number = Column(String(255), index=True)
     posting_number = Column(String(255), index=True)
+    scheme = Column(String(20), default='fbo') # Индексируется в составе композитного индекса
     status = Column(String(100))
     created_at = Column(DateTime, index=True)
     in_process_at = Column(DateTime, index=True)
     fact_delivery_date = Column(DateTime)
+    
+    # Специфичные поля для FBS / rFBS
+    is_express = Column(Boolean, default=False)
+    shipment_date = Column(DateTime, index=True)
+    tpl_provider = Column(String(255))
+    delivery_method_id = Column(BigInteger)
+    delivery_method_name = Column(String(255))
+    tracking_number = Column(String(255))
+    
     substatus = Column(String(100))
     analytics_data = Column(JSON)
     financial_data = Column(JSON)
@@ -123,8 +135,9 @@ class OrderPosting(Base):
     products = relationship("OrderProduct", back_populates="posting", cascade="all, delete-orphan")
     __table_args__ = (
         sa.UniqueConstraint('user_id', 'posting_number', name='uq_user_posting_number'),
-        Index('idx_posting_user_created', 'user_id', 'created_at'), # Составной индекс для аналитики
-        Index('idx_posting_user_in_process', 'user_id', 'in_process_at'), # Важно для B2B аналитики
+        Index('idx_posting_user_created', 'user_id', 'created_at'),
+        Index('idx_posting_user_in_process', 'user_id', 'in_process_at'),
+        Index('idx_posting_scheme_user', 'scheme', 'user_id', 'created_at'),
     )
 
 class OrderProduct(Base):
@@ -202,6 +215,7 @@ class OzonAccrual(Base):
     sku = Column(BigInteger, index=True)
     
     posting_id = Column(Integer, ForeignKey("order_postings.id", ondelete="SET NULL"), nullable=True)
+    scheme = Column(String(20), default='fbo', index=True)
     created_at = Column(DateTime, default=get_utc_now)
     
     user = relationship("User")
@@ -255,6 +269,14 @@ class SyncStatus(Base):
     backfill_from = Column(DateTime, nullable=True)
     backfill_to = Column(DateTime, nullable=True)
     backfill_is_complete = Column(Boolean, default=False, nullable=False)
+
+    # Поля для раздельной синхронизации FBS
+    fbs_last_sync_at = Column(DateTime, nullable=True)
+    fbs_backfill_cursor = Column(DateTime, nullable=True)
+    fbs_backfill_is_complete = Column(Boolean, default=False, nullable=False)
+    
+    # Чекпоинт для годовой загрузки начислений
+    accruals_backfill_cursor = Column(DateTime, nullable=True)
 
     last_sync_attempt_at = Column(DateTime, nullable=True) # Без onupdate для точности планировщика
 

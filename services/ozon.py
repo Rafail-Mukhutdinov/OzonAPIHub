@@ -229,6 +229,96 @@ async def ozon_fbo_get_async(client_id: str, api_key: str, posting_number: str):
     )
 
 
+async def ozon_fbs_list_async(
+    client_id: str,
+    api_key: str,
+    filter_dict: dict,
+    limit: int = 50,
+    offset: int = 0,
+    with_flags: dict = None,
+    sort_dir: str = "ASC",
+):
+    """
+    Асинхронно получить список FBS/rFBS постингов (v3).
+    ВАЖНО: filter_dict['status'] должен быть списком строк.
+    """
+    url = f"{BASE_URL}/v3/posting/fbs/list"
+    
+    # Подготавливаем тело запроса. v3 требует список статусов.
+    if "status" in filter_dict and isinstance(filter_dict["status"], str):
+        filter_dict["status"] = [filter_dict["status"]] if filter_dict["status"] else []
+
+    body = {
+        "dir": sort_dir,
+        "filter": filter_dict,
+        "limit": limit,
+        "offset": offset,
+        "with": with_flags or {"analytics_data": True, "financial_data": True},
+    }
+    headers = _get_headers(client_id, api_key)
+
+    if offset == 0:
+        logger.info(f"Ozon API: Запрос списка FBS заказов ({sort_dir}, since={filter_dict.get('since')})")
+
+    return await _post_with_retry(
+        _get_client(), url, headers, body,
+        op_label=f"fbs/list client={client_id[:4]}"
+    )
+
+
+async def ozon_fbs_get_async(client_id: str, api_key: str, posting_number: str):
+    """
+    Асинхронно получить полные детали конкретного FBS/rFBS постинга (v2).
+    """
+    url = f"{BASE_URL}/v2/posting/fbs/get"
+    body = {
+        "posting_number": posting_number,
+        "with": {"analytics_data": True, "financial_data": True},
+    }
+    headers = _get_headers(client_id, api_key)
+
+    return await _post_with_retry(
+        _get_client(), url, headers, body,
+        op_label=f"fbs/get pn={posting_number}"
+    )
+
+
+async def ozon_fbs_unfulfilled_list_async(client_id: str, api_key: str, limit: int = 100, offset: int = 0):
+    """
+    Получить список невыполненных (горящих) FBS заказов.
+    """
+    url = f"{BASE_URL}/v2/posting/fbs/unfulfilled/list"
+    body = {
+        "limit": limit,
+        "offset": offset,
+        "with": {"analytics_data": True, "financial_data": True}
+    }
+    headers = _get_headers(client_id, api_key)
+
+    return await _post_with_retry(
+        _get_client(), url, headers, body,
+        op_label=f"fbs/unfulfilled/list client={client_id[:4]}"
+    )
+
+
+async def ozon_delivery_method_list_async(client_id: str, api_key: str, limit: int = 100, offset: int = 0):
+    """
+    Получить список методов доставки (нужно для rFBS).
+    """
+    url = f"{BASE_URL}/v2/delivery-method/list"
+    body = {
+        "filter": {},
+        "limit": limit,
+        "offset": offset
+    }
+    headers = _get_headers(client_id, api_key)
+
+    return await _post_with_retry(
+        _get_client(), url, headers, body,
+        op_label="delivery-method/list"
+    )
+
+
 async def ozon_product_info_list_async(client_id: str, api_key: str, skus: list[int]):
     """
     Асинхронно получить информацию о товарах по списку SKU.

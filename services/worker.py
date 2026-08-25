@@ -47,7 +47,16 @@ async def sync_all_users_task(ctx):
                 db.refresh(status)
 
             # --- ADAPTIVE POLLING LOGIC ---
-            last_dt = get_latest_order_datetime(db, user.id)
+            # Проверяем обе схемы, чтобы понять общую активность магазина
+            last_fbo = get_latest_order_datetime(db, user.id, scheme='fbo')
+            last_fbs = get_latest_order_datetime(db, user.id, scheme='fbs')
+            
+            last_dt = None
+            if last_fbo and last_fbs:
+                last_dt = max(last_fbo, last_fbs)
+            else:
+                last_dt = last_fbo or last_fbs
+
             interval_minutes = 15
 
             if last_dt:
