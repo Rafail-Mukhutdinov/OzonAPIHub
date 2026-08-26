@@ -268,9 +268,12 @@ async def ozon_fbs_list_async(
 
 async def ozon_fbs_get_async(client_id: str, api_key: str, posting_number: str):
     """
-    Асинхронно получить полные детали конкретного FBS/rFBS постинга (v2).
+    Асинхронно получить полные детали конкретного FBS/rFBS постинга.
+    ВАЖНО: v2/posting/fbs/get удалён с api-seller.ozon.ru (возвращает 404 page not found),
+    актуальный эндпоинт — v3 (проверено на живом API 26.08.2026).
+    Формат тела и ответа (result как объект) не изменился.
     """
-    url = f"{BASE_URL}/v2/posting/fbs/get"
+    url = f"{BASE_URL}/v3/posting/fbs/get"
     body = {
         "posting_number": posting_number,
         "with": {"analytics_data": True, "financial_data": True},
