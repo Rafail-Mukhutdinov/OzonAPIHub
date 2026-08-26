@@ -32,6 +32,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool isFbsBackfillComplete = true; // Флаг завершения загрузки исторических данных FBS
   DateTime activeDate = DateTime.now(); // Текущая активная дата для отчетов
   DateTime? drillDownDate; // Дата для детального просмотра (если выбрана на графике)
+  DateTime? _lastStatusUpdate; // Время последнего успешного обновления статуса
 
   // РЕЖИМЫ ПЕРИОДОВ (сохраняются во время сессии)
   String weekMode = 'rolling'; // Режим недели: 'rolling' (последние 7 дней) или 'calendar' (с Пн)
@@ -51,10 +52,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Инициализация API клиента и загрузка начальных данных
     final auth = Provider.of<AuthProvider>(context, listen: false);
     api = OzonApiClient(authProvider: auth);
-    _loadSettings().then((_) => _loadAllData());
-    _refreshProfile(); 
+    _loadSettings().then((_) => _loadAllData(forceRefreshStatus: true));
     _initPackageInfo();
-    // Настройка периодического обновления данных каждые 5 минут
+    // Настройка периодического обновления данных каждые 5 минут.
+    // Троттлинг в 30 сек позволит таймеру обновить статус, даже без force.
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadAllData(isSilent: true));
   }
 
@@ -88,7 +89,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   /// Обновление данных профиля и статуса синхронизации.
-  Future<void> _refreshProfile() async {
+  Future<void> _refreshProfile({bool force = false}) async {
+    // 🟡 Троттлинг: обновляем статус не чаще раза в 30 секунд, 
+    // если баннер уже скрыт и это не принудительное обновление.
+    final now = DateTime.now();
+    if (!force && isFbsBackfillComplete && _lastStatusUpdate != null) {
+      if (now.difference(_lastStatusUpdate!) < const Duration(seconds: 30)) {
+        return;
+      }
+    }
+
     try {
       final profileData = await api.getProfile();
       final syncStatus = await api.getSyncStatus();
@@ -106,6 +116,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         setState(() {
           isFbsBackfillComplete = fbsComplete;
+          _lastStatusUpdate = now;
         });
 
         await auth.updateProfile(
@@ -144,11 +155,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   /// Основной метод загрузки всех данных для дашборда (отчеты, графики, итоги).
-  Future<void> _loadAllData({bool isSilent = false}) async {
+  Future<void> _loadAllData({bool isSilent = false, bool forceRefreshStatus = false}) async {
     if (!mounted) return;
     if (!isSilent) setState(() => loading = true);
 
     try {
+      // Обновляем статус синхронизации и профиль. 
+      // Применяем принудительное обновление только если передан флаг forceRefreshStatus.
+      // В остальных случаях (навигация) запрос попадет под 30-секундный троттлинг.
+      await _refreshProfile(force: forceRefreshStatus);
+      
       DateTime periodStart;
       DateTime periodEnd;
 
@@ -418,7 +434,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             behavior: SnackBarBehavior.floating,
           ),
         );
-        _loadAllData();
+        _loadAllData(forceRefreshStatus: true);
       }
     } catch (e) {
       if (mounted) {
@@ -456,7 +472,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _handleManualSync,
+            onPressed: _handleManualSync, // Внутри вызывается _loadAllData(forceRefreshStatus: true)
           ),
         ],
         bottom: PreferredSize(
@@ -478,7 +494,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         selectedScheme = newSelection.first;
                       });
                       _saveScheme(selectedScheme);
-                      _loadAllData();
+                      _loadAllData(); // Смена схемы — навигационное действие, троттлим статус
                     },
                     style: SegmentedButton.styleFrom(
                       visualDensity: VisualDensity.compact,
@@ -499,7 +515,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _buildBackfillBanner(),
           Expanded(
             child: RefreshIndicator(
-              onRefresh: () => _loadAllData(),
+              onRefresh: () => _loadAllData(forceRefreshStatus: true),
               child: MobileDashboardView(
                 api: api,
                 getIso: _getIso,
@@ -593,7 +609,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ElevatedButton.icon(
             onPressed: () async {
               await auth.stopImpersonating();
-              _loadAllData();
+              _loadAllData(forceRefreshStatus: true);
             },
             icon: const Icon(Icons.exit_to_app, size: 18),
             label: const Text('ВЕРНУТЬСЯ'),

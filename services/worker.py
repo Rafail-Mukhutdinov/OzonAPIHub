@@ -152,8 +152,6 @@ async def initial_backfill_task(ctx, user_id: int):
     logger.info(f"--- [WORKER] Начало задачи {job_id} ---")
     db = SessionLocal()
     try:
-        # Проверяем статус в БД, чтобы не запускать если уже идет
-        from db.database import SyncStatus
         st = db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
         
         # Защита от "зомби"-задач: если флаг стоит, но активности нет > 10 минут, считаем задачу зависшей.
@@ -190,7 +188,13 @@ async def history_sync_task(ctx, user_id: int, start_iso: str, end_iso: str):
         
         await sync_range_for_user(user_id, start_dt, end_dt, db)
     except Exception as e:
-        logger.error(f"Ошибка в history_sync_task: {e}", exc_info=True)
+        logger.error(f"Ошибка в history_sync_task для юзера {user_id}: {e}", exc_info=True)
+        # На всякий случай сбрасываем статус, если sync_range_for_user упал раньше, чем успел сам обработать
+        st = db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+        if st and st.is_syncing:
+            st.is_syncing = False
+            st.status_message = f"Error: Task: {str(e)[:100]}"
+            db.commit()
     finally:
         db.close()
 

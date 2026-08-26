@@ -607,7 +607,13 @@ async def sync_range_for_user(user_id: int, start_dt: datetime, end_dt: datetime
     """
     start_dt, end_dt = start_dt.replace(tzinfo=None), end_dt.replace(tzinfo=None)
     cred = db.query(OzonCredential).filter(OzonCredential.user_id == user_id, OzonCredential.is_active == True).first()
-    if not cred: return
+    if not cred:
+        logger.warning(f"User {user_id}: Range sync aborted: API credentials not found or inactive")
+        sync_status = db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+        if sync_status:
+            sync_status.status_message = "Error: API credentials not found or inactive"
+            db.commit()
+        return
     
     logger.info(f"User {user_id}: Starting range sync: {start_dt} - {end_dt}")
     
@@ -632,8 +638,9 @@ async def sync_range_for_user(user_id: int, start_dt: datetime, end_dt: datetime
                 while True:
                     res = await fetch_and_save_orders_async(start_iso, end_iso, "", limit, offset, user_id, db, scheme=scheme)
                     if res.get("error"):
-                        logger.error(f"User {user_id}: Range sync error for {scheme} at {start_iso}: {res.get('error')}")
-                        break
+                        err_msg = f"Orders error ({scheme}) at {start_iso}: {res.get('error')}"
+                        logger.error(f"User {user_id}: Range sync: {err_msg}")
+                        raise Exception(err_msg)
                     
                     # Собираем номера для обогащения
                     pns = [o.get("posting_number") for o in res.get("orders", []) if isinstance(o, dict) and valid_posting_number(o.get("posting_number"))]
@@ -650,12 +657,27 @@ async def sync_range_for_user(user_id: int, start_dt: datetime, end_dt: datetime
         # Догружаем начисления за каждый день периода
         acc_current = end_dt
         while acc_current >= start_dt:
-            await enrich_accruals_from_ozon(user_id, acc_current.strftime("%Y-%m-%d"), db)
+            date_str = acc_current.strftime("%Y-%m-%d")
+            res = await enrich_accruals_from_ozon(user_id, date_str, db)
+            if res.get("status") != "ok":
+                err_msg = f"Accrual error at {date_str}: {res.get('detail', 'Unknown error')}"
+                logger.error(f"User {user_id}: Range sync: {err_msg}")
+                raise Exception(err_msg)
+            
             acc_current -= timedelta(days=1)
             await asyncio.sleep(0.1)
-    finally:
+
+        # Если дошли сюда — всё успешно
         db.refresh(sync_status)
-        sync_status.is_syncing, sync_status.status_message = False, "ok"
+        sync_status.status_message = "ok"
+    except Exception as e:
+        logger.error(f"User {user_id}: Range sync failed: {e}")
+        db.rollback() # Очищаем состояние сессии перед записью ошибки
+        db.refresh(sync_status)
+        sync_status.status_message = f"Error: {str(e)[:200]}"
+        raise # Пробрасываем в задачу воркера
+    finally:
+        sync_status.is_syncing = False
         db.commit()
 
 async def initial_backfill_for_user(user: User, db: Session):
@@ -714,11 +736,17 @@ async def initial_backfill_for_user(user: User, db: Session):
             
             while current_acc_date > start_limit:
                 date_str = current_acc_date.strftime("%Y-%m-%d")
-                await enrich_accruals_from_ozon(user_id, date_str, bg_db)
+                res = await enrich_accruals_from_ozon(user_id, date_str, bg_db)
                 
+                # 🔴 Исправление: проверяем статус загрузки. 
+                # Теперь ловим не только "error", но и "no_credentials" или любые другие неуспешные статусы.
+                if res.get("status") != "ok":
+                    error_detail = res.get("detail", "Unknown API error or credentials issue")
+                    raise Exception(f"Accrual backfill failed at {date_str}: {error_detail}")
+
                 current_acc_date -= timedelta(days=1)
                 st.accruals_backfill_cursor = current_acc_date
-                bg_db.commit() # Сохраняем прогресс после каждого дня
+                bg_db.commit() # Сохраняем прогресс только после успешного дня
                 await asyncio.sleep(0.1)
             
             # Финализируем курсор
@@ -733,6 +761,17 @@ async def initial_backfill_for_user(user: User, db: Session):
             bg_db.commit()
     except Exception as e: 
         logger.error(f"User {user_id}: Backfill failed: {e}")
+        # Сбрасываем флаг синхронизации при ошибке, чтобы не блокировать процесс навсегда
+        try:
+            bg_db.rollback()
+            # Перечитываем объект в новой транзакции
+            st_err = bg_db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
+            if st_err:
+                st_err.is_syncing = False
+                st_err.status_message = f"Backfill failed: {str(e)[:100]}"
+                bg_db.commit()
+        except Exception as ef:
+            logger.error(f"Failed to reset sync status after error: {ef}")
     finally: 
         bg_db.close()
 
@@ -770,8 +809,9 @@ async def _run_scheme_backfill(user_id: int, db: Session, start_limit: datetime,
             # Загружаем и сохраняем заказы за окно
             res = await fetch_and_save_orders_async(start_iso, end_iso, "", limit, offset, user_id, db, scheme=scheme)
             if res.get("error"):
-                logger.error(f"Backfill {scheme} error for user {user_id}: {res['error']}")
-                return
+                error_msg = f"Backfill {scheme} error for user {user_id}: {res['error']}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
             
             if not res.get("orders"): break
             
