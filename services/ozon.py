@@ -347,24 +347,19 @@ async def ozon_fbs_get_async(client_id: str, api_key: str, posting_number: str):
     )
 
 
-async def ozon_fbs_unfulfilled_list_async(client_id: str, api_key: str, limit: int = 100, offset: int = 0):
+async def ozon_fbs_unfulfilled_list_async(client_id: str, api_key: str, limit: int = 100, last_id: int = 0):
     """
-    Получает список невыполненных (горящих) FBS заказов.
-
-    Args:
-        client_id (str): Client-Id.
-        api_key (str): Api-Key.
-        limit (int): Лимит.
-        offset (int): Смещение.
-
-    Returns:
-        dict: Список невыполненных заказов.
+    Получает список невыполненных (горящих) FBS заказов через v3 API.
+    В v3 флаги 'with' находятся внутри объекта 'filter'.
     """
-    url = f"{BASE_URL}/v2/posting/fbs/unfulfilled/list"
+    url = f"{BASE_URL}/v3/posting/fbs/unfulfilled/list"
     body = {
+        "filter": {
+            "with": {"analytics_data": True, "financial_data": True}
+        },
+        "last_id": last_id,
         "limit": limit,
-        "offset": offset,
-        "with": {"analytics_data": True, "financial_data": True}
+        "sort_by": "cutoff_date"
     }
     headers = _get_headers(client_id, api_key)
 

@@ -3,8 +3,10 @@
 Позволяет искать заказы по фильтрам, получать детальную информацию и сводки по заказам.
 """
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from typing import List
 from collections import defaultdict
 from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User, OzonCredential, OzonDeliveryMethodMapping
@@ -12,6 +14,9 @@ from utils.auth import get_current_user
 from datetime import datetime, timezone
 from utils.logging_config import log_user_event
 from utils.common import normalize_iso
+
+# Настройка логирования
+logger = logging.getLogger("OzonAPIHub")
 
 # Роутер для управления заказами
 router = APIRouter(tags=["orders"])
@@ -112,11 +117,23 @@ async def list_unfulfilled_fbs_orders(
             client_id=decrypt_credential(cred.client_id_encrypted),
             api_key=decrypt_credential(cred.api_key_encrypted)
         )
+        
+        # Проверяем ошибки API Ozon
+        if data.get("error"):
+            err_msg = data.get("error")
+            logger.error(f"Ozon API error in unfulfilled: {err_msg}")
+            raise HTTPException(status_code=502, detail=f"Ozon API error: {err_msg}")
+
         if raw: return data
 
-        # 🟡 Загружаем маппинги имен доставки (одним запросом)
-        mappings = db.query(OzonDeliveryMethodMapping).filter(OzonDeliveryMethodMapping.user_id == current_user.id).all()
-        mapping_dict = {m.delivery_method_id: m.custom_name for m in mappings}
+        # 🟡 Загружаем маппинги имен доставки (защищенно)
+        mapping_dict = {}
+        try:
+            mappings = db.query(OzonDeliveryMethodMapping).filter(OzonDeliveryMethodMapping.user_id == current_user.id).all()
+            mapping_dict = {m.delivery_method_id: m.custom_name for m in mappings}
+        except SQLAlchemyError as se:
+            db.rollback() # Очищаем сессию после ошибки БД
+            logger.warning(f"Could not load delivery mappings (migration or DB issue): {se}")
 
         result_raw = data.get("result")
         flat_postings = []
@@ -168,11 +185,15 @@ async def list_unfulfilled_fbs_orders(
         # Сортируем: горящие (ближайшая дата отгрузки) — первыми
         flat_postings.sort(key=lambda x: x.get("shipment_date") or "9999")
         return flat_postings
+    except HTTPException:
+        raise
     except Exception as e:
-        import logging
-        logger = logging.getLogger("OzonAPIHub")
-        logger.error(f"Error fetching unfulfilled orders: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка при запросе к Ozon")
+        error_msg = str(e)
+        logger.error(f"Error fetching unfulfilled orders: {error_msg}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Ошибка при обработке запроса: {error_msg}"
+        )
 
 
 @router.get("/orders/{posting_number}")
@@ -221,9 +242,14 @@ def get_order_summary(
         OrderPosting.order_number == order_number
     ).order_by(OrderPosting.created_at.asc()).all()
 
-    # 🟡 Загружаем маппинги (одним запросом)
-    mappings = db.query(OzonDeliveryMethodMapping).filter(OzonDeliveryMethodMapping.user_id == current_user.id).all()
-    mapping_dict = {m.delivery_method_id: m.custom_name for m in mappings}
+    # 🟡 Загружаем маппинги (защищенно)
+    mapping_dict = {}
+    try:
+        mappings = db.query(OzonDeliveryMethodMapping).filter(OzonDeliveryMethodMapping.user_id == current_user.id).all()
+        mapping_dict = {m.delivery_method_id: m.custom_name for m in mappings}
+    except SQLAlchemyError as se:
+        db.rollback()
+        logger.warning(f"Could not load delivery mappings: {se}")
 
     # 3. Берем все товары для всех найденных отправлений
     posting_numbers = [p.posting_number for p in postings]
