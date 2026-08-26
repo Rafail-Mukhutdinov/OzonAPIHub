@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
+import 'package:flutter/foundation.dart'; // Для проверки kIsWeb
 import '../utils/platform_nav.dart'; // Условный импорт для навигации
 import '../services/auth_service.dart';
 import '../services/api.dart';
@@ -8,10 +8,8 @@ import 'register_screen.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 
-/**
- * LoginScreen — экран входа в приложение.
- * Реализует валидацию полей ввода и взаимодействие с AuthService.
- */
+/// LoginScreen — экран входа в приложение.
+/// Обеспечивает ввод учетных данных пользователя, их валидацию и процесс авторизации через [AuthService].
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -20,18 +18,18 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  // Глобальный ключ для управления состоянием и валидацией формы
+  // Глобальный ключ для управления состоянием и валидацией формы ввода
   final _formKey = GlobalKey<FormState>();
   
-  // Контроллеры для извлечения текста из полей ввода
+  // Контроллеры текстовых полей для сбора данных
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _pinController = TextEditingController(); // Для ПИН-кода
+  final _pinController = TextEditingController(); // Используется только на мобильных устройствах
   
   late final AuthService _authService;
   
-  bool _isLoading = false; // Флаг процесса запроса к серверу
-  String? _errorMessage;   // Текст ошибки от бэкенда
+  bool _isLoading = false; // Флаг активности сетевого запроса
+  String? _errorMessage;   // Хранит текст ошибки от сервера для отображения пользователю
 
   @override
   void initState() {
@@ -41,16 +39,16 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
-    // Обязательно освобождаем ресурсы контроллеров при закрытии экрана
+    // Освобождение ресурсов контроллеров для предотвращения утечек памяти
     _emailController.dispose();
     _passwordController.dispose();
     _pinController.dispose();
     super.dispose();
   }
 
-  /// Логика обработки нажатия кнопки "Войти"
+  /// Логика выполнения входа в систему.
   Future<void> _handleLogin() async {
-    // Запуск валидации всех полей в Form
+    // 1. Запуск встроенной валидации всех полей в [Form]
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -64,7 +62,7 @@ class _LoginScreenState extends State<LoginScreen> {
       final email = _emailController.text.trim();
       final pin = kIsWeb ? null : _pinController.text.trim();
 
-      // Отправка запроса на сервер
+      // 2. Запрос к API для получения JWT токена
       final token = await _authService.login(
         email,
         _passwordController.text,
@@ -73,12 +71,12 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
         
-        // 1. Сначала ГАРАНТИРОВАННО сохраняем токен
+        // 3. Сохранение токена и инициализация локальной сессии (включая ПИН-код)
+        // Это действие через notifyListeners() переключит AuthGate на DashboardScreen
         await authProvider.setToken(token, email: email, pin: pin);
 
-        // 2. Только ПОТОМ пробуем загрузить профиль
+        // 4. Попытка загрузки расширенных данных профиля (роль, подписка)
         try {
-          // Создаем новый клиент, чтобы интерцептор подхватил только что сохраненный токен
           final profileData = await OzonApiClient().getProfile();
           final bool isAdmin = profileData['is_admin'] ?? false;
           final bool isDemo = profileData['is_demo'] ?? false;
@@ -95,7 +93,7 @@ class _LoginScreenState extends State<LoginScreen> {
           );
         } catch (e) {
           debugPrint('Profile fetch error: $e');
-          // Не прерываем вход, если профиль не загрузился
+          // Ошибка загрузки профиля не блокирует вход, если токен валиден
         }
       }
     } catch (e) {
@@ -116,7 +114,7 @@ class _LoginScreenState extends State<LoginScreen> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
           child: ConstrainedBox(
-            // Ограничение ширины формы для удобства на десктопе/планшете
+            // Ограничение ширины карточки для удобства на десктопных версиях
             constraints: const BoxConstraints(maxWidth: 400),
             child: Card(
               elevation: 4,
@@ -144,18 +142,14 @@ class _LoginScreenState extends State<LoginScreen> {
                         Padding(
                           padding: const EdgeInsets.only(bottom: 24.0),
                           child: OutlinedButton.icon(
-                            onPressed: () {
-                              goToLanding();
-                            },
+                            onPressed: () => goToLanding(),
                             icon: const Icon(Icons.arrow_back),
                             label: const Text('На главную страницу'),
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                            ),
+                            style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
                           ),
                         ),
 
-                      // Поле ввода Email
+                      // Поле ввода Email с валидацией формата
                       TextFormField(
                         controller: _emailController,
                         decoration: const InputDecoration(
@@ -172,7 +166,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 16),
                       
-                      // Поле ввода пароля
+                      // Поле ввода Пароля
                       TextFormField(
                         controller: _passwordController,
                         decoration: const InputDecoration(
@@ -180,7 +174,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           border: OutlineInputBorder(),
                           prefixIcon: Icon(Icons.lock),
                         ),
-                        obscureText: true, // Скрывает вводимые символы
+                        obscureText: true,
                         validator: (value) {
                           if (value == null || value.isEmpty) return 'Введите пароль';
                           return null;
@@ -188,7 +182,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      // ПИН-код только для мобилок
+                      // Секция ПИН-кода (только для мобильных устройств)
                       if (!kIsWeb) ...[
                         TextFormField(
                           controller: _pinController,
@@ -202,7 +196,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           maxLength: 4,
                           obscureText: true,
                           validator: (value) {
-                            if (kIsWeb) return null; // На вебе не проверяем
+                            if (kIsWeb) return null;
                             if (value == null || value.isEmpty) return 'Придумайте ПИН-код';
                             if (value.length != 4) return 'Нужно 4 цифры';
                             return null;
@@ -217,6 +211,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           child: Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
                         ),
                       
+                      // Кнопка входа с индикацией загрузки
                       FilledButton(
                         onPressed: _isLoading ? null : _handleLogin,
                         child: _isLoading
@@ -225,6 +220,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 16),
                       
+                      // Переход на экран регистрации
                       TextButton(
                         onPressed: _isLoading ? null : () {
                           Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RegisterScreen()));

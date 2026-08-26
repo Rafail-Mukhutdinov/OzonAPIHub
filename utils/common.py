@@ -54,7 +54,14 @@ def parse_ozon_datetime(value: Union[str, datetime, None]) -> Union[datetime, No
     return None
 
 def to_msk(dt_or_str: Union[str, datetime, None], offset_hours: int = 3) -> Union[datetime, None]:
-    """Переводит UTC datetime или строку в местное время (по умолчанию MSK UTC+3)."""
+    """
+    Переводит UTC datetime или строку в местное время (по умолчанию MSK UTC+3).
+    
+    ВАЖНО: Ozon API работает преимущественно в московском часовом поясе (UTC+3). 
+    Финансовые отчеты, аналитика и логистические метрики в Ozon привязаны к МСК. 
+    Поэтому для корректного отображения данных пользователю и запросов к API 
+    мы конвертируем системное UTC-время в UTC+3.
+    """
     dt = parse_ozon_datetime(dt_or_str)
     if dt is None:
         return None

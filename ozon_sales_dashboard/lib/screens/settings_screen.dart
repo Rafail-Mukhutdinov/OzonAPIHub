@@ -1,16 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:dio/dio.dart';
 import 'package:provider/provider.dart';
 import '../services/api.dart';
 import '../providers/auth_provider.dart';
 
-/**
- * SettingsScreen — экран настроек.
- * Позволяет управлять API-ключами Ozon (добавление, удаление, активация),
- * настраивать безопасность (биометрия) и управлять данными.
- */
+/// SettingsScreen — экран настроек приложения.
+/// Позволяет пользователю управлять подключенными магазинами Ozon (API-ключами),
+/// настраивать безопасность (биометрия), просматривать статус подписки и управлять локальными данными.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -19,23 +17,24 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _isLoading = false;
-  List<Map<String, dynamic>> _credentials = []; // Список подключенных магазинов
-  String? _errorMessage;
-  String _purgeMarketplace = 'ozon';
+  bool _isLoading = false;                   // Состояние загрузки данных с сервера
+  List<Map<String, dynamic>> _credentials = []; // Список API-ключей (магазинов) пользователя
+  String? _errorMessage;                     // Текст ошибки для отображения в UI
+  String _purgeMarketplace = 'ozon';         // Идентификатор маркетплейса для очистки данных
 
-  // Используем наш централизованный API клиент
+  // Централизованный клиент для выполнения API-запросов
   late final OzonApiClient _api;
 
   @override
   void initState() {
     super.initState();
+    // Инициализация API клиента с передачей текущего провайдера авторизации
     final auth = Provider.of<AuthProvider>(context, listen: false);
-    _api = OzonApiClient(authProvider: auth); // Добавили передачу провайдера
-    _loadCredentials(); // Загружаем список ключей при открытии экрана
+    _api = OzonApiClient(authProvider: auth);
+    _loadCredentials();
   }
 
-  /// Получает список всех API-ключей пользователя с сервера.
+  /// Загрузка списка всех подключенных API-ключей пользователя.
   Future<void> _loadCredentials() async {
     setState(() {
       _isLoading = true;
@@ -56,7 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// Вызывает диалоговое окно для ввода новых ключей и отправляет их на сервер.
+  /// Открытие диалога и добавление нового набора API-ключей (Client ID и API Key).
   Future<void> _addCredential() async {
     final result = await showDialog<Map<String, String>>(
       context: context,
@@ -68,7 +67,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Используем метод из нашего OzonApiClient
       await _api.addOzonCredential(
         clientId: result['client_id']!,
         apiKey: result['api_key']!,
@@ -80,7 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Ключи успешно добавлены'), backgroundColor: Colors.green),
         );
-        _loadCredentials(); // Обновляем список
+        _loadCredentials();
       }
     } catch (e) {
       setState(() => _errorMessage = 'Ошибка добавления: $e');
@@ -89,7 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// Делает выбранный набор ключей активным (текущим) для аналитики.
+  /// Переключение активного магазина (того, по которому будет строиться аналитика в дашборде).
   Future<void> _activateCredential(int id) async {
     try {
       await _api.dio.put('/auth/me/ozon-credentials/$id/activate');
@@ -103,7 +101,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// Удаляет API-ключи из системы.
+  /// Удаление API-ключей магазина из системы пользователя.
   Future<void> _deleteCredential(int id, String name) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -133,7 +131,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// Полная очистка всех данных по маркетплейсу в БД.
+  /// ОПАСНОЕ ДЕЙСТВИЕ: Полная очистка накопленной статистики и заказов в базе данных.
   Future<void> _purgeData() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -169,7 +167,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// Запускает процесс Backfill (загрузку истории за год) в фоновом режиме на сервере.
+  /// Запуск принудительной синхронизации истории заказов за последние 365 дней.
   Future<void> _runInitialSync() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -201,6 +199,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Получаем доступ к провайдеру для проверки настроек безопасности и имитации
     final authProvider = context.watch<AuthProvider>();
     final isImpersonating = authProvider.isImpersonating;
 
@@ -211,6 +210,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                // Предупреждение, если админ зашел под пользователем
                 if (isImpersonating)
                   Card(
                     color: Colors.orange.shade100,
@@ -224,14 +224,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if (_errorMessage != null)
                   Card(color: Colors.red.shade50, child: ListTile(leading: const Icon(Icons.error, color: Colors.red), title: Text(_errorMessage!))),
                 
-                // СЕКЦИЯ: Безопасность (только для мобильных)
+                // Настройки биометрии (только для мобильных приложений)
                 if (!kIsWeb) ...[
                   const Text('Безопасность', style: TextStyle(fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
                   Card(
                     child: SwitchListTile(
                       title: const Text('Вход по отпечатку пальца'),
-                      subtitle: const Text('Использовать биометрию вместо ввода пароля'),
+                      subtitle: const Text('Использовать биометрию вместо ввода ПИН-кода'),
                       secondary: const Icon(Icons.fingerprint),
                       value: authProvider.biometricEnabled,
                       onChanged: isImpersonating ? null : (bool value) {
@@ -242,13 +242,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 16),
                 ],
 
-                // Карточка-инструкция
+                // Обучающая карточка
                 Card(
                   color: Theme.of(context).primaryColor.withOpacity(0.05),
                   child: ListTile(
                     leading: Icon(Icons.help_outline, color: Theme.of(context).primaryColor),
                     title: const Text('Как подключить магазин?'),
-                    subtitle: const Text('Создайте API-ключ в кабинете маркетплейса (для Ozon тип "Администратор") и скопируйте Client ID и Key сюда.'),
+                    subtitle: const Text('Создайте API-ключ в кабинете Ozon Seller (тип "Администратор") и скопируйте Client ID и Key сюда.'),
                   ),
                 ),
 
@@ -277,7 +277,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const Text('Управление данными', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 
-                // Блок синхронизации и очистки
                 Card(
                   child: Column(
                     children: [
@@ -309,7 +308,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const Text('Ваши магазины', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
 
-                // Список ключей
+                // Динамический список магазинов пользователя
                 if (_credentials.isEmpty)
                   const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('Магазины не добавлены')))
                 else
@@ -350,16 +349,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-/**
- * Внутренний диалог для ввода данных нового API-ключа.
- */
+/// Внутренний вспомогательный виджет для ввода данных нового магазина.
 class _AddCredentialDialog extends StatefulWidget {
   @override
   State<_AddCredentialDialog> createState() => _AddCredentialDialogState();
 }
 
 class _AddCredentialDialogState extends State<_AddCredentialDialog> {
+  // Ключ для управления валидацией формы
   final _formKey = GlobalKey<FormState>();
+  
+  // Контроллеры полей ввода для добавления нового ключа
   final _nameController = TextEditingController();
   final _clientIdController = TextEditingController();
   final _apiKeyController = TextEditingController();
@@ -374,18 +374,27 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextFormField(controller: _nameController, 
-                decoration: const InputDecoration(labelText: 'Название магазина'), 
-                validator: (v) => v!.isEmpty ? 'Обязательно' : null),
+              // Поле Название
+              TextFormField(
+                controller: _nameController, 
+                decoration: const InputDecoration(labelText: 'Название магазина (напр. "Мой Озон")'), 
+                validator: (v) => v!.isEmpty ? 'Обязательно' : null
+              ),
               const SizedBox(height: 12),
-              TextFormField(controller: _clientIdController, 
+              // Поле Client ID
+              TextFormField(
+                controller: _clientIdController, 
                 decoration: const InputDecoration(labelText: 'Client ID'), 
-                validator: (v) => v!.isEmpty ? 'Обязательно' : null),
+                validator: (v) => v!.isEmpty ? 'Обязательно' : null
+              ),
               const SizedBox(height: 12),
-              TextFormField(controller: _apiKeyController, 
+              // Поле API Key (скрытое)
+              TextFormField(
+                controller: _apiKeyController, 
                 decoration: const InputDecoration(labelText: 'API Key'), 
                 obscureText: true, 
-                validator: (v) => v!.isEmpty ? 'Обязательно' : null),
+                validator: (v) => v!.isEmpty ? 'Обязательно' : null
+              ),
             ],
           ),
         ),
@@ -393,6 +402,7 @@ class _AddCredentialDialogState extends State<_AddCredentialDialog> {
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
         FilledButton(onPressed: () {
+          // Валидация перед возвратом результата
           if (_formKey.currentState!.validate()) {
             Navigator.pop(context, {
               'marketplace': 'ozon',

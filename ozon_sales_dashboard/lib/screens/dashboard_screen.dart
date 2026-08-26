@@ -14,6 +14,8 @@ import 'settings_screen.dart';
 import 'admin_dashboard_screen.dart';
 import 'product_costs_screen.dart';
 
+/// Основной экран дашборда приложения.
+/// Отображает аналитику продаж, графики и список популярных товаров.
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
   @override
@@ -21,40 +23,42 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  late final OzonApiClient api;
-  String _appVersion = '...';
+  late final OzonApiClient api; // Клиент для работы с API
+  String _appVersion = '...'; // Версия приложения для отображения в Drawer
   
   // ЕДИНОЕ СОСТОЯНИЕ ДЛЯ ВСЕХ ВЕРСИЙ
-  String selectedPeriod = 'today'; 
-  String selectedScheme = 'fbo'; // 'fbo', 'fbs', 'all'
-  bool isFbsBackfillComplete = true; // Для индикатора загрузки
-  DateTime activeDate = DateTime.now(); 
-  DateTime? drillDownDate; 
+  String selectedPeriod = 'today'; // Выбранный период: today, week, month, custom
+  String selectedScheme = 'fbo'; // Схема работы: fbo, fbs, all
+  bool isFbsBackfillComplete = true; // Флаг завершения загрузки исторических данных FBS
+  DateTime activeDate = DateTime.now(); // Текущая активная дата для отчетов
+  DateTime? drillDownDate; // Дата для детального просмотра (если выбрана на графике)
 
   // РЕЖИМЫ ПЕРИОДОВ (сохраняются во время сессии)
-  String weekMode = 'rolling'; // 'rolling' или 'calendar'
-  String monthMode = 'calendar'; // 'calendar' (с 1-го числа) или 'rolling'
-  DateTimeRange? customRange; 
+  String weekMode = 'rolling'; // Режим недели: 'rolling' (последние 7 дней) или 'calendar' (с Пн)
+  String monthMode = 'calendar'; // Режим месяца: 'calendar' (с 1-го числа) или 'rolling' (последние 30 дней)
+  DateTimeRange? customRange; // Произвольный диапазон дат
 
-  List<Map<String, dynamic>> items = [];
-  Map<String, dynamic>? totals;
-  Map<String, dynamic>? yesterdayTotals;
-  List<Map<String, dynamic>> weeklyStats = [];
-  bool loading = false;
-  Timer? _autoRefreshTimer;
+  List<Map<String, dynamic>> items = []; // Список товаров за выбранный период
+  Map<String, dynamic>? totals; // Итоговые показатели за текущий период
+  Map<String, dynamic>? yesterdayTotals; // Итоговые показатели за предыдущий аналогичный период
+  List<Map<String, dynamic>> weeklyStats = []; // Данные для построения графика динамики
+  bool loading = false; // Флаг процесса загрузки данных
+  Timer? _autoRefreshTimer; // Таймер для автоматического обновления данных
 
   @override
   void initState() {
     super.initState();
-    // Передаем authProvider напрямую для централизованной обработки 401
+    // Инициализация API клиента и загрузка начальных данных
     final auth = Provider.of<AuthProvider>(context, listen: false);
     api = OzonApiClient(authProvider: auth);
     _loadSettings().then((_) => _loadAllData());
-    _refreshProfile(); // Добавляем обновление профиля при входе
+    _refreshProfile(); 
     _initPackageInfo();
+    // Настройка периодического обновления данных каждые 5 минут
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadAllData(isSilent: true));
   }
 
+  /// Загрузка настроек пользователя (выбранная схема) из SharedPreferences.
   Future<void> _loadSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -69,10 +73,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// Сохранение выбранной схемы в локальное хранилище.
   Future<void> _saveScheme(String scheme) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      // Не сохраняем 'all', сбрасываем на 'fbo'
       if (scheme == 'all') {
         await prefs.remove('selected_scheme');
       } else {
@@ -83,11 +87,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// Обновление данных профиля и статуса синхронизации.
   Future<void> _refreshProfile() async {
     try {
       final profileData = await api.getProfile();
-      
-      // Проверяем статус синхронизации для FBS
       final syncStatus = await api.getSyncStatus();
       final fbsComplete = syncStatus['fbs_backfill_is_complete'] ?? true;
 
@@ -116,6 +119,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// Получение версии приложения.
   Future<void> _initPackageInfo() async {
     final info = await PackageInfo.fromPlatform();
     if (mounted) {
@@ -131,16 +135,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  // МЕТОД _handleUnauthorized больше не нужен, удаляем его
-
+  /// Форматирование даты в ISO строку для отправки в API (с учетом МСК времени).
   String _getIso(DateTime date, bool endOfDay) {
-    // ВАЖНО: Приводим к UTC+3 (Москва) перед отправкой
     final d = endOfDay 
       ? DateTime(date.year, date.month, date.day, 23, 59, 59).subtract(const Duration(hours: 3))
       : DateTime(date.year, date.month, date.day, 0, 0, 0).subtract(const Duration(hours: 3));
     return DateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").format(d);
   }
 
+  /// Основной метод загрузки всех данных для дашборда (отчеты, графики, итоги).
   Future<void> _loadAllData({bool isSilent = false}) async {
     if (!mounted) return;
     if (!isSilent) setState(() => loading = true);
@@ -174,20 +177,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       // 2. ОПРЕДЕЛЯЕМ ДАТЫ ДЛЯ ОТЧЕТА (Цифры и Товары)
-      // Если есть drillDownDate, берем его. Если нет - весь период.
       DateTime reportStart = drillDownDate ?? periodStart;
       DateTime reportEnd = drillDownDate ?? periodEnd;
 
       final sinceStr = _getIso(reportStart, false);
       final toStr = _getIso(reportEnd, true);
 
-      // ЕДИНЫЙ ЗАПРОС ДЛЯ ОТЧЕТА (Товары и итоги)
+      // Запрос данных за текущий период
       final reportResponse = await api.getSalesRange(
         since: sinceStr,
         to: toStr,
         scheme: selectedScheme,
       );
 
+      // Запрос данных за предыдущий аналогичный период (для сравнения)
       final diff = reportEnd.difference(reportStart).inDays + 1;
       final prevResponse = await api.getSalesRange(
         since: _getIso(reportStart.subtract(Duration(days: diff)), false),
@@ -195,7 +198,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         scheme: selectedScheme,
       );
 
-      // 3. ЗАПРОС ДЛЯ ГРАФИКА (Всегда за весь период)
+      // 3. ЗАПРОС ДЛЯ ГРАФИКА
       DateTime statsStart = periodStart;
       DateTime statsEnd = periodEnd;
       if (selectedPeriod == 'today') {
@@ -213,7 +216,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       setState(() {
         items = (reportResponse['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
         totals = reportResponse;
-        // Сохраняем ISO строки для виджетов (безопасно)
         if (totals != null) {
           totals!['current_since'] = sinceStr;
           totals!['current_to'] = toStr;
@@ -232,7 +234,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // РЕШАЕМ: КАКОЙ LAYOUT ПОКАЗАТЬ, НО ДАННЫЕ ОДНИ И ТЕ ЖЕ
+        // Переключение между мобильной и десктопной версией в зависимости от ширины экрана
         if (constraints.maxWidth < 800) {
           return _buildMobileLayout();
         }
@@ -241,6 +243,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Обработка выхода из аккаунта.
   void _handleLogout() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -255,20 +258,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
 
     if (confirmed == true && mounted) {
-      // 1. Блокируем приложение локально
       final auth = Provider.of<AuthProvider>(context, listen: false);
       auth.logout();
-      
-      // 2. Сбрасываем всю навигацию до корня (AuthGate)
-      // Это гарантирует, что мы выйдем из всех открытых экранов
       Navigator.of(context).popUntil((route) => route.isFirst);
     }
   }
 
+  /// Построение бокового меню (Drawer).
   Widget _buildDrawer(AuthProvider auth) {
     return Drawer(
       child: SafeArea(
-        top: false, // DrawerHeader сам обрабатывает отступ статус-бара
+        top: false, 
         child: Column(
           children: [
             DrawerHeader(
@@ -330,8 +330,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
               },
             ),
-            // Admin-панель доступна только в Web-версии (см. ADMIN_IMPLEMENTATION_PLAN.md, Phase 1).
-            // На мобильных устройствах админка скрыта из-за ограничений экрана.
             if (Provider.of<AuthProvider>(context, listen: false).isAdmin && kIsWeb) ...[
               const Divider(),
               ListTile(
@@ -358,67 +356,56 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 style: const TextStyle(color: Colors.grey, fontSize: 12),
               ),
             ),
-            const SizedBox(height: 8), // Небольшой отступ внутри SafeArea
+            const SizedBox(height: 8), 
           ],
         ),
       ),
     );
   }
 
+  /// Переключение даты вперед/назад на один шаг (день, неделя или месяц).
   void _handleDateStep(int step) {
     setState(() {
       drillDownDate = null;
       if (selectedPeriod == 'custom' && customRange != null) {
-        // Сдвигаем ВЕСЬ произвольный период
         final range = customRange!;
         customRange = DateTimeRange(
           start: range.start.add(Duration(days: step)),
           end: range.end.add(Duration(days: step)),
         );
-        // Синхронизируем activeDate для корректной работы других механизмов
         activeDate = customRange!.end;
       } else if (selectedPeriod == 'month' && monthMode == 'calendar') {
         if (step < 0) {
-          // Прыгаем в последний день ПРЕДЫДУЩЕГО месяца
           activeDate = DateTime(activeDate.year, activeDate.month, 1).subtract(const Duration(days: 1));
         } else {
-          // Прыгаем в следующий месяц
           DateTime nextMonth = DateTime(activeDate.year, activeDate.month + 1, 1);
-          // Если следующий месяц — это текущий реальный месяц, ставим "сегодня"
           DateTime now = DateTime.now();
           if (nextMonth.year == now.year && nextMonth.month == now.month) {
             activeDate = now;
           } else {
-            // Иначе ставим последний день того месяца
             activeDate = DateTime(nextMonth.year, nextMonth.month + 1, 0);
           }
         }
       } else if (selectedPeriod == 'week' && weekMode == 'calendar') {
         if (step < 0) {
-          // Находим воскресенье ПРЕДЫДУЩЕЙ недели
-          // DateTime.weekday: 1 (Пн) ... 7 (Вс)
-          // Если сегодня Вт(2), отнимаем 2 дня -> получаем Вс(21-е)
           activeDate = activeDate.subtract(Duration(days: activeDate.weekday));
         } else {
-          // Прыгаем на следующее воскресенье
           activeDate = activeDate.add(Duration(days: 7 - activeDate.weekday + 7));
-          // Если улетели в будущее — обрезаем до сегодня
           DateTime now = DateTime.now();
           DateTime today = DateTime(now.year, now.month, now.day);
           if (activeDate.isAfter(today)) activeDate = today;
         }
       } else {
-        // Обычный сдвиг на 1 день
         activeDate = activeDate.add(Duration(days: step));
       }
     });
     _loadAllData();
   }
 
+  /// Запуск ручной синхронизации данных с сервером Ozon.
   Future<void> _handleManualSync() async {
     if (loading) return;
     
-    // Показываем индикатор в AppBar (через loading)
     setState(() => loading = true);
     
     try {
@@ -452,6 +439,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// Построение мобильной версии интерфейса.
   Widget _buildMobileLayout() {
     final auth = Provider.of<AuthProvider>(context);
     return Scaffold(
@@ -523,7 +511,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 weekMode: weekMode, monthMode: monthMode, customRange: customRange,
                 onPeriodChanged: (p) { setState(() { selectedPeriod = p; drillDownDate = null; activeDate = DateTime.now(); customRange = null; }); _loadAllData(); },
                 onDateChanged: (d) { 
-                  // Определяем, в какую сторону был сдвиг, чтобы вызвать нашу новую логику
                   int step = d.isBefore(activeDate) ? -1 : 1;
                   _handleDateStep(step);
                 },
@@ -553,6 +540,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Баннер, информирующий о процессе загрузки истории FBS.
   Widget _buildBackfillBanner() {
     return Container(
       width: double.infinity,
@@ -573,10 +561,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Построение десктопной версии интерфейса (центрирование контента).
   Widget _buildDesktopLayout() {
-    // Десктоп: тот же полноценный дашборд (карточки, график, периоды, детализация),
-    // отцентрованный колонкой до 1100px на всю высоту окна — стандартный веб-паттерн.
-    // Полноценный широкополосный десктоп-UI (в несколько колонок) можно сделать позже.
     return Container(
       color: const Color(0xFFF5F7FA),
       child: Center(
@@ -588,6 +574,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Баннер режима поддержки (имперсонация администратора).
   Widget _buildSupportBanner(AuthProvider auth) {
     return Container(
       width: double.infinity,

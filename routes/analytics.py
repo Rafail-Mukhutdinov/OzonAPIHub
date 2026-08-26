@@ -1,3 +1,8 @@
+"""
+Модуль для обработки аналитических данных Ozon.
+Содержит эндпоинты для получения статистики продаж, расходов и детализации прибыли.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -10,6 +15,7 @@ from utils.auth import get_current_user
 from utils.common import to_msk, parse_ozon_datetime
 from services.costs import get_batch_product_costs
 
+# Роутер для аналитических запросов
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 logger = logging.getLogger(__name__)
 
@@ -142,8 +148,12 @@ OZON_SERVICE_TYPES = {
 }
 
 def parse_msk_date(value: str, end_of_day: bool = False, tz_offset_hours: int = 3) -> datetime | None:
-    """Интерпретирует дату без времени как день в зоне с указанным смещением.
-    Если передан полный ISO-таймстамп — парсим как есть.
+    """
+    Интерпретирует строку даты как объект datetime в московском часовом поясе.
+    :param value: Строка с датой (YYYY-MM-DD или ISO).
+    :param end_of_day: Если True, устанавливает время на 23:59:59.
+    :param tz_offset_hours: Смещение часового пояса (по умолчанию +3 для МСК).
+    :return: Объект datetime или None.
     """
     if not value or not isinstance(value, str):
         return None
@@ -164,20 +174,23 @@ def parse_msk_date(value: str, end_of_day: bool = False, tz_offset_hours: int = 
 
     return parse_ozon_datetime(trimmed)
 
-def is_cancelled(st):
+def is_cancelled(st: str | None) -> bool:
+    """
+    Проверяет, является ли статус отправления «отменённым».
+    """
     status = (st or "").lower()
     return any(x in status for x in ["cancelled", "отменен", "отменён", "canceled"])
 
 def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc: datetime, include_cancelled: bool = True, scheme: str = 'all'):
     """
-    Собирает уникальные постинги из сырых (Order) и нормализованных (OrderPosting) таблиц.
+    Вспомогательный метод: собирает уникальные номера отправлений из таблиц Order и OrderPosting за период.
     """
     search_since = since_utc.replace(tzinfo=None)
     search_to = to_utc.replace(tzinfo=None)
 
     postings_map = {}
 
-    # 1. Собираем данные из нормализованной таблицы
+    # 1. Собираем данные из нормализованной таблицы OrderPosting
     q1 = db.query(OrderPosting.posting_number, OrderPosting.created_at, OrderPosting.status, OrderPosting.in_process_at).filter(
         OrderPosting.user_id == user_id,
         OrderPosting.created_at.between(search_since, search_to)
@@ -198,7 +211,7 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
         if not include_cancelled and is_cancelled(st): continue
         postings_map[pn] = {"posting_number": pn, "created_at": cr, "in_process_at": in_proc, "status": st}
 
-    # 2. Дозаполняем из сырой таблицы
+    # 2. Дозаполняем из сырой таблицы Order (если данных нет в OrderPosting)
     q3 = db.query(Order.posting_number, Order.created_at, Order.status, Order.data).filter(
         Order.user_id == user_id,
         Order.created_at.between(search_since, search_to)
@@ -215,26 +228,15 @@ def _get_unified_postings(db: Session, user_id: int, since_utc: datetime, to_utc
     return postings_map
 
 def get_expense_category(tid: int | None) -> str:
-    """Возвращает индивидуальное название услуги Ozon для детального отчета."""
+    """
+    Возвращает текстовое описание услуги Ozon по её ID.
+    """
     if tid is None:
         return "Возврат товара"
     return OZON_SERVICE_TYPES.get(tid, f"Прочая услуга (ID {tid})")
 
 
-# Type_id услуг Озона, которые ДОСТОВЕРНО указывают на факт
-# продажи/отгрузки товара и могут служить сигналом «смещения»
-# (когда строки выручки за этот день ещё нет в API, но товар уже
-# продан/отгружен по банковской отчётности).
-#
-# Это комиссия (1000) и логистика/доставка (12/29/32/39/59/305).
-# Эквайринг (1), хранение (74), утилизация (98) и прочие мелкие
-# удержания НЕ являются признаком продажи.
-#
-# ПРИМЕЧАНИЕ: проверено эмпирически — на некоторых днях (напр. 26.06)
-# может быть единичное расхождение (1-2 единицы), связанное с
-# задержкой синхронизации данных в самом API Озона. Это ожидаемое
-# поведение, так как данные /v1/finance/accrual/by-day формируются
-# с задержкой и могут быть ещё не «закрыты» для некоторых постингов.
+# Type_id услуг Озона, которые ДОСТОВЕРНО указывают на факт продажи
 _SALE_INDICATING_TYPE_IDS = frozenset({
     1000,                          # Комиссия за продажу
     12, 29, 32, 39, 59, 305        # Логистика / доставка / магистраль
@@ -251,7 +253,7 @@ def _calculate_cost_price_from_orders(
     postings_map: dict | None = None
 ) -> tuple[float, list[dict]]:
     """
-    Оперативный расчет себестоимости на основе ЗАКАЗОВ (OrderProduct).
+    Расчет общей себестоимости проданных товаров на основе данных о заказах.
     """
     # 1. Получаем список всех постингов за этот период (если не переданы готовые)
     if postings_map is None:
@@ -264,10 +266,9 @@ def _calculate_cost_price_from_orders(
     date_since_l = since_utc.astimezone(local_tz).date()
     date_to_l = to_utc.astimezone(local_tz).date()
 
-    # Фильтруем постинги, которые попадают в выбранные даты по местному времени (МСК)
+    # Фильтруем постинги по дате
     final_pns = []
     for pn, data in postings_map.items():
-        # Приоритет: дата обработки (отгрузки). Если нет - дата создания.
         best_date = data.get("in_process_at") or data["created_at"]
         dt_local = to_msk(best_date, tz_offset_hours)
         if dt_local and date_since_l <= dt_local.date() <= date_to_l:
@@ -276,7 +277,7 @@ def _calculate_cost_price_from_orders(
     if not final_pns:
         return 0.0, []
 
-    # 2. Агрегируем количество товаров из этих заказов
+    # 2. Агрегируем количество товаров и считаем их себестоимость
     product_stats = db.query(
         OrderProduct.sku,
         OrderProduct.name,
@@ -315,13 +316,13 @@ async def daily_stats(
     since: str,
     to: str,
     include_cancelled: bool = Query(True),
-    scheme: str = Query('fbo'), # Защита метрик: по умолчанию только FBO
+    scheme: str = Query('fbo'),
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Аналитика по дням.
+    Эндпоинт: Статистика продаж (выручка, кол-во заказов) по дням для графиков.
     """
     since_dt = parse_msk_date(since, tz_offset_hours=tz_offset_hours)
     to_dt = parse_msk_date(to, end_of_day=True, tz_offset_hours=tz_offset_hours)
@@ -329,11 +330,9 @@ async def daily_stats(
     if not since_dt or not to_dt:
         raise HTTPException(status_code=400, detail="Некорректный формат даты.")
 
-    # Приводим к UTC для поиска в БД
     since_utc = since_dt.astimezone(timezone.utc)
     to_utc = to_dt.astimezone(timezone.utc)
 
-    # Расширяем окно поиска на +/- 24 часа для безопасности
     search_since_dt = since_utc - timedelta(hours=24)
     search_to_dt = to_utc + timedelta(hours=24)
 
@@ -342,15 +341,11 @@ async def daily_stats(
     if not postings_map:
         return {"data": []}
 
-    # Группируем постинги по местным датам
     valid_pns_by_date = {}
     date_since_local = since_dt.astimezone(timezone(timedelta(hours=tz_offset_hours))).date()
     date_to_local = to_dt.astimezone(timezone(timedelta(hours=tz_offset_hours))).date()
 
     for pn, data in postings_map.items():
-        # ПРИОРИТЕТ ДАТЫ:
-        # Если есть in_process_at, используем его (важно для B2B заказов, которые Озон
-        # считает в отчетах по дате обработки). Если нет - берем дату создания.
         best_date = data.get("in_process_at") or data["created_at"]
         dt_local = to_msk(best_date, tz_offset_hours)
         if not dt_local: continue
@@ -361,8 +356,6 @@ async def daily_stats(
             if local_date_str not in valid_pns_by_date: valid_pns_by_date[local_date_str] = []
             valid_pns_by_date[local_date_str].append(pn)
 
-    # Пытаемся взять агрегированные данные по всем нужным постингам одним запросом
-    # Группируем по номеру постинга, чтобы потом сопоставить с датами
     product_stats = db.query(
         OrderProduct.posting_number,
         func.sum(OrderProduct.quantity).label("q"),
@@ -372,10 +365,8 @@ async def daily_stats(
         OrderProduct.posting_number.in_(list(postings_map.keys()))
     ).group_by(OrderProduct.posting_number).all()
 
-    # Создаем быстрый маппинг: номер постинга -> (кол-во, выручка)
     stats_by_pn = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in product_stats}
 
-    # ФОЛЛБЕК для тех постингов, которых нет в нормализованной таблице товаров
     missing_pns = set(postings_map.keys()) - set(stats_by_pn.keys())
     if missing_pns:
         raw_rows = db.query(Order.posting_number, Order.data).filter(
@@ -418,13 +409,14 @@ async def sales_report_universal(
     since: str,
     to: str,
     include_cancelled: bool = Query(True),
-    scheme: str = Query('fbo'), # Защита метрик: по умолчанию только FBO
+    scheme: str = Query('fbo'),
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Универсальный отчет по продажам с поддержкой фоллбека на сырые данные.
+    Эндпоинт: Универсальный отчет по продажам за период.
+    Возвращает список проданных товаров, общую выручку, расходы и прибыль.
     """
     since_dt = parse_msk_date(since, tz_offset_hours=tz_offset_hours)
     to_dt = parse_msk_date(to, end_of_day=True, tz_offset_hours=tz_offset_hours)
@@ -438,7 +430,6 @@ async def sales_report_universal(
     search_since_dt = since_utc - timedelta(hours=24)
     search_to_dt = to_utc + timedelta(hours=24)
 
-    # 1. Получаем список отправлений и заказов для статистики по количеству и статусам
     postings_map = _get_unified_postings(db, current_user.id, search_since_dt, search_to_dt, include_cancelled, scheme=scheme)
 
     local_tz = timezone(timedelta(hours=tz_offset_hours))
@@ -453,8 +444,6 @@ async def sales_report_universal(
         if date_since_local <= dt_local.date() <= date_to_local:
             final_postings.append(pn)
 
-    # 2. Агрегируем продажи и список товаров из OrderProduct (Наиболее точный источник по данным верификации)
-    # Это гарантирует 100% совпадение количества товаров в графике и в итоговой таблице.
     product_stats = db.query(
         OrderProduct.sku,
         OrderProduct.name,
@@ -484,7 +473,6 @@ async def sales_report_universal(
         })
         total_sales_revenue += float(r_rev or 0)
 
-    # 3. Агрегируем расходы и возвраты из OzonAccrual (Финансовый первоисточник для услуг)
     accruals_q = db.query(
         OzonAccrual.sku,
         OzonAccrual.amount,
@@ -518,14 +506,11 @@ async def sales_report_universal(
         val = float(r_amt or 0)
         
         if r_tid is None:
-            # Только возвраты товара (отрицательные суммы без type_id)
             if val < 0:
                 total_returns_amount += abs(val)
         else:
-            # Накапливаем услуги
             accruals_by_type[r_tid] = accruals_by_type.get(r_tid, 0.0) + val
 
-    # Распределяем накопленные услуги по категориям для итоговой сводки
     for tid, amt_sum in accruals_by_type.items():
         val = -float(amt_sum or 0) 
         
@@ -544,15 +529,14 @@ async def sales_report_universal(
         else: 
             total_other_expenses += val
 
-    # 4. Оперативный расчет себестоимости на основе ЗАКАЗОВ
     total_cost_price, _cost_items = _calculate_cost_price_from_orders(
         db,
         current_user.id,
         since_utc,
         to_utc,
         tz_offset_hours=tz_offset_hours,
-        include_cancelled=False, # Не считаем себестоимость отмененных
-        postings_map=postings_map  # ОПТИМИЗАЦИЯ: повторно используем уже загруженные постинги
+        include_cancelled=False,
+        postings_map=postings_map
     )
 
     items.sort(key=lambda x: -x["amount_raw"])
@@ -567,7 +551,6 @@ async def sales_report_universal(
     )
 
     if scheme != 'all':
-        # Фильтруем расходы по схеме, если есть привязка к постингу
         costs_q = costs_q.join(
             OrderPosting,
             (OrderPosting.posting_number == Cost.scope_posting_number) & (OrderPosting.user_id == Cost.user_id)
@@ -588,16 +571,12 @@ async def sales_report_universal(
         elif t == "commission": total_commission += val
         else: total_manual_expenses += val
 
-    # ВАЖНО: total_expenses включает ВСЕ расходы, включая возвраты товара,
-    # чтобы итог совпадал с expenses_breakdown (где «Возвраты и отмены»
-    # — это отдельная категория расходов, как в отчёте Озон Банка).
     total_expenses = (
         total_commission + total_logistics + total_advertising + 
         total_storage + total_acquiring + total_other_expenses + 
         total_returns_cancels_fee + total_cost_price + total_manual_expenses +
-        total_returns_amount  # возвраты товара (type_id=None, amount<0)
+        total_returns_amount
     )
-    # Прибыль: выручка минус все расходы (возвраты уже внутри total_expenses)
     profit = total_sales_revenue - total_expenses
 
     cancelled_pns = [pn for pn in final_postings if is_cancelled(postings_map.get(pn, {}).get("status"))]
@@ -639,13 +618,13 @@ async def sales_report_universal(
 async def expenses_breakdown(
     since: str,
     to: str,
-    scheme: str = Query('fbo'), # Защита метрик
+    scheme: str = Query('fbo'),
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Детализация расходов по категориям (БЕЗ МИНУСОВ).
+    Эндпоинт: Детальная расшифровка расходов по категориям за период.
     """
     since_dt = parse_msk_date(since, tz_offset_hours=tz_offset_hours)
     to_dt = parse_msk_date(to, end_of_day=True, tz_offset_hours=tz_offset_hours)
@@ -656,7 +635,6 @@ async def expenses_breakdown(
     since_utc = since_dt.astimezone(timezone.utc).replace(tzinfo=None)
     to_utc = to_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # Получаем все расходные транзакции
     accruals_q = db.query(OzonAccrual).filter(
         OzonAccrual.user_id == current_user.id,
         OzonAccrual.date >= since_utc,
@@ -672,11 +650,6 @@ async def expenses_breakdown(
     
     accruals = accruals_q.all()
 
-    # Накапливаем суммы по категориям С УЧЁТОМ ЗНАКА (нетто).
-    # Это нужно, чтобы корректировки/сторно (положительные суммы среди
-    # расходов) правильно взаимозачитывались — как на главном экране
-    # и как в отчёте Озон Банка. Иначе +31.2 и −31.2 (отмена продажи)
-    # сложатся в 62.4 вместо правильных 0.
     by_category_signed: dict[str, float] = {}
     ops_by_category: dict[str, dict] = {}
 
@@ -684,8 +657,6 @@ async def expenses_breakdown(
         tid = acc.type_id
         signed_amount = float(acc.amount or 0)
 
-        # Возвраты товара (type_id=None, amount<0) и обработка отмен (type_id=45)
-        # объединяем в категорию «Возвраты и отмены» — как в отчёте Озон Банка.
         if tid is None or tid == 45:
             cat_name = "Возвраты и отмены"
         else:
@@ -696,7 +667,6 @@ async def expenses_breakdown(
         if cat_name not in ops_by_category:
             ops_by_category[cat_name] = {"total": 0.0, "items": []}
 
-        # Для отображения берём модуль отдельной транзакции
         display_amount = abs(signed_amount)
         ops_by_category[cat_name]["total"] += display_amount
 
@@ -711,10 +681,8 @@ async def expenses_breakdown(
             "unit_number": acc.unit_number
         })
 
-    # Итоговые суммы по категориям — модуль нетто-суммы
     by_category = {k: abs(v) for k, v in by_category_signed.items()}
 
-    # Синхронизируем итоги деталей с нетто-суммами категорий
     for cat_name, net_total in by_category.items():
         if cat_name in ops_by_category:
             ops_by_category[cat_name]["total"] = net_total
@@ -726,9 +694,6 @@ async def expenses_breakdown(
     )
 
     if scheme != 'all':
-        # Соединяем с OrderPosting для фильтрации по схеме.
-        # Расходы без scope_posting_number (например, общий эквайринг)
-        # будут показаны только в режиме "Все".
         cost_q = cost_q.join(
             OrderPosting,
             (OrderPosting.posting_number == Cost.scope_posting_number) & (OrderPosting.user_id == Cost.user_id)
@@ -738,7 +703,6 @@ async def expenses_breakdown(
 
     for row in cost_rows:
         t = (row.type or "").lower()
-        # Если есть данные из API по основным категориям, ручные записи этих типов игнорируем
         if t in ["acquiring", "commission", "logistics", "advertising", "storage"] and len(accruals) > 0:
             continue
             
@@ -761,9 +725,6 @@ async def expenses_breakdown(
             "notes": row.notes or t,
         })
 
-    # --- ОПЕРАТИВНЫЙ РАСЧЕТ СЕБЕСТОИМОСТИ ТОВАРОВ ---
-    # Получаем постинги для расчета себестоимости (чтобы не дублировать логику)
-    # Используем расширенное окно поиска для корректного маппинга дат
     search_since = since_utc - timedelta(hours=24)
     search_to = to_utc + timedelta(hours=24)
     p_map = _get_unified_postings(db, current_user.id, search_since, search_to, include_cancelled=False, scheme=scheme)
@@ -805,13 +766,13 @@ async def expenses_breakdown(
 async def expenses_summary(
     since: str,
     to: str,
-    scheme: str = Query('fbo'), # Защита метрик
+    scheme: str = Query('fbo'),
     tz_offset_hours: int = Query(3),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Возвращает сумму расходов за указанный период с разбивкой по категориям.
+    Эндпоинт: Краткая сводка расходов с процентами по категориям.
     """
     res = await expenses_breakdown(since=since, to=to, scheme=scheme, tz_offset_hours=tz_offset_hours, db=db, current_user=current_user)
 

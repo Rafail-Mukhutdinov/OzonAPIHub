@@ -63,7 +63,13 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
     Генерирует JWT (JSON Web Token) для аутентификации пользователя.
-    В payload токена записывается 'sub' (email пользователя) и время истечения 'exp'.
+    
+    Логика выдачи:
+    1. Берем полезную нагрузку (email пользователя).
+    2. Устанавливаем время истечения (exp).
+    3. Подписываем токен секретным ключом JWT_SECRET_KEY с использованием HS256.
+    Этот токен передается клиенту и должен прикрепляться к каждому запросу 
+    в заголовке Authorization: Bearer <token>.
     """
     to_encode = data.copy()
     now = datetime.now(timezone.utc)
@@ -99,6 +105,14 @@ async def get_current_user(
 ) -> User:
     """
     Главная зависимость (Dependency) для защищенных эндпоинтов.
+    
+    Как работает Depends(get_current_user):
+    1. Извлекает JWT-токен из заголовка запроса.
+    2. Декодирует его и проверяет подпись/срок действия.
+    3. Ищет пользователя в БД по email из токена.
+    4. Если пользователь найден и активен, возвращает объект User.
+    5. FastAPI автоматически подставляет этот объект в аргументы функции эндпоинта.
+    Если токен невалиден, выбрасывает 401 Unauthorized, не доходя до логики эндпоинта.
     """
 
     credentials_exception = HTTPException(

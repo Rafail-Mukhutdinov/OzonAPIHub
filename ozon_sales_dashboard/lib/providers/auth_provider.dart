@@ -11,11 +11,11 @@ import '../screens/pin_screen.dart';
 import '../services/api.dart';
 import '../services/update_service.dart';
 
-/**
- * AuthProvider — центральный узел управления сессией пользователя.
- * Теперь поддерживает биометрическую аутентификацию и защищенное хранение токенов.
- */
+/// AuthProvider — центральный узел управления сессией пользователя.
+/// Хранит состояние аутентификации, токены и настройки безопасности (ПИН, биометрия).
+/// Использует [ChangeNotifier] для уведомления UI об изменениях состояния.
 class AuthProvider extends ChangeNotifier {
+  // Ключи для хранения данных в SharedPreferences и SecureStorage
   static const String _tokenKey = 'jwt_token';
   static const String _emailKey = 'user_email';
   static const String _isAdminKey = 'is_admin';
@@ -26,23 +26,24 @@ class AuthProvider extends ChangeNotifier {
   static const String _adminTokenBackupKey = 'admin_original_token';
   static const String _adminEmailBackupKey = 'admin_original_email';
 
+  // Внутренние сервисы для защищенного хранения и биометрии
   final _secureStorage = const FlutterSecureStorage();
   final _localAuth = LocalAuthentication();
 
-  String? _token;
-  String? _userEmail;
-  String? _pinCode;
-  String? _originalAdminToken; // Для возврата из Impersonation
-  bool _isAdmin = false;
-  bool _isDemo = false;
-  DateTime? _subscriptionEndDate;
-  bool _isAuthenticated = false;
-  bool _isLocalAuthenticated = false;
-  bool _isLoading = true;
-  bool _biometricEnabled = false;
-  bool _needsBiometricPrompt = false;
+  String? _token;             // Активный JWT токен для запросов к API
+  String? _userEmail;         // Email текущего пользователя
+  String? _pinCode;           // ПИН-код для локальной защиты приложения
+  String? _originalAdminToken; // Резервная копия токена админа при имитации пользователя
+  bool _isAdmin = false;      // Флаг прав администратора
+  bool _isDemo = false;       // Флаг демо-режима аккаунта
+  DateTime? _subscriptionEndDate; // Дата окончания подписки
+  bool _isAuthenticated = false;  // Флаг наличия валидного токена в сессии
+  bool _isLocalAuthenticated = false; // Флаг прохождения проверки ПИН/биометрии
+  bool _isLoading = true;         // Флаг процесса инициализации провайдера
+  bool _biometricEnabled = false;  // Включен ли вход по отпечатку
+  bool _needsBiometricPrompt = false; // Нужно ли предложить включить биометрию
 
-  // Геттеры
+  // Геттеры для доступа к состоянию из UI
   bool get isAuthenticated => _isAuthenticated;
   bool get isLocalAuthenticated => _isLocalAuthenticated;
   bool get isLoading => _isLoading;
@@ -60,17 +61,18 @@ class AuthProvider extends ChangeNotifier {
     _initAuth();
   }
 
+  /// Инициализация провайдера: загрузка данных из хранилища при старте приложения.
   Future<void> _initAuth() async {
     try {
       final prefs = await SharedPreferences.getInstance();
 
       if (kIsWeb) {
-        // На Web используем обычные настройки (SecureStorage не работает без HTTPS)
+        // На Web используем обычные настройки (SecureStorage требует HTTPS/спец.настройки)
         _token = prefs.getString(_tokenKey);
         _originalAdminToken = prefs.getString(_adminTokenBackupKey);
         _pinCode = null;
       } else {
-        // На Mobile используем защищенное хранилище
+        // На Mobile используем защищенное хранилище для чувствительных данных
         try {
           _token = await _secureStorage.read(key: _tokenKey);
           _pinCode = await _secureStorage.read(key: _pinKey);
@@ -89,13 +91,12 @@ class AuthProvider extends ChangeNotifier {
       }
       _biometricEnabled = prefs.getBool(_biometricEnabledKey) ?? false;
 
-      // Локальная переменная нужна для null-promotion: поля класса не
-      // промоутятся автоматически, так как могут измениться между
-      // проверкой и доступом. Это позволяет не использовать оператор '!'.
       final token = _token;
       _isAuthenticated = token != null && token.isNotEmpty;
       _isLocalAuthenticated = false;
       _isLoading = false;
+      
+      // Уведомляем систему, что данные загружены
       notifyListeners();
     } catch (e) {
       debugPrint("Init auth error: $e");
@@ -104,20 +105,20 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Установка ПИН-кода для локальной защиты.
   Future<void> setPin(String pin) async {
-    // На Web ПИН-код не используется (отключён через kIsWeb).
     if (kIsWeb) return;
     try {
       await _secureStorage.write(key: _pinKey, value: pin);
       _pinCode = pin;
     } catch (e) {
       debugPrint("setPin: secureStorage write error: $e");
-      // Если не удалось сохранить, всё равно сохраняем в памяти на сессию
       _pinCode = pin;
     }
     notifyListeners();
   }
 
+  /// Проверка введенного ПИН-кода.
   bool verifyPin(String enteredPin) {
     if (_pinCode == enteredPin) {
       _isLocalAuthenticated = true;
@@ -127,10 +128,8 @@ class AuthProvider extends ChangeNotifier {
     return false;
   }
 
+  /// Попытка аутентификации через биометрию (отпечаток/лицо).
   Future<bool> authenticateWithBiometrics() async {
-    // На Web биометрия недоступна: local_auth не имеет Web-плагина,
-    // а вызовы бросают MissingPluginException, который не ловится
-    // как PlatformException. Досрочный выход обязателен.
     if (kIsWeb) return false;
     if (!_biometricEnabled) return false;
     try {
@@ -157,6 +156,7 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Включение или выключение использования биометрии.
   Future<void> setBiometricEnabled(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_biometricEnabledKey, enabled);
@@ -164,6 +164,7 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Обновление данных профиля пользователя (роль, статус демо, подписка).
   Future<void> updateProfile({
     bool? isAdmin,
     bool? isDemo,
@@ -185,6 +186,8 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Основной метод для сохранения токена после успешного входа или регистрации.
+  /// Автоматически уведомляет [notifyListeners], обновляя UI на [AuthGate].
   Future<void> setToken(String token, {String? email, bool? isAdmin, String? pin}) async {
     final prefs = await SharedPreferences.getInstance();
     
@@ -216,8 +219,7 @@ class AuthProvider extends ChangeNotifier {
     _isAuthenticated = true;
     _isLocalAuthenticated = true;
 
-    // Если биометрия еще не включена, ставим флаг для показа запроса.
-    // Запрос имеет смысл только на мобильных устройствах.
+    // Предлагаем включить биометрию только на мобильных при первом входе
     if (!kIsWeb && !_biometricEnabled) {
       _needsBiometricPrompt = true;
     }
@@ -225,30 +227,28 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Сброс флага запроса биометрии
+  /// Скрытие диалога предложения биометрии.
   void dismissBiometricPrompt() {
     _needsBiometricPrompt = false;
     notifyListeners();
   }
 
-  /// Вход в режим Impersonation (подмена токена с сохранением админского)
+  /// Вход в режим имитации (Impersonation): админ входит под видом другого пользователя.
   Future<void> enterImpersonation(String impersonationToken, String targetEmail) async {
     final prefs = await SharedPreferences.getInstance();
     
-    // Сохраняем текущий админский токен и email
     _originalAdminToken = _token;
     if (kIsWeb) {
       await prefs.setString(_adminTokenBackupKey, _token!);
       await prefs.setString(_adminEmailBackupKey, _userEmail!);
     } else {
       await _secureStorage.write(key: _adminTokenBackupKey, value: _token!);
-      await prefs.setString(_adminEmailBackupKey, _userEmail!); // Email не секретный, можно в prefs
+      await prefs.setString(_adminEmailBackupKey, _userEmail!);
     }
 
-    // Переключаемся на токен пользователя
     _token = impersonationToken;
     _userEmail = targetEmail;
-    _isAdmin = false; // В режиме имитации мы как обычный юзер
+    _isAdmin = false;
 
     if (kIsWeb) {
       await prefs.setString(_tokenKey, impersonationToken);
@@ -263,7 +263,7 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Выход из режима Impersonation (возврат к админскому токену)
+  /// Выход из режима имитации и возврат к правам администратора.
   Future<void> stopImpersonating() async {
     if (_originalAdminToken == null) return;
 
@@ -271,7 +271,6 @@ class AuthProvider extends ChangeNotifier {
     final adminToken = _originalAdminToken!;
     final adminEmail = prefs.getString(_adminEmailBackupKey) ?? 'Admin';
 
-    // Восстанавливаем админские данные
     _token = adminToken;
     _userEmail = adminEmail;
     _originalAdminToken = null;
@@ -294,6 +293,7 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Локальный выход: блокировка сессии (на мобильных) или полная очистка (на Web).
   Future<void> logout() async {
     debugPrint("AuthProvider: Locking session...");
     if (kIsWeb) {
@@ -304,8 +304,8 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
-  /// Обработка истечения срока токена (401 ошибка)
-  /// Мы удаляем токен, чтобы вызвать экран логина, но ОСТАВЛЯЕМ ПИН и Email
+  /// Обработка ситуации, когда токен просрочен (ошибка 401).
+  /// Удаляет только токен, заставляя пользователя ввести пароль заново.
   Future<void> handleSessionExpired() async {
     debugPrint("AuthProvider: Session expired, clearing token only...");
     if (kIsWeb) {
@@ -322,10 +322,9 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Полная очистка всех данных пользователя и настроек из памяти и хранилища.
   Future<void> clearAllData() async {
     debugPrint("AuthProvider: Clearing all data...");
-    // SecureStorage на Web не используется (требует HTTPS),
-    // поэтому чистим его только на мобильных платформах.
     if (!kIsWeb) {
       try {
         await _secureStorage.deleteAll();
@@ -348,6 +347,7 @@ class AuthProvider extends ChangeNotifier {
   }
 }
 
+/// Виджет-контроллер, определяющий, какой экран показать пользователю в зависимости от состояния AuthProvider.
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
@@ -356,9 +356,9 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
-  bool _biometricAttempted = false;
-  bool _promptShown = false;
-  bool _updateChecked = false;
+  bool _biometricAttempted = false; // Предотвращает зацикливание вызова биометрии
+  bool _promptShown = false;        // Флаг показа предложения включить биометрию
+  bool _updateChecked = false;      // Флаг проверки обновлений в текущей сессии
 
   @override
   void initState() {
@@ -374,7 +374,6 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // При возврате приложения из фона сбрасываем флаг, чтобы проверить обновления снова
     if (state == AppLifecycleState.resumed) {
       setState(() {
         _updateChecked = false;
@@ -386,7 +385,6 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final authProvider = context.watch<AuthProvider>();
 
-    // Сбрасываем флаги при выходе
     if (!authProvider.isAuthenticated) {
       _biometricAttempted = false;
       _promptShown = false;
@@ -397,12 +395,12 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // 1. Если нет токена — на логин
+    // 1. Проверка авторизации на сервере (наличие токена)
     if (!authProvider.isAuthenticated) {
       return const LoginScreen();
     }
 
-    // 2. Если есть токен, но не прошли ПИН/Биометрию (только на мобильных)
+    // 2. Проверка локальной авторизации (ПИН или биометрия) для мобильных устройств
     if (!kIsWeb && !authProvider.isLocalAuthenticated) {
       if (!authProvider.hasPin) return const LoginScreen();
 
@@ -420,8 +418,9 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       );
     }
 
-    // 3. Всё Ок — Дашборд + запрос биометрии один раз (только на мобильных)
+    // 3. Основной контент приложения после прохождения всех проверок
     if (!kIsWeb) {
+      // Фоновые проверки при входе
       if (!_updateChecked) {
         _updateChecked = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -430,6 +429,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
         });
       }
 
+      // Предложение включить биометрию, если она еще не настроена
       if (authProvider.needsBiometricPrompt && !_promptShown) {
         _promptShown = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -441,6 +441,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     return const DashboardScreen();
   }
 
+  /// Показ диалогового окна с предложением использовать биометрию.
   void _showBiometricDialog(BuildContext context, AuthProvider auth) {
     showDialog(
       context: context,

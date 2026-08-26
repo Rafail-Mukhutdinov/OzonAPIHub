@@ -1,6 +1,10 @@
 """
 Эндпоинты для управления себестоимостью товаров (Product Costs).
-Позволяет отслеживать изменение себестоимости во времени для каждого SKU.
+
+Этот модуль позволяет пользователям задавать и отслеживать изменение себестоимости (cost price)
+каждого товара (SKU) во времени. Это критически важно для точного расчета чистой прибыли,
+так как себестоимость закупки может меняться. Система использует дату продажи заказа,
+чтобы сопоставить её с актуальной на тот момент себестоимостью товара.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,21 +17,24 @@ from utils.auth import get_current_user, verify_not_impersonating
 from utils.logging_config import log_user_event
 from services.costs import set_product_cost, get_costs_history_for_sku, delete_product_cost
 
+# Инициализация роутера с префиксом /product-costs
 router = APIRouter(prefix="/product-costs", tags=["product-costs"])
 
 class ProductCostIn(BaseModel):
-    sku: int
-    offer_id: Optional[str] = None
-    cost_price: float
-    effective_from: datetime
+    """Схема входных данных для установки себестоимости."""
+    sku: int                        # Уникальный идентификатор товара в системе Ozon
+    offer_id: Optional[str] = None  # Артикул товара в магазине
+    cost_price: float               # Цена закупки (себестоимость)
+    effective_from: datetime        # Дата, с которой начинает действовать эта цена
 
 class ProductCostOut(BaseModel):
-    id: int
+    """Схема выходных данных (ответа сервера) с информацией о себестоимости."""
+    id: int                         # ID записи в БД
     sku: int
     offer_id: Optional[str] = None
     cost_price: float
-    effective_from: datetime
-    created_at: datetime
+    effective_from: datetime        # Дата начала действия
+    created_at: datetime           # Дата создания записи
 
     class Config:
         from_attributes = True
@@ -39,7 +46,10 @@ def set_cost(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Устанавливает себестоимость товара с определенной даты."""
+    """
+    Устанавливает себестоимость товара с определенной даты.
+    Если на эту дату уже есть запись для этого SKU, она будет обновлена.
+    """
     admin_id = getattr(request.state, "impersonated_by", None)
     result = set_product_cost(
         db, 
@@ -58,7 +68,10 @@ def get_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Возвращает историю изменения себестоимости для конкретного SKU."""
+    """
+    Возвращает историю изменения себестоимости для конкретного SKU.
+    Позволяет увидеть, как менялась цена закупки товара со временем.
+    """
     return get_costs_history_for_sku(db, user_id=current_user.id, sku=sku)
 
 @router.get("/all", response_model=List[ProductCostOut])
@@ -66,7 +79,10 @@ def get_all_costs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Возвращает все записи себестоимости пользователя."""
+    """
+    Возвращает все записи себестоимости текущего пользователя.
+    Результат отсортирован по SKU и дате действия (сначала новые).
+    """
     return db.query(ProductCost).filter(ProductCost.user_id == current_user.id).order_by(ProductCost.sku, ProductCost.effective_from.desc()).all()
 
 @router.delete("/{cost_id}", dependencies=[Depends(verify_not_impersonating)])
@@ -76,7 +92,10 @@ def delete_cost(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Удаляет запись о себестоимости."""
+    """
+    Удаляет конкретную запись о себестоимости по её ID.
+    Если запись не найдена или не принадлежит пользователю, возвращает 404.
+    """
     admin_id = getattr(request.state, "impersonated_by", None)
     success = delete_product_cost(db, user_id=current_user.id, cost_id=cost_id)
     if not success:
@@ -89,11 +108,16 @@ def get_user_products(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Возвращает список уникальных товаров пользователя с их текущей себестоимостью."""
+    """
+    Возвращает агрегированный список всех уникальных товаров пользователя,
+    которые когда-либо встречались в его заказах.
+    Для каждого товара подтягивается текущая актуальная себестоимость.
+    Используется на фронтенде для удобного заполнения справочника цен.
+    """
     from sqlalchemy import func
     from services.costs import get_product_cost
     
-    # Получаем уникальные товары
+    # Получаем уникальные SKU и базовую информацию о них из таблицы OrderProduct
     products_raw = db.query(
         OrderProduct.sku, 
         OrderProduct.name, 
@@ -107,7 +131,7 @@ def get_user_products(
     result = []
     
     for p in products_raw:
-        # Ищем последнюю себестоимость
+        # Ищем последнюю (актуальную на текущий момент) себестоимость для этого SKU
         current_cost = get_product_cost(db, current_user.id, p.sku, now)
         
         result.append({
@@ -118,7 +142,8 @@ def get_user_products(
             "current_cost": current_cost
         })
     
-    # Сортируем: сначала те, где не заполнена себестоимость (0), затем по имени
+    # Сортировка: сначала те товары, для которых себестоимость ещё не задана (0), 
+    # чтобы пользователю было проще их найти и заполнить.
     result.sort(key=lambda x: (x["current_cost"] > 0, x["name"] or ""))
     
     return {"items": result}

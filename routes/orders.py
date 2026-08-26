@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from utils.logging_config import log_user_event
 from utils.common import normalize_iso
 
+# Роутер для управления заказами
 router = APIRouter(tags=["orders"])
 
 @router.get("/orders")
@@ -167,7 +168,9 @@ def get_order_by_posting(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Возвращает детальную информацию об одном отправлении по его номеру."""
+    """
+    Возвращает детальную информацию об одном отправлении по его номеру.
+    """
     row = db.query(Order).filter(
         Order.user_id == current_user.id,
         Order.posting_number == posting_number
@@ -276,7 +279,9 @@ def list_order_postings(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Возвращает список только отправлений (без товаров) для конкретного заказа."""
+    """
+    Возвращает список только отправлений (без товаров) для конкретного заказа.
+    """
     postings = db.query(OrderPosting).filter(
         OrderPosting.user_id == current_user.id,
         OrderPosting.order_number == order_number

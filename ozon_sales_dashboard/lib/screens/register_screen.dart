@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // Добавляем для kIsWeb
-import '../utils/platform_nav.dart'; // Условный импорт для навигации
+import 'package:flutter/foundation.dart';
+import '../utils/platform_nav.dart';
 import '../services/auth_service.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 
+/// RegisterScreen — экран создания нового аккаунта.
+/// Реализует ввод регистрационных данных, их валидацию и взаимодействие с [AuthService].
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
 
@@ -13,15 +15,19 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
+  // Глобальный ключ для управления состоянием формы и валидацией
   final _formKey = GlobalKey<FormState>();
+  
+  // Контроллеры для управления текстом в полях ввода
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
-  final _pinController = TextEditingController(); // Для ПИН-кода
+  final _pinController = TextEditingController(); // ПИН-код для мобильной версии
+  
   late final AuthService _authService;
   
-  bool _isLoading = false;
-  String? _errorMessage;
+  bool _isLoading = false; // Состояние выполнения запроса к серверу
+  String? _errorMessage;   // Текст ошибки от сервера
 
   @override
   void initState() {
@@ -31,6 +37,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   void dispose() {
+    // Очистка ресурсов контроллеров
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
@@ -38,7 +45,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
     super.dispose();
   }
 
+  /// Обработка процесса регистрации.
   Future<void> _handleRegister() async {
+    // 1. Проверка валидности всех полей
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -52,6 +61,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final email = _emailController.text.trim();
       final pin = kIsWeb ? null : _pinController.text.trim();
 
+      // 2. Отправка данных на сервер для создания аккаунта
       final token = await _authService.register(
         email,
         _passwordController.text,
@@ -59,14 +69,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
       );
 
       if (mounted) {
-        // Обновляем состояние провайдера, передавая ПИН
+        // 3. Сохранение полученного токена в AuthProvider
         await Provider.of<AuthProvider>(context, listen: false).setToken(
           token, 
           email: email,
           pin: pin,
         );
 
-        // Закрываем экран регистрации, чтобы вернуться к AuthGate
+        // 4. Возврат назад (AuthGate автоматически переключит на Dashboard)
         if (mounted) {
           Navigator.of(context).pop();
         }
@@ -77,9 +87,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       });
     } finally {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
     }
   }
@@ -105,11 +113,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Icon(
-                        Icons.person_add,
-                        size: 80,
-                        color: Theme.of(context).primaryColor,
-                      ),
+                      Icon(Icons.person_add, size: 80, color: Theme.of(context).primaryColor),
                       const SizedBox(height: 16),
                       Text(
                         'Создание аккаунта',
@@ -122,18 +126,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         Padding(
                           padding: const EdgeInsets.only(bottom: 24.0),
                           child: OutlinedButton.icon(
-                            onPressed: () {
-                              goToLanding();
-                            },
+                            onPressed: () => goToLanding(),
                             icon: const Icon(Icons.arrow_back),
                             label: const Text('На главную страницу'),
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                            ),
+                            style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
                           ),
                         ),
 
-                      // Email поле
+                      // Поле ввода Email с базовой валидацией
                       TextFormField(
                         controller: _emailController,
                         decoration: const InputDecoration(
@@ -142,20 +142,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           prefixIcon: Icon(Icons.email),
                         ),
                         keyboardType: TextInputType.emailAddress,
-                        autofillHints: const [AutofillHints.email],
                         validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Введите email';
-                          }
-                          if (!value.contains('@')) {
-                            return 'Введите корректный email';
-                          }
+                          if (value == null || value.isEmpty) return 'Введите email';
+                          if (!value.contains('@')) return 'Введите корректный email';
                           return null;
                         },
                       ),
                       const SizedBox(height: 16),
                       
-                      // Password поле
+                      // Поле ввода Пароля с ограничением по длине
                       TextFormField(
                         controller: _passwordController,
                         decoration: const InputDecoration(
@@ -165,20 +160,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           helperText: 'Минимум 6 символов',
                         ),
                         obscureText: true,
-                        autofillHints: const [AutofillHints.newPassword],
                         validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Введите пароль';
-                          }
-                          if (value.length < 6) {
-                            return 'Пароль должен быть не менее 6 символов';
-                          }
+                          if (value == null || value.isEmpty) return 'Введите пароль';
+                          if (value.length < 6) return 'Пароль должен быть не менее 6 символов';
                           return null;
                         },
                       ),
                       const SizedBox(height: 16),
                       
-                      // Confirm Password поле
+                      // Поле подтверждения пароля
                       TextFormField(
                         controller: _confirmPasswordController,
                         decoration: const InputDecoration(
@@ -187,20 +177,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           prefixIcon: Icon(Icons.lock_outline),
                         ),
                         obscureText: true,
-                        autofillHints: const [AutofillHints.newPassword],
                         validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Подтвердите пароль';
-                          }
-                          if (value != _passwordController.text) {
-                            return 'Пароли не совпадают';
-                          }
+                          if (value == null || value.isEmpty) return 'Подтвердите пароль';
+                          if (value != _passwordController.text) return 'Пароли не совпадают';
                           return null;
                         },
                       ),
                       const SizedBox(height: 16),
 
-                      // ПИН-код только для мобилок
+                      // Поле ПИН-кода (только для мобильных устройств)
                       if (!kIsWeb) ...[
                         TextFormField(
                           controller: _pinController,
@@ -215,46 +200,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           obscureText: true,
                           validator: (value) {
                             if (kIsWeb) return null;
-                            if (value == null || value.isEmpty) {
-                              return 'Введите ПИН-код';
-                            }
-                            if (value.length != 4) {
-                              return 'Ровно 4 цифры';
-                            }
-                            if (int.tryParse(value) == null) {
-                              return 'Только цифры';
-                            }
+                            if (value == null || value.isEmpty) return 'Введите ПИН-код';
+                            if (value.length != 4) return 'Ровно 4 цифры';
+                            if (int.tryParse(value) == null) return 'Только цифры';
                             return null;
                           },
                         ),
                         const SizedBox(height: 24),
                       ],
                       
-                      // Сообщение об ошибке
                       if (_errorMessage != null)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 16),
-                          child: Text(
-                            _errorMessage!,
-                            style: const TextStyle(color: Colors.red),
-                            textAlign: TextAlign.center,
-                          ),
+                          child: Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
                         ),
                       
-                      // Кнопка регистрации
                       FilledButton(
                         onPressed: _isLoading ? null : _handleRegister,
                         child: _isLoading
-                            ? const SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
+                            ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
                             : const Text('Создать аккаунт'),
                       ),
                       const SizedBox(height: 16),
                       
-                      // Информация о пробном периоде
+                      // Информационный блок о пробном периоде
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
@@ -267,11 +236,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
-                                'Пробный период: 30 дней',
-                                style: TextStyle(
-                                  color: Theme.of(context).primaryColor,
-                                  fontSize: 12,
-                                ),
+                                'После регистрации вы получите полный доступ ко всем функциям на 30 дней бесплатно.',
+                                style: TextStyle(color: Theme.of(context).primaryColor, fontSize: 12),
                               ),
                             ),
                           ],

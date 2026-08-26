@@ -1,7 +1,17 @@
 """
 Главный модуль приложения OzonAPIHub.
-Здесь инициализируется FastAPI, подключаются маршруты (роутеры),
-настраивается middleware и запускаются фоновые задачи через воркеры.
+
+Назначение приложения:
+OzonAPIHub — это бэкенд-сервис для автоматизации работы с маркетплейсом Ozon (FBO/FBS).
+Основные функции включают:
+- Синхронизацию заказов и отправлений через Ozon API.
+- Аналитику продаж, расчет прибыли и учет себестоимости товаров.
+- Управление обогащением данных (дополнительная информация о товарах).
+- Поддержку мобильного приложения (OTA-обновления).
+- Ролевую модель доступа (пользователи и администраторы).
+
+В этом файле инициализируется FastAPI, подключаются маршруты (роутеры),
+настраивается middleware (CORS, Rate Limiting) и запускаются фоновые задачи через воркеры.
 """
 
 import os
@@ -27,6 +37,7 @@ from services.ozon import init_http_client, close_http_client
 import utils.logging_config
 logger = logging.getLogger("OzonAPIHub")
 
+# URL для подключения к Redis, используется для очереди задач ARQ
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 @asynccontextmanager
@@ -42,14 +53,16 @@ async def lifespan(app: FastAPI):
     # 2. Инициализация пула соединений httpx для запросов к Ozon API (keep-alive)
     app.state.http_client = init_http_client()
 
-    # 3. Инициализация пула задач ARQ (Redis)
+    # 3. Инициализация пула задач ARQ (Redis) для постановки задач воркерам
     try:
         app.state.arq_pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
         logger.info("ARQ Task Pool initialized")
     except Exception as e:
         logger.error(f"Failed to initialize ARQ pool: {e}")
 
-    # 3. Очистка "зависших" статусов синхронизации в БД.
+    # 4. Очистка "зависших" статусов синхронизации в БД.
+    # Если сервер упал во время синхронизации, флаг is_syncing останется True.
+    # Сбрасываем его при старте, чтобы воркеры могли начать новую синхронизацию.
     try:
         db = SessionLocal()
         try:
@@ -77,7 +90,7 @@ async def lifespan(app: FastAPI):
     # Закрываем пул соединений к Ozon API
     await close_http_client()
 
-# Инициализация FastAPI приложения
+# Инициализация основного объекта FastAPI приложения
 app = FastAPI(
     title="OzonAPIHub",
     description="Сервис синхронизации и аналитики заказов Ozon FBO с параллельной обработкой",
@@ -86,11 +99,11 @@ app = FastAPI(
     strict_slashes=False
 )
 
-# Подключаем защиту от DDoS и спама (Rate Limiting)
+# Подключаем защиту от DDoS и спама (ограничение частоты запросов)
 setup_rate_limiting(app)
 
-# Настройка CORS
-# В production стоит ограничить список разрешенных доменов через переменную окружения CORS_ORIGINS
+# Настройка CORS (Cross-Origin Resource Sharing)
+# Определяет, каким фронтенд-доменам разрешено обращаться к этому API.
 cors_origins_str = os.getenv("CORS_ORIGINS", "")
 if not cors_origins_str or cors_origins_str == "*":
     # Если origins не заданы или стоят как "*", мы не можем использовать allow_credentials=True
@@ -107,14 +120,18 @@ app.add_middleware(
     allow_credentials=not allow_all_origins, # credentials запрещены при allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
-    max_age=600
+    max_age=600 # Время кэширования предварительного запроса (preflight request) в секундах
 )
 
 @app.get("/ping")
 async def ping():
+    """Эндпоинт для проверки работоспособности сервиса."""
     return {"message": "pong"}
 
-# Импорты роутеров
+# Структура API эндпоинтов:
+# Приложение разделено на функциональные модули через APIRouter.
+# Каждый роутер отвечает за свою область ответственности.
+
 from routes.analytics import router as analytics_router
 from routes.orders import router as orders_router
 from routes.sync_endpoints import router as sync_router
@@ -125,16 +142,16 @@ from routes.auth_endpoints import router as auth_router
 from routes.app_updates import router as app_updates_router
 from routes.admin import router as admin_router
 
-# Подключение всех модулей API
-app.include_router(analytics_router)
-app.include_router(orders_router)
-app.include_router(sync_router)
-app.include_router(costs_router)
-app.include_router(product_costs_router)
-app.include_router(enrichment_router)
-app.include_router(auth_router)
-app.include_router(app_updates_router)
-app.include_router(admin_router)
+# Регистрация роутеров в приложении:
+app.include_router(analytics_router)          # Аналитика и дашборды
+app.include_router(orders_router)             # Список и детализация заказов
+app.include_router(sync_router)               # Управление ручной и авто-синхронизацией
+app.include_router(costs_router)              # Общие затраты и финансовые настройки
+app.include_router(product_costs_router)      # Учет себестоимости конкретных товаров
+app.include_router(enrichment_router)         # Обогащение данных товаров
+app.include_router(auth_router)               # Аутентификация и управление профилем
+app.include_router(app_updates_router)        # Проверка и скачивание обновлений приложения
+app.include_router(admin_router)              # Админ-панель и управление пользователями
 
 # -----------------------------------------------------------------------------
 # Статические файлы (APK для OTA-обновлений мобильного приложения и пр.)

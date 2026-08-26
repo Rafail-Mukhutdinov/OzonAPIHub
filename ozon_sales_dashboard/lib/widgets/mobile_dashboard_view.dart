@@ -6,29 +6,31 @@ import '../services/api.dart';
 import 'mobile_stat_card.dart';
 import 'expenses_widget.dart';
 
+/// Виджет для отображения мобильного представления дашборда.
+/// Содержит выбор периодов, карточки показателей, график динамики и список товаров.
 class MobileDashboardView extends StatefulWidget {
-  final OzonApiClient api;
-  final String Function(DateTime, bool) getIso;
-  final String scheme;
-  final String sinceStr;
-  final String toStr;
-  final List<Map<String, dynamic>> items;
-  final Map<String, dynamic>? totals;
-  final Map<String, dynamic>? yesterdayTotals;
-  final List<Map<String, dynamic>> weeklyStats;
-  final bool isLoading;
-  final String selectedPeriod;
-  final String weekMode;
-  final String monthMode;
-  final DateTimeRange? customRange;
-  final DateTime activeDate;
-  final DateTime? drillDownDate;
-  final Function(String) onPeriodChanged;
-  final Function(String, String) onSettingsChanged;
-  final Function(DateTimeRange) onCustomRangeSelected;
-  final Function(DateTime) onDateChanged;
-  final Function(DateTime) onDrillDown;
-  final VoidCallback onResetDrillDown;
+  final OzonApiClient api; // Клиент API
+  final String Function(DateTime, bool) getIso; // Функция для форматирования дат в ISO
+  final String scheme; // Текущая схема (fbo/fbs)
+  final String sinceStr; // Начало периода (строка)
+  final String toStr; // Конец периода (строка)
+  final List<Map<String, dynamic>> items; // Список товаров
+  final Map<String, dynamic>? totals; // Итоговые данные
+  final Map<String, dynamic>? yesterdayTotals; // Данные за прошлый период
+  final List<Map<String, dynamic>> weeklyStats; // Статистика для графика
+  final bool isLoading; // Флаг загрузки
+  final String selectedPeriod; // Выбранный тип периода
+  final String weekMode; // Режим отображения недели
+  final String monthMode; // Режим отображения месяца
+  final DateTimeRange? customRange; // Произвольный диапазон дат
+  final DateTime activeDate; // Активная дата
+  final DateTime? drillDownDate; // Дата для детализации
+  final Function(String) onPeriodChanged; // Callback при смене периода
+  final Function(String, String) onSettingsChanged; // Callback при смене настроек
+  final Function(DateTimeRange) onCustomRangeSelected; // Callback при выборе диапазона
+  final Function(DateTime) onDateChanged; // Callback при смене даты
+  final Function(DateTime) onDrillDown; // Callback при клике на столбик графика
+  final VoidCallback onResetDrillDown; // Callback для сброса детализации
 
   const MobileDashboardView({
     super.key,
@@ -61,10 +63,11 @@ class MobileDashboardView extends StatefulWidget {
 }
 
 class _MobileDashboardViewState extends State<MobileDashboardView> {
-  bool _isMoneyMode = true;
-  List<String> _metricsOrder = ['revenue', 'items', 'avgPrice', 'expenses', 'cancelled', 'storage'];
-  Set<String> _visibleMetrics = {'revenue', 'items', 'avgPrice'};
+  bool _isMoneyMode = true; // Режим отображения графика: деньги (true) или штуки (false)
+  List<String> _metricsOrder = ['revenue', 'items', 'avgPrice', 'expenses', 'cancelled', 'storage']; // Порядок метрик
+  Set<String> _visibleMetrics = {'revenue', 'items', 'avgPrice'}; // Видимые метрики
   
+  // Описание всех доступных метрик
   final Map<String, Map<String, dynamic>> _allMetrics = {
     'revenue': {'title': 'Выручка', 'icon': Icons.paid},
     'profit': {'title': 'Прибыль', 'icon': Icons.trending_up},
@@ -81,6 +84,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     _loadMetricsSettings();
   }
 
+  /// Загрузка настроек видимости и порядка метрик.
   Future<void> _loadMetricsSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final order = prefs.getStringList('dashboard_metrics_order');
@@ -89,7 +93,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     setState(() {
       if (order != null && order.isNotEmpty) {
         _metricsOrder = order;
-        // Если прибыли нет в старом списке порядка, добавляем её в начало
         if (!_metricsOrder.contains('profit')) {
           _metricsOrder.insert(0, 'profit');
         }
@@ -99,7 +102,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
       if (visible != null) {
         _visibleMetrics = visible.toSet();
-        // Включаем прибыль по умолчанию, если это первая загрузка с новым функционалом
         if (visible.isEmpty || !visible.contains('profit')) {
            _visibleMetrics.add('profit');
         }
@@ -109,12 +111,14 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     });
   }
 
+  /// Сохранение настроек метрик.
   Future<void> _saveMetricsSettings() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList('dashboard_metrics_order', _metricsOrder);
     await prefs.setStringList('dashboard_metrics_visible', _visibleMetrics.toList());
   }
 
+  /// Вычисление процентного изменения показателя относительно прошлого периода.
   String _calcChange(num current, num previous) {
     if (previous <= 0) return current > 0 ? "+100%" : "0%";
     final diff = ((current - previous) / previous) * 100;
@@ -197,7 +201,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 1. ПЕРИОДЫ
+            // 1. Блок выбора периодов
             Row(
               children: [
                 Expanded(
@@ -238,7 +242,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             ),
             const SizedBox(height: 20),
 
-            // 2. ДАТЫ
+            // 2. Отображение выбранной даты и кнопки навигации
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -285,7 +289,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             ),
             const SizedBox(height: 24),
 
-            // 3. ПОКАЗАТЕЛИ (ГОРИЗОНТАЛЬНЫЙ СКРОЛЛ)
+            // 3. Секция карточек показателей
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -315,7 +319,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                       change: _calcChange(profitCurr, profitPrev), 
                       isPositive: profitCurr >= profitPrev, 
                       icon: metric['icon'],
-                      // Используем зеленый цвет для прибыли, если она больше нуля
                       isPositiveColor: profitCurr > 0,
                     );
                   } else if (id == 'revenue') {
@@ -330,8 +333,8 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                       child: MobileStatCard(
                         title: metric['title'], 
                         value: '${f.format(expensesCurr)} ₽', 
-                        change: '$drrCurr%', // Показываем ДРР
-                        isPositive: expensesCurr <= expensesPrev, // Позитивно, если расходов меньше
+                        change: '$drrCurr%', 
+                        isPositive: expensesCurr <= expensesPrev, 
                         icon: metric['icon']
                       ),
                     );
@@ -339,8 +342,8 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                     card = MobileStatCard(
                       title: metric['title'], 
                       value: '${f.format(cancelledRevenueCurr)} ₽', 
-                      change: '$cancelledCountCurr шт', // Показываем кол-во штук как доп. инфо
-                      isPositive: cancelledRevenueCurr <= cancelledRevenuePrev, // Позитивно, если отмен меньше
+                      change: '$cancelledCountCurr шт', 
+                      isPositive: cancelledRevenueCurr <= cancelledRevenuePrev, 
                       icon: metric['icon']
                     );
                   } else if (id == 'storage') {
@@ -352,7 +355,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                       icon: metric['icon']
                     );
                   } else {
-                    // Другие показатели
                     card = MobileStatCard(title: metric['title'], value: '0 ₽', change: '0%', isPositive: true, icon: metric['icon']);
                   }
 
@@ -367,7 +369,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
             const SizedBox(height: 32),
             
-            // НОВЫЙ ВИДЖЕТ РАСХОДОВ ЗА ПЕРИОД
+            // Виджет детальных расходов
             ExpensesWidget(
               api: widget.api, 
               since: widget.sinceStr, 
@@ -377,7 +379,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
             const SizedBox(height: 24),
 
-            // 4. ГРАФИК
+            // 4. Секция графиков динамики
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -401,7 +403,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
             const SizedBox(height: 32),
 
-            // 5. ТОВАРЫ
+            // 5. Список популярных товаров
             const Text('ПОПУЛЯРНЫЕ ТОВАРЫ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, letterSpacing: 0.8, color: Colors.grey)),
             const SizedBox(height: 12),
             if (widget.isLoading) const Center(child: Padding(padding: EdgeInsets.all(40), child: CircularProgressIndicator()))
@@ -414,7 +416,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                   final item = widget.items[index];
                   final qty = item['quantity'] ?? 0;
                   final total = item['amount_raw'] ?? 0;
-                  final avgItemPrice = qty > 0 ? total / qty : 0; // СРЕДНЯЯ ЦЕНА ТОВАРА
+                  final avgItemPrice = qty > 0 ? total / qty : 0; 
                   final imageUrl = item['image_url'];
                   final itemScheme = item['scheme'];
 
@@ -459,7 +461,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                               ],
                             ),
                             const SizedBox(height: 4),
-                            // Добавили среднюю цену в строку инфо
                             Text('$qty шт × ${f.format(avgItemPrice.toInt())} ₽  =  ${f.format(total)} ₽', style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 11)),
                           ])),
                       ]),
@@ -473,6 +474,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
+  /// Построение кнопки выбора периода.
   Widget _buildPeriodBtn(String label, String code) {
     final active = widget.selectedPeriod == code;
     return Expanded(
@@ -501,6 +503,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
+  /// Построение кнопки переключения режима отображения графика.
   Widget _buildMetricBtn(String label, bool isMoney) {
     final active = _isMoneyMode == isMoney;
     return GestureDetector(
@@ -513,6 +516,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
+  /// Показ настроек видимости и порядка метрик (Bottom Sheet).
   void _showMetricsSettings() {
     showModalBottomSheet(
       context: context,
@@ -567,7 +571,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                                 if (val) {
                                   _visibleMetrics.add(id);
                                 } else {
-                                  // Не даем скрыть все показатели
                                   if (_visibleMetrics.length > 1) {
                                     _visibleMetrics.remove(id);
                                   }
@@ -592,6 +595,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
+  /// Показ детализации расходов в модальном окне.
   void _showExpensesDetail() {
     final f = NumberFormat.decimalPattern('ru_RU');
     final commission = widget.totals?['total_commission'] ?? 0;
@@ -637,6 +641,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
+  /// Построение строки расхода.
   Widget _buildExpenseRow(String label, num value, NumberFormat f, {bool isCostPrice = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -658,6 +663,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
+  /// Показ настроек периодов (начало недели, начало месяца).
   void _showSettingsSheet() {
     showModalBottomSheet(
       context: context,
@@ -696,6 +702,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     );
   }
 
+  /// Открытие диалога выбора произвольного диапазона дат.
   Future<void> _selectCustomRange() async {
     final DateTimeRange? picked = await showDateRangePicker(
       context: context,
@@ -722,6 +729,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     }
   }
 
+  /// Построение графика динамики продаж.
   Widget _buildChart(NumberFormat f) {
     final stats = widget.weeklyStats;
     final bool isLongPeriod = stats.length > 10;
@@ -731,7 +739,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
     final values = stats.map((s) => (_isMoneyMode ? s['revenue'] : s['items']) as num).toList();
     final maxVal = values.isNotEmpty ? values.reduce((a, b) => a > b ? a : b) : 0;
     
-    // ОПРЕДЕЛЯЕМ "СЕГОДНЯ" ПО МОСКВЕ (UTC+3)
     final nowMoscow = DateTime.now().toUtc().add(const Duration(hours: 3));
     final todayStr = DateFormat('yyyy-MM-dd').format(nowMoscow);
     
@@ -752,9 +759,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             final bool isActive = sDateStr == activeDateStr;
             final bool isToday = sDateStr == todayStr;
             final bool isMax = (val == maxVal && maxVal > 0);
-            final bool isWeekend = sDate.weekday == DateTime.saturday || sDate.weekday == DateTime.sunday;
 
-            // ЛОГИКА ЦВЕТОВ:
             Color barColor = const Color(0xFF90CAF9); 
             if (isMax) {
               barColor = Colors.red; 
@@ -772,7 +777,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
               triggerMode: TooltipTriggerMode.tap,
               child: Container(
                 decoration: const BoxDecoration(
-                  color: Colors.transparent, // Убрали подсветку фона за столбиком
+                  color: Colors.transparent, 
                 ),
                 child: Material(
                   color: Colors.transparent,
@@ -813,7 +818,6 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
               width: isLongPeriod ? 26 : 44,
               padding: const EdgeInsets.symmetric(vertical: 4),
               decoration: BoxDecoration(
-                // Оставили подсветку только для блока дат
                 color: isWeekend ? Colors.blue.withOpacity(0.1) : Colors.transparent,
                 borderRadius: BorderRadius.circular(6),
               ),

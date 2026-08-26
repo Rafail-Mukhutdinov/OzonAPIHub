@@ -4,6 +4,8 @@ import '../services/api.dart';
 import '../providers/auth_provider.dart';
 import 'package:intl/intl.dart';
 
+/// ProductCostsScreen — экран справочника себестоимости товаров.
+/// Позволяет просматривать список товаров Ozon, искать их и задавать историю себестоимости.
 class ProductCostsScreen extends StatefulWidget {
   const ProductCostsScreen({super.key});
 
@@ -12,9 +14,9 @@ class ProductCostsScreen extends StatefulWidget {
 }
 
 class _ProductCostsScreenState extends State<ProductCostsScreen> {
-  List<dynamic> _products = [];
-  bool _isLoading = true;
-  String _searchQuery = '';
+  List<dynamic> _products = []; // Полный список товаров, полученный от API
+  bool _isLoading = true;       // Состояние первоначальной загрузки списка
+  String _searchQuery = '';     // Текст текущего поискового запроса
 
   @override
   void initState() {
@@ -22,6 +24,7 @@ class _ProductCostsScreenState extends State<ProductCostsScreen> {
     _fetchProducts();
   }
 
+  /// Загрузка списка товаров активного магазина через OzonApiClient.
   Future<void> _fetchProducts() async {
     setState(() => _isLoading = true);
     try {
@@ -41,6 +44,7 @@ class _ProductCostsScreenState extends State<ProductCostsScreen> {
     }
   }
 
+  /// Геттер для получения отфильтрованного списка товаров на основе поискового запроса.
   List<dynamic> get _filteredProducts {
     if (_searchQuery.isEmpty) return _products;
     return _products.where((p) {
@@ -53,6 +57,7 @@ class _ProductCostsScreenState extends State<ProductCostsScreen> {
     }).toList();
   }
 
+  /// Показ модального окна с историей изменения цен для конкретного товара.
   void _showCostHistory(Map<String, dynamic> product) {
     showModalBottomSheet(
       context: context,
@@ -72,6 +77,7 @@ class _ProductCostsScreenState extends State<ProductCostsScreen> {
       ),
       body: Column(
         children: [
+          // Поле поиска товаров
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: TextField(
@@ -146,8 +152,9 @@ class _ProductCostsScreenState extends State<ProductCostsScreen> {
   }
 }
 
+/// Виджет для отображения и редактирования истории себестоимости конкретного товара.
 class CostHistoryWidget extends StatefulWidget {
-  final Map<String, dynamic> product;
+  final Map<String, dynamic> product; // Данные о выбранном товаре
   const CostHistoryWidget({super.key, required this.product});
 
   @override
@@ -155,8 +162,8 @@ class CostHistoryWidget extends StatefulWidget {
 }
 
 class _CostHistoryWidgetState extends State<CostHistoryWidget> {
-  List<dynamic> _history = [];
-  bool _isLoading = true;
+  List<dynamic> _history = []; // Записи об изменении цены во времени
+  bool _isLoading = true;      // Состояние загрузки истории
 
   @override
   void initState() {
@@ -164,6 +171,7 @@ class _CostHistoryWidgetState extends State<CostHistoryWidget> {
     _fetchHistory();
   }
 
+  /// Получение истории цен с сервера по SKU товара.
   Future<void> _fetchHistory() async {
     setState(() => _isLoading = true);
     try {
@@ -178,6 +186,7 @@ class _CostHistoryWidgetState extends State<CostHistoryWidget> {
     }
   }
 
+  /// Добавление новой записи о себестоимости с указанием даты начала действия.
   void _addCostEntry() async {
     final TextEditingController priceController = TextEditingController();
     DateTime selectedDate = DateTime.now();
@@ -190,12 +199,14 @@ class _CostHistoryWidgetState extends State<CostHistoryWidget> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Ввод цены (себестоимости)
               TextField(
                 controller: priceController,
                 decoration: const InputDecoration(labelText: 'Цена (руб)'),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
               const SizedBox(height: 16),
+              // Выбор даты начала действия цены
               ListTile(
                 title: const Text('Действует с:'),
                 subtitle: Text(DateFormat('yyyy-MM-dd').format(selectedDate)),
@@ -244,6 +255,7 @@ class _CostHistoryWidgetState extends State<CostHistoryWidget> {
     }
   }
 
+  /// Удаление записи из истории себестоимости.
   void _deleteEntry(int id) async {
     final api = OzonApiClient(authProvider: context.read<AuthProvider>());
     await api.deleteProductCost(id);

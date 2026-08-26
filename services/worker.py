@@ -1,6 +1,15 @@
 """
-Модуль воркера ARQ для асинхронной обработки задач.
-Реализует адаптивные интервалы опроса (Adaptive Polling).
+Модуль воркера ARQ для асинхронной обработки фоновых задач.
+
+Жизненный цикл фоновых задач:
+1. Задачи ставятся в очередь Redis основным приложением (FastAPI) или планировщиком (cron).
+2. Воркер (отдельный процесс) извлекает задачи из очереди.
+3. Воркер инициализирует собственное соединение с БД и HTTP-клиент.
+4. Выполняется логика задачи (например, синхронизация с Ozon API).
+5. Результаты сохраняются в БД, флаги блокировок (is_syncing) снимаются.
+
+Воркер реализует адаптивные интервалы опроса (Adaptive Polling), что позволяет
+экономить лимиты Ozon API, опрашивая активные магазины чаще, а неактивные — реже.
 """
 
 import asyncio
@@ -21,12 +30,20 @@ logger = logging.getLogger("OzonAPIHub.worker")
 async def sync_all_users_task(ctx):
     """
     Задача по расписанию: синхронизация всех активных пользователей.
-    Реализует Adaptive Polling: частота зависит от времени последней продажи (МСК).
+    
+    Логика Adaptive Polling:
+    - Частота опроса зависит от времени последней продажи (по данным МСК).
+    - Если последняя продажа была < 1 часа назад: интервал 1 минута.
+    - Если продажа была сегодня: интервал 5 минут.
+    - В остальных случаях: интервал 15 минут.
+    
+    Это обеспечивает актуальность данных для активных продавцов при минимальной нагрузке.
     """
     now = get_now_utc()
     db = SessionLocal()
     try:
         from db.database import OzonCredential
+        # Выбираем всех активных пользователей с активными ключами API Ozon
         users = db.query(User).join(User.ozon_credentials).filter(
             User.is_active == True,
             OzonCredential.is_active == True
@@ -39,6 +56,7 @@ async def sync_all_users_task(ctx):
         logger.debug(f"sync_all_users_task: найдено {len(users)} пользователей для проверки")
 
         for user in users:
+            # Получаем или создаем статус синхронизации для пользователя
             status = db.query(SyncStatus).filter(SyncStatus.user_id == user.id).first()
             if not status:
                 status = SyncStatus(user_id=user.id)
@@ -46,8 +64,8 @@ async def sync_all_users_task(ctx):
                 db.commit()
                 db.refresh(status)
 
-            # --- ADAPTIVE POLLING LOGIC ---
-            # Проверяем обе схемы, чтобы понять общую активность магазина
+            # --- ЛОГИКА АДАПТИВНОГО ОПРОСА (ADAPTIVE POLLING) ---
+            # Проверяем обе схемы (FBO и FBS), чтобы понять общую активность магазина
             last_fbo = get_latest_order_datetime(db, user.id, scheme='fbo')
             last_fbs = get_latest_order_datetime(db, user.id, scheme='fbs')
             
@@ -57,23 +75,24 @@ async def sync_all_users_task(ctx):
             else:
                 last_dt = last_fbo or last_fbs
 
-            interval_minutes = 15
+            interval_minutes = 15 # Значение по умолчанию
 
             if last_dt:
                 try:
-                    # Сравниваем в MSК
+                    # Сравниваем текущее время и время заказа в MSК
                     now_msk = to_msk(get_now_utc())
                     last_order_msk = to_msk(last_dt)
                     diff = get_now_utc() - last_dt
 
                     if diff < timedelta(hours=1):
-                        interval_minutes = 1
+                        interval_minutes = 1 # Очень активно: раз в минуту
                     elif last_order_msk.date() == now_msk.date():
-                        interval_minutes = 5
+                        interval_minutes = 5 # Активно (сегодня были продажи): раз в 5 минут
                 except Exception as e:
                     logger.warning(f"Error calculating adaptive interval for user {user.id}: {e}")
                     interval_minutes = 5
 
+            # Проверяем, пришло ли время для новой синхронизации
             last_sync = status.last_sync_attempt_at if status.last_sync_attempt_at else (get_now_utc() - timedelta(days=1))
             elapsed = get_now_utc() - last_sync
             if elapsed < timedelta(minutes=interval_minutes):
@@ -83,7 +102,8 @@ async def sync_all_users_task(ctx):
                 )
                 continue
 
-            # 1. АТОМАРНАЯ УСТАНОВКА БЛОКИРОВКИ (Риск A)
+            # 1. АТОМАРНАЯ УСТАНОВКА БЛОКИРОВКИ
+            # Предотвращает одновременный запуск нескольких задач синхронизации для одного пользователя.
             updated = db.query(SyncStatus).filter(
                 SyncStatus.user_id == user.id, 
                 SyncStatus.is_syncing == False
@@ -100,13 +120,14 @@ async def sync_all_users_task(ctx):
 
             logger.info(f"User {user.id}: Запуск адаптивной синхронизации (интервал {interval_minutes}м)")
 
-            # 3. БЕЗОПАСНОЕ ВЫПОЛНЕНИЕ
+            # 3. ВЫПОЛНЕНИЕ СИНХРОНИЗАЦИИ
             try:
                 activity_found = await sync_user_orders(user, db)
             except Exception as e:
                 logger.error(f"User {user.id}: Критическая ошибка при синхронизации: {e}", exc_info=True)
             finally:
-                # 4. СНЯТИЕ БЛОКИРОВКИ (Риск B: Гарантия сброса транзакции и снятия флага)
+                # 4. СНЯТИЕ БЛОКИРОВКИ
+                # Гарантированно снимаем флаг is_syncing, даже если возникла ошибка.
                 try:
                     db.rollback() 
                     db.refresh(status)
@@ -122,24 +143,25 @@ async def sync_all_users_task(ctx):
         db.close()
 
 async def initial_backfill_task(ctx, user_id: int):
-    """Задача: Полная загрузка истории для конкретного пользователя."""
-    # Защита от двойного запуска
+    """
+    Задача: Полная загрузка истории заказов для нового пользователя (Backfill).
+    Загружает данные за длительный период (обычно 1-2 года), чтобы построить аналитику.
+    """
     job_id = f"backfill_user_{user_id}"
     
     logger.info(f"--- [WORKER] Начало задачи {job_id} ---")
     db = SessionLocal()
     try:
-        # Проверяем статус в БД, чтобы не запускать если уже идет (дополнительная защита)
+        # Проверяем статус в БД, чтобы не запускать если уже идет
         from db.database import SyncStatus
         st = db.query(SyncStatus).filter(SyncStatus.user_id == user_id).first()
         
-        # Если задача запущена менее 10 минут назад и флаг is_syncing стоит, 
-        # возможно она еще работает. Если прошло больше — считаем зависшей.
+        # Защита от "зомби"-задач: если флаг стоит, но активности нет > 10 минут, считаем задачу зависшей.
         now = get_now_utc()
         if st and st.is_syncing:
             last_activity = st.updated_at or st.sync_started_at
             if last_activity and (now - last_activity).total_seconds() < 600:
-                logger.warning(f"Backfill for user {user_id} is already in progress (last activity {int((now - last_activity).total_seconds())}s ago). Skipping.")
+                logger.warning(f"Backfill for user {user_id} is already in progress. Skipping.")
                 return
             else:
                 logger.info(f"User {user_id}: Found zombie sync flag (older than 10m). Overriding.")
@@ -155,10 +177,14 @@ async def initial_backfill_task(ctx, user_id: int):
         db.close()
 
 async def history_sync_task(ctx, user_id: int, start_iso: str, end_iso: str):
-    """Задача: Загрузка данных за конкретный период."""
+    """
+    Задача: Принудительная загрузка данных за конкретный период.
+    Используется для ручного пересчета или восстановления данных.
+    """
     db = SessionLocal()
     try:
         from services.sync import sync_range_for_user
+        # Парсим даты из ISO формата
         start_dt = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
         end_dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
         
@@ -169,6 +195,7 @@ async def history_sync_task(ctx, user_id: int, start_iso: str, end_iso: str):
         db.close()
 
 async def startup(ctx):
+    """Действия при запуске процесса воркера."""
     from db.database import init_db, SyncStatus, SessionLocal
     init_db()
     
@@ -189,20 +216,29 @@ async def startup(ctx):
     logger.info("Воркер запущен. Режим: Adaptive Polling (1/5/15 мин)")
 
 async def shutdown(ctx):
+    """Действия при корректном завершении процесса воркера."""
     logger.info("Воркер останавливается...")
     await close_http_client()
     logger.info("HTTP client for Ozon API closed by worker")
 
 class WorkerSettings:
-    """Настройки воркера arq."""
+    """Настройки воркера ARQ."""
+    # Параметры подключения к Redis
     redis_settings = RedisSettings.from_dsn(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    
+    # Коллбэки жизненного цикла
     on_startup = startup
     on_shutdown = shutdown
+    
+    # Список доступных функций, которые может выполнять этот воркер
     functions = [sync_all_users_task, initial_backfill_task, history_sync_task]
-    job_timeout = 3600 # Увеличили до 1 часа для тяжелых задач типа Backfill
+    
+    # Максимальное время выполнения одной задачи (1 час)
+    job_timeout = 3600 
 
-    # Крон запускается КАЖДУЮ МИНУТУ, но логика внутри решит,
-    # нужно ли делать реальный запрос к Ozon для конкретного пользователя.
+    # Крон запускается КАЖДУЮ МИНУТУ.
+    # Внутри sync_all_users_task реализована проверка интервалов (Adaptive Polling),
+    # чтобы не делать лишних запросов к API, если время еще не пришло.
     cron_jobs = [
         cron(sync_all_users_task, second=0)
     ]

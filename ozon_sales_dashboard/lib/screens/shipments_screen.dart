@@ -7,6 +7,8 @@ import '../services/api.dart';
 
 import 'order_details_screen.dart';
 
+/// Экран "Отгрузки" (Горящие заказы FBS).
+/// Отображает список заказов, которые необходимо собрать и отгрузить в ближайшее время.
 class ShipmentsScreen extends StatefulWidget {
   const ShipmentsScreen({Key? key}) : super(key: key);
 
@@ -15,10 +17,10 @@ class ShipmentsScreen extends StatefulWidget {
 }
 
 class _ShipmentsScreenState extends State<ShipmentsScreen> {
-  late OzonApiClient _apiClient;
-  List<dynamic> _orders = [];
-  bool _isLoading = false;
-  Timer? _timer;
+  late OzonApiClient _apiClient; // Клиент для запросов к API
+  List<dynamic> _orders = []; // Список заказов
+  bool _isLoading = false; // Флаг загрузки данных
+  Timer? _timer; // Таймер для ежеминутного обновления оставшегося времени (SLA)
 
   @override
   void initState() {
@@ -26,7 +28,7 @@ class _ShipmentsScreenState extends State<ShipmentsScreen> {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     _apiClient = OzonApiClient(authProvider: auth);
     _loadData();
-    // Обновляем таймеры каждую минуту
+    // Обновляем таймеры каждую минуту для актуализации времени до отгрузки
     _timer = Timer.periodic(const Duration(minutes: 1), (timer) {
       if (mounted) setState(() {});
     });
@@ -38,6 +40,7 @@ class _ShipmentsScreenState extends State<ShipmentsScreen> {
     super.dispose();
   }
 
+  /// Загрузка списка невыполненных заказов из API.
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     try {
@@ -54,6 +57,7 @@ class _ShipmentsScreenState extends State<ShipmentsScreen> {
     }
   }
 
+  /// Вычисляет строковое представление оставшегося времени до отгрузки.
   String _getTimeLeft(String? shipmentDate) {
     if (shipmentDate == null) return '-';
     try {
@@ -71,6 +75,7 @@ class _ShipmentsScreenState extends State<ShipmentsScreen> {
     }
   }
 
+  /// Определяет цвет индикатора SLA в зависимости от оставшегося времени.
   Color _getSlaColor(String? shipmentDate) {
     if (shipmentDate == null) return Colors.grey;
     try {
@@ -86,6 +91,7 @@ class _ShipmentsScreenState extends State<ShipmentsScreen> {
     }
   }
 
+  /// Переводит код статуса заказа на русский язык.
   String _statusRu(String code) {
     switch (code) {
       case 'awaiting_assembly': return 'Сборка';
@@ -127,12 +133,13 @@ class _ShipmentsScreenState extends State<ShipmentsScreen> {
 
                       return InkWell(
                         onTap: () {
-                          // Чтобы не зависеть от задержки синхронизации БД, передаем данные напрямую из API Ozon
+                          // Подготовка данных для перехода на экран деталей заказа.
+                          // Передаем данные напрямую из ответа API, чтобы не ждать синхронизации в БД.
                           final Map<String, dynamic> preloaded = {
                             "order_number": order['posting_number'],
                             "header": {
                               "first_created_at": order['in_process_at'],
-                              "total_payout": 0, // Неизвестно до сборки
+                              "total_payout": 0, // Неизвестно до завершения сборки
                               "profit": 0,
                             },
                             "postings": [

@@ -9,11 +9,14 @@ import 'package:flutter/material.dart';
 // Глобальный ключ для показа SnackBar из любой части приложения (включая API клиент)
 final GlobalKey<ScaffoldMessengerState> rootScaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
+/// Клиент для взаимодействия с API OzonHub.
+/// Обрабатывает авторизацию, ошибки и основные запросы к бэкенду.
 class OzonApiClient {
-  final Dio dio;
-  final AuthProvider? authProvider; // Теперь принимаем провайдер напрямую
-  final _secureStorage = const FlutterSecureStorage();
+  final Dio dio; // Клиент для HTTP-запросов
+  final AuthProvider? authProvider; // Провайдер авторизации для обработки истечения сессии
+  final _secureStorage = const FlutterSecureStorage(); // Защищенное хранилище для токенов
 
+  /// Определяет базовый URL API в зависимости от окружения и платформы.
   static String getDefaultBaseUrl() {
     const String envUrl = String.fromEnvironment('API_BASE_URL');
     if (envUrl.isNotEmpty) {
@@ -49,6 +52,7 @@ class OzonApiClient {
         receiveTimeout: const Duration(seconds: 30),
       )) {
     
+    // Добавление интерцепторов для авторизации и обработки ошибок
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         String? token;
@@ -68,7 +72,7 @@ class OzonApiClient {
       },
       onError: (DioException error, handler) async {
         if (error.response?.statusCode == 401) {
-          // Если получили 401, сообщаем об этом провайдеру (разлогинивание)
+          // Если получили 401 (Unauthorized), сообщаем об этом провайдеру (разлогинивание)
           if (authProvider != null) {
             authProvider!.handleSessionExpired();
           }
@@ -87,6 +91,7 @@ class OzonApiClient {
     ));
   }
 
+  /// Добавление новых учетных данных Ozon (API Key и Client ID).
   Future<Map<String, dynamic>> addOzonCredential({
     required String clientId,
     required String apiKey,
@@ -105,6 +110,7 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Получение сырых данных о продажах за период.
   Future<Map<String, dynamic>> getSalesRaw({
     required String since,
     required String to,
@@ -122,6 +128,7 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Получение отчета о продажах за период (товары, суммы, расходы).
   Future<Map<String, dynamic>> getSalesRange({
     required String since,
     required String to,
@@ -140,6 +147,7 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Получение ежедневной статистики для графиков.
   Future<Map<String, dynamic>> getDailyStats({
     required String since,
     required String to,
@@ -156,16 +164,19 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Получение статуса синхронизации данных с Ozon.
   Future<Map<String, dynamic>> getSyncStatus() async {
     final resp = await dio.get('/auth/me/sync-status');
     return _toJson(resp);
   }
 
+  /// Получение профиля текущего пользователя.
   Future<Map<String, dynamic>> getProfile() async {
     final resp = await dio.get('/auth/me');
     return _toJson(resp);
   }
 
+  /// Получение списка невыполненных заказов FBS.
   Future<List<dynamic>> getUnfulfilledOrders() async {
     final resp = await dio.get('/orders/unfulfilled');
     if (resp.data is List) return resp.data;
@@ -173,11 +184,13 @@ class OzonApiClient {
     return [];
   }
 
+  /// Получение сводной информации по конкретному заказу.
   Future<Map<String, dynamic>> getOrderSummary(String orderNumber) async {
     final resp = await dio.get('/order/$orderNumber');
     return _toJson(resp);
   }
 
+  /// Получение сводки расходов за период.
   Future<Map<String, dynamic>> getExpensesSummary({
     required String since,
     required String to,
@@ -194,21 +207,25 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Запуск ручной синхронизации данных.
   Future<Map<String, dynamic>> triggerManualSync() async {
     final resp = await dio.post('/sync/manual');
     return _toJson(resp);
   }
 
+  /// Получение списка товаров и их себестоимости.
   Future<Map<String, dynamic>> getProductsList() async {
     final resp = await dio.get('/product-costs/products/list');
     return _toJson(resp);
   }
 
+  /// Получение истории изменения себестоимости товара.
   Future<Map<String, dynamic>> getProductCostHistory(int sku) async {
     final resp = await dio.get('/product-costs/history/$sku');
     return _toJson(resp);
   }
 
+  /// Установка новой себестоимости для товара.
   Future<Map<String, dynamic>> setProductCost({
     required int sku,
     String? offerId,
@@ -227,6 +244,7 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Удаление записи о себестоимости.
   Future<Map<String, dynamic>> deleteProductCost(int costId) async {
     final resp = await dio.delete('/product-costs/$costId');
     return _toJson(resp);

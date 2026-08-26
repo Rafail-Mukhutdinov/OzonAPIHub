@@ -15,21 +15,22 @@ import httpx
 import asyncio
 import json
 
+# Настройка логгера
 logger = logging.getLogger("OzonAPIHub")
 
 # Настройки берутся из переменных окружения (.env)
 LOG_OZON_REQUESTS = os.getenv('LOG_OZON_REQUESTS', 'false').lower() in ('1', 'true', 'yes')
-BASE_URL = "https://api-seller.ozon.ru"
+BASE_URL = "https://api-seller.ozon.ru" # Базовый URL Ozon API
 DEFAULT_TIMEOUT = 60  # Таймаут ожидания ответа от Ozon (секунд)
-MAX_RETRIES = int(os.getenv('OZON_MAX_RETRIES', '3'))
-RETRY_BACKOFF_SECONDS = float(os.getenv('OZON_RETRY_BACKOFF_SECONDS', '1.5'))
+MAX_RETRIES = int(os.getenv('OZON_MAX_RETRIES', '3')) # Макс. кол-во повторов при ошибках
+RETRY_BACKOFF_SECONDS = float(os.getenv('OZON_RETRY_BACKOFF_SECONDS', '1.5')) # Множитель задержки между попытками
 
-# HTTP-коды, на которые ретраим (временные сбои Ozon или сети)
+# HTTP-коды, на которые делаем повторные попытки (временные сбои Ozon или сети)
 _RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 # Модульный синглтон httpx-клиента.
 # Живёт в одном цикле событий (event loop) — например, в цикле uvicorn или воркера ARQ.
-# НЕ должен переиспользоваться между разными asyncio.run() (см. синхронные обёртки ниже).
+# НЕ должен переиспользоваться между разными asyncio.run().
 _client: httpx.AsyncClient | None = None
 
 
@@ -38,6 +39,9 @@ def init_http_client() -> httpx.AsyncClient:
     Создаёт и возвращает переиспользуемый httpx.AsyncClient с пулом соединений.
     Безопасно вызывать повторно: если клиент уже жив — возвращает его.
     Вызывать в lifespan FastAPI и в on_startup воркера ARQ.
+
+    Returns:
+        httpx.AsyncClient: Инициализированный клиент.
     """
     global _client
     try:
@@ -74,8 +78,11 @@ async def close_http_client() -> None:
 
 def _get_client() -> httpx.AsyncClient:
     """
-    Возвращает текущий синглтон-клиент. При необходимости создаёт лениво.
+    Возвращает текущий синглтон-клиент. При необходимости создаёт его лениво.
     Используется только на асинхронных путях (сервер/воркер), где цикл событий долгоживущий.
+
+    Returns:
+        httpx.AsyncClient: Текущий клиент.
     """
     if _client is None or _client.is_closed:
         init_http_client()
@@ -86,6 +93,13 @@ def _get_headers(client_id: str, api_key: str) -> dict:
     """
     Генерация HTTP-заголовков для аутентификации в Ozon API.
     Требует Client-Id и Api-Key конкретного магазина.
+
+    Args:
+        client_id (str): ID клиента Ozon.
+        api_key (str): API-ключ Ozon.
+
+    Returns:
+        dict: Заголовки запроса.
     """
     if not client_id or not api_key:
         raise ValueError("User OZON credentials are missing")
@@ -105,60 +119,69 @@ async def _post_with_retry(
     op_label: str,
 ) -> dict:
     """
-    Выполняет POST-запрос к Ozon с retry на временные сбои.
+    Выполняет POST-запрос к Ozon с механизмом повторных попыток на временные сбои.
 
     Стратегия:
-    - 401 — ошибка авторизации, НЕ ретраим (бессмысленно), пробрасываем сразу.
-    - 429/5xx и сетевые ошибки — ретраим с линейным backoff (RETRY_BACKOFF_SECONDS * попытка).
-    - Прочие 4xx — не ретрябельные, пробрасываем сразу.
-    - При исчерпании попыток пробрасываем последнее исключение после детального логирования.
+    - 401 — ошибка авторизации, НЕ повторяем, пробрасываем сразу.
+    - 429/5xx и сетевые ошибки — повторяем с линейным backoff (RETRY_BACKOFF_SECONDS * попытка).
+    - Прочие 4xx — не повторяем, пробрасываем сразу.
+    - При исчерпании попыток пробрасываем последнее исключение.
 
-    Контракт: успех => dict (распарсенный JSON), сбой => исключение.
-    Функция никогда не возвращает None.
+    Args:
+        client (httpx.AsyncClient): HTTP-клиент.
+        url (str): URL эндпоинта.
+        headers (dict): Заголовки.
+        body (dict): Тело запроса (JSON).
+        op_label (str): Метка операции для логирования.
+
+    Returns:
+        dict: Распарсенный ответ от Ozon.
     """
     last_exc: Exception | None = None
 
-    # range(MAX_RETRIES + 1) => попытки 0..MAX_RETRIES включительно (всего MAX_RETRIES + 1 шт.)
+    # Цикл по попыткам (всего MAX_RETRIES + 1)
     for attempt in range(MAX_RETRIES + 1):
         try:
             r = await client.post(url, headers=headers, json=body, timeout=DEFAULT_TIMEOUT)
-            r.raise_for_status()  # Вызывает httpx.HTTPStatusError для кодов 4xx/5xx
+            r.raise_for_status()  # Вызывает исключение для кодов 4xx/5xx
             
             try:
                 return r.json()
             except (json.JSONDecodeError, httpx.DecodingError) as e:
                 logger.error(f"Ozon {op_label}: Failed to decode JSON response: {e}")
-                # Трактуем битый JSON как временную ошибку для ретрая
+                # Ошибку декодирования трактуем как временную для возможности повтора
                 raise httpx.ReadError(f"Invalid JSON from Ozon: {e}")
 
         except httpx.HTTPStatusError as e:
             last_exc = e
-            status = e.response.status_code
+            status = e.response.status_code # HTTP статус код
 
-            # Логируем тело ошибки для 4xx, чтобы понимать причины (например, 400 Bad Request)
+            # Получаем детальную информацию об ошибке из тела ответа
             error_detail = ""
             try:
                 error_detail = f" | Body: {e.response.text}"
             except:
                 pass
 
-            # Ошибки авторизации не ретраим — повтор даст тот же результат
+            # Ошибки авторизации (401) не повторяем — результат не изменится
             if status == 401:
                 logger.error(f"Ozon Auth Failed ({op_label}): HTTP 401{error_detail}")
                 raise
 
+            # Если код в списке для повторов и попытки не исчерпаны
             if status in _RETRY_STATUS_CODES and attempt < MAX_RETRIES:
-                backoff = RETRY_BACKOFF_SECONDS * (attempt + 1)
+                backoff = RETRY_BACKOFF_SECONDS * (attempt + 1) # Линейно увеличиваем задержку
                 logger.warning(
                     f"Ozon {op_label}: HTTP {status}, retry {attempt + 1}/{MAX_RETRIES} через {backoff:.1f}s{error_detail}"
                 )
                 await asyncio.sleep(backoff)
                 continue
 
-            # Либо неретрябельный 4xx, либо исчерпаны попытки на ретрябельной ошибке
+            # Критическая ошибка или лимит попыток
             logger.error(f"Ozon {op_label}: HTTP {status} после {attempt + 1} попытк(и/ок), запрос отменён{error_detail}")
             raise
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
+            # Сетевые ошибки — всегда пробуем повторить, если есть попытки
             last_exc = e
             if attempt < MAX_RETRIES:
                 backoff = RETRY_BACKOFF_SECONDS * (attempt + 1)
@@ -171,8 +194,7 @@ async def _post_with_retry(
             logger.error(f"Ozon {op_label}: {type(e).__name__} после {attempt + 1} попытк(и/ок), запрос отменён")
             raise
 
-    # Защитный запасной выход: теоретически недостижимо,
-    # т.к. любая ветка выше либо возвращает значение, либо пробрасывает исключение.
+    # Если вышли из цикла без результата (теоретически не должно произойти)
     if last_exc is not None:
         raise last_exc
     raise RuntimeError(f"Ozon {op_label}: неожиданный выход из retry-цикла без результата")
@@ -187,7 +209,21 @@ async def ozon_fbo_list_async(
     with_flags: dict = None,
     sort_dir: str = "ASC",
 ):
-    """Асинхронно получить список FBO постингов."""
+    """
+    Асинхронно получает список FBO постингов.
+
+    Args:
+        client_id (str): Client-Id магазина.
+        api_key (str): Api-Key магазина.
+        filter_dict (dict): Фильтры (since, to, status и т.д.).
+        limit (int): Количество записей на страницу.
+        offset (int): Смещение для пагинации.
+        with_flags (dict): Флаги запроса дополнительных данных.
+        sort_dir (str): Направление сортировки (ASC/DESC).
+
+    Returns:
+        dict: Ответ от Ozon API.
+    """
     url = f"{BASE_URL}/v2/posting/fbo/list"
     body = {
         "dir": sort_dir,            # По умолчанию ASC (от старых к новым)
@@ -198,7 +234,7 @@ async def ozon_fbo_list_async(
     }
     headers = _get_headers(client_id, api_key)
 
-    # Логируем только начало постраничного прохода, чтобы не засорять логи
+    # Логируем только начало постраничного прохода
     if offset == 0:
         logger.info(f"Ozon API: Запрос списка заказов ({sort_dir}, since={filter_dict.get('since')})")
     if LOG_OZON_REQUESTS:
@@ -212,8 +248,16 @@ async def ozon_fbo_list_async(
 
 async def ozon_fbo_get_async(client_id: str, api_key: str, posting_number: str):
     """
-    Асинхронно получить полные детали конкретного FBO постинга.
+    Асинхронно получает полные детали конкретного FBO отправления.
     Используется для получения списка товаров внутри заказа и их точной стоимости/комиссий.
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        posting_number (str): Номер отправления.
+
+    Returns:
+        dict: Детализированная информация о постинге.
     """
     url = f"{BASE_URL}/v2/posting/fbo/get"
     body = {
@@ -239,12 +283,23 @@ async def ozon_fbs_list_async(
     sort_dir: str = "ASC",
 ):
     """
-    Асинхронно получить список FBS/rFBS постингов (v3).
-    ВАЖНО: filter_dict['status'] должен быть списком строк.
+    Асинхронно получает список FBS/rFBS отправлений (через v3 API).
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        filter_dict (dict): Фильтры. ВАЖНО: status должен быть списком строк.
+        limit (int): Лимит.
+        offset (int): Смещение.
+        with_flags (dict): Флаги данных.
+        sort_dir (str): Сортировка.
+
+    Returns:
+        dict: Ответ от API.
     """
     url = f"{BASE_URL}/v3/posting/fbs/list"
     
-    # Подготавливаем тело запроса. v3 требует список статусов.
+    # Подготавливаем тело запроса. v3 API требует список статусов, даже если он один.
     if "status" in filter_dict and isinstance(filter_dict["status"], str):
         filter_dict["status"] = [filter_dict["status"]] if filter_dict["status"] else []
 
@@ -268,10 +323,16 @@ async def ozon_fbs_list_async(
 
 async def ozon_fbs_get_async(client_id: str, api_key: str, posting_number: str):
     """
-    Асинхронно получить полные детали конкретного FBS/rFBS постинга.
-    ВАЖНО: v2/posting/fbs/get удалён с api-seller.ozon.ru (возвращает 404 page not found),
-    актуальный эндпоинт — v3 (проверено на живом API 26.08.2026).
-    Формат тела и ответа (result как объект) не изменился.
+    Асинхронно получает полные детали конкретного FBS/rFBS отправления.
+    Актуальный эндпоинт — v3.
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        posting_number (str): Номер отправления.
+
+    Returns:
+        dict: Результат запроса.
     """
     url = f"{BASE_URL}/v3/posting/fbs/get"
     body = {
@@ -288,7 +349,16 @@ async def ozon_fbs_get_async(client_id: str, api_key: str, posting_number: str):
 
 async def ozon_fbs_unfulfilled_list_async(client_id: str, api_key: str, limit: int = 100, offset: int = 0):
     """
-    Получить список невыполненных (горящих) FBS заказов.
+    Получает список невыполненных (горящих) FBS заказов.
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        limit (int): Лимит.
+        offset (int): Смещение.
+
+    Returns:
+        dict: Список невыполненных заказов.
     """
     url = f"{BASE_URL}/v2/posting/fbs/unfulfilled/list"
     body = {
@@ -306,7 +376,16 @@ async def ozon_fbs_unfulfilled_list_async(client_id: str, api_key: str, limit: i
 
 async def ozon_delivery_method_list_async(client_id: str, api_key: str, limit: int = 100, offset: int = 0):
     """
-    Получить список методов доставки (нужно для rFBS).
+    Получает список методов доставки (необходимо для работы по схеме rFBS).
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        limit (int): Лимит.
+        offset (int): Смещение.
+
+    Returns:
+        dict: Список методов доставки.
     """
     url = f"{BASE_URL}/v2/delivery-method/list"
     body = {
@@ -324,8 +403,16 @@ async def ozon_delivery_method_list_async(client_id: str, api_key: str, limit: i
 
 async def ozon_product_info_list_async(client_id: str, api_key: str, skus: list[int]):
     """
-    Асинхронно получить информацию о товарах по списку SKU.
-    Используется для получения ссылок на изображения.
+    Асинхронно получает информацию о товарах по списку SKU.
+    Используется в основном для получения ссылок на изображения товаров.
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        skus (list[int]): Список идентификаторов SKU.
+
+    Returns:
+        dict: Данные о товарах.
     """
     if not skus:
         return {"items": []}
@@ -352,8 +439,20 @@ async def ozon_transaction_list_async(
     page_size: int = 1000,
 ):
     """
-    Получить список транзакций из Ozon (v3).
-    Используется для получения данных о рекламе, хранении и прочих услугах.
+    Получает список транзакций из Ozon (v3).
+    Используется для сбора данных о рекламе, хранении, логистике и прочих услугах.
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        from_date (str): Дата начала (ISO).
+        to_date (str): Дата конца (ISO).
+        transaction_type (str): Тип транзакций (all, orders, returns и т.д.).
+        page (int): Номер страницы.
+        page_size (int): Размер страницы.
+
+    Returns:
+        dict: Список транзакций.
     """
     url = f"{BASE_URL}/v3/finance/transaction/list"
     body = {
@@ -383,8 +482,18 @@ async def ozon_accruals_by_day_async(
     limit: int = 1000
 ):
     """
-    Получить детализированные начисления и списания за конкретный день (v1).
-    Метод заменяет устаревающий totals.
+    Получает детализированные начисления и списания за конкретный день (v1).
+    Этот метод является наиболее точным источником финансовых данных по заказам.
+
+    Args:
+        client_id (str): Client-Id.
+        api_key (str): Api-Key.
+        date (str): Дата в формате ГГГГ-ММ-ДД.
+        last_id (str): Указатель на следующую страницу (из предыдущего ответа).
+        limit (int): Лимит записей.
+
+    Returns:
+        dict: Детализированные финансовые начисления.
     """
     url = f"{BASE_URL}/v1/finance/accrual/by-day"
     body = {

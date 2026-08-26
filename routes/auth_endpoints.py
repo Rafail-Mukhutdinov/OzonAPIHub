@@ -116,7 +116,12 @@ class SyncStatusResponse(BaseModel):
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 def register(request: Request, user_data: UserRegister, db: Session = Depends(get_db)):
-    """Регистрация нового пользователя и выдача пробного периода."""
+    """
+    Регистрация нового пользователя и выдача пробного периода.
+    
+    После успешного создания записи в БД, сервер сразу генерирует JWT-токен,
+    чтобы пользователь мог начать работу без повторного ввода данных.
+    """
     if user_data.password != user_data.confirm_password:
         raise HTTPException(status_code=400, detail="Пароли не совпадают")
 
@@ -143,7 +148,12 @@ def register(request: Request, user_data: UserRegister, db: Session = Depends(ge
 @router.post("/login", response_model=Token)
 @limiter.limit("10/minute")
 def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Авторизация пользователя (выдача JWT токена)."""
+    """
+    Авторизация пользователя (выдача JWT токена).
+    
+    Проверяет email и пароль. Если данные верны, создает подписанный JWT-токен,
+    который клиент будет использовать для доступа к защищенным данным.
+    """
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
@@ -154,7 +164,13 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
 
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Возвращает информацию о текущем авторизованном пользователе."""
+    """
+    Возвращает информацию о текущем авторизованном пользователе.
+    
+    Зависимость Depends(get_current_user) гарантирует, что эндпоинт 
+    доступен только авторизованным лицам, и автоматически предоставляет 
+    объект current_user для работы с его данными.
+    """
     has_creds = db.query(OzonCredential).filter(OzonCredential.user_id == current_user.id).first() is not None
     return UserResponse(
         id=current_user.id,
@@ -225,7 +241,13 @@ async def create_ozon_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Добавляет новый набор API-ключей Ozon или обновляет существующий по имени."""
+    """
+    Добавляет новый набор API-ключей Ozon или обновляет существующий по имени.
+    
+    Введенные пользователем ключи шифруются функцией encrypt_credential() 
+    перед попаданием в базу данных для обеспечения максимальной безопасности.
+    Зависимость Depends(get_current_user) привязывает ключи именно к текущему пользователю.
+    """
     admin_id = getattr(request.state, "impersonated_by", None)
     try:
         # Ищем существующий набор ключей по имени в рамках этого пользователя
