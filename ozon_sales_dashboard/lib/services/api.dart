@@ -29,9 +29,12 @@ class OzonApiClient {
         return 'http://localhost:8083';
       }
       
-      // Если мы на основном домене, принудительно используем HTTPS для API
+      // Единый вход через Nginx: относительный путь того же домена.
+      // Браузер обращается к seller.home-me.online/api/... — тот же origin,
+      // поэтому нет ни CORS, ни зависимости от внешнего прокси api-ozon
+      // (который может отдавать 502, когда недоступен снаружи).
       if (host == 'seller.home-me.online') {
-        return 'https://api-ozon.home-me.online';
+        return '/api';
       }
 
       if (host.isNotEmpty) {

@@ -104,14 +104,14 @@ setup_rate_limiting(app)
 
 # Настройка CORS (Cross-Origin Resource Sharing)
 # Определяет, каким фронтенд-доменам разрешено обращаться к этому API.
-cors_origins_str = os.getenv("CORS_ORIGINS", "")
-if not cors_origins_str or cors_origins_str == "*":
-    # Если origins не заданы или стоят как "*", мы не можем использовать allow_credentials=True
-    # Для безопасности и корректности SaaS лучше явно перечислить домены.
+cors_origins_str = os.getenv("CORS_ORIGINS", "https://seller.home-me.online")
+if cors_origins_str == "*":
+    # Явный wildcard: разрешаем всем, но credentials при этом запрещены.
+    # Для локальной веб-разработки задайте CORS_ORIGINS=* в .env
     origins = [] 
     allow_all_origins = True
 else:
-    origins = [o.strip() for o in cors_origins_str.split(",")]
+    origins = [o.strip() for o in cors_origins_str.split(",") if o.strip()]
     allow_all_origins = False
 
 app.add_middleware(
