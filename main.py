@@ -141,6 +141,7 @@ from routes.enrichment_endpoints import router as enrichment_router
 from routes.auth_endpoints import router as auth_router
 from routes.app_updates import router as app_updates_router
 from routes.admin import router as admin_router
+from routes.delivery_methods import router as delivery_methods_router
 
 # Регистрация роутеров в приложении:
 app.include_router(analytics_router)          # Аналитика и дашборды
@@ -152,6 +153,7 @@ app.include_router(enrichment_router)         # Обогащение данны�
 app.include_router(auth_router)               # Аутентификация и управление профилем
 app.include_router(app_updates_router)        # Проверка и скачивание обновлений приложения
 app.include_router(admin_router)              # Админ-панель и управление пользователями
+app.include_router(delivery_methods_router)   # Маппинг методов доставки rFBS
 
 # -----------------------------------------------------------------------------
 # Статические файлы (APK для OTA-обновлений мобильного приложения и пр.)

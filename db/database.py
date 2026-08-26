@@ -75,6 +75,7 @@ class User(Base):
     order_postings = relationship("OrderPosting", back_populates="user", cascade="all, delete-orphan")
     costs = relationship("Cost", back_populates="user", cascade="all, delete-orphan")
     product_costs = relationship("ProductCost", back_populates="user", cascade="all, delete-orphan")
+    delivery_method_mappings = relationship("OzonDeliveryMethodMapping", back_populates="user", cascade="all, delete-orphan")
 
 class OzonCredential(Base):
     """
@@ -298,6 +299,25 @@ class SystemSetting(Base):
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
     updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+
+class OzonDeliveryMethodMapping(Base):
+    """
+    Таблица для сопоставления внутренних ID методов доставки Ozon (rFBS)
+    с понятными пользователю названиями (например, 'Курьер Иван').
+    """
+    __tablename__ = "ozon_delivery_method_mappings"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    delivery_method_id = Column(BigInteger, nullable=False)
+    custom_name = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    user = relationship("User", back_populates="delivery_method_mappings")
+
+    __table_args__ = (
+        sa.UniqueConstraint('user_id', 'delivery_method_id', name='uq_user_delivery_method'),
+    )
 
 class SyncStatus(Base):
     """

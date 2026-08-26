@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from collections import defaultdict
-from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User, OzonCredential
+from db.database import Order, OrderHeader, OrderPosting, OrderProduct, get_db, User, OzonCredential, OzonDeliveryMethodMapping
 from utils.auth import get_current_user
 from datetime import datetime, timezone
 from utils.logging_config import log_user_event
@@ -114,6 +114,10 @@ async def list_unfulfilled_fbs_orders(
         )
         if raw: return data
 
+        # 🟡 Загружаем маппинги имен доставки (одним запросом)
+        mappings = db.query(OzonDeliveryMethodMapping).filter(OzonDeliveryMethodMapping.user_id == current_user.id).all()
+        mapping_dict = {m.delivery_method_id: m.custom_name for m in mappings}
+
         result_raw = data.get("result")
         flat_postings = []
 
@@ -121,6 +125,11 @@ async def list_unfulfilled_fbs_orders(
             # Формат v3 или специфичный v2 dict
             postings = result_raw.get("postings", [])
             for p in postings:
+                dm = p.get("delivery_method") or {}
+                dm_id = dm.get("id")
+                # Fallback: если маппинга нет, берем оригинальное имя
+                dm_name = mapping_dict.get(dm_id) or dm.get("name")
+
                 flat_postings.append({
                     "posting_number": p.get("posting_number"),
                     "status": p.get("status"),
@@ -129,8 +138,8 @@ async def list_unfulfilled_fbs_orders(
                     "is_express": p.get("is_express", False),
                     "products_count": len(p.get("products", [])),
                     "products": p.get("products", []),
-                    "tpl_provider": (p.get("delivery_method") or {}).get("tpl_provider"),
-                    "delivery_method_name": (p.get("delivery_method") or {}).get("name"),
+                    "tpl_provider": dm.get("tpl_provider"),
+                    "delivery_method_name": dm_name,
                 })
         elif isinstance(result_raw, list):
             # Формат v2 list of status groups
@@ -138,6 +147,10 @@ async def list_unfulfilled_fbs_orders(
                 status = status_group.get("status")
                 postings = status_group.get("postings", [])
                 for p in postings:
+                    dm = p.get("delivery_method") or {}
+                    dm_id = dm.get("id")
+                    dm_name = mapping_dict.get(dm_id) or dm.get("name")
+
                     flat_postings.append({
                         "posting_number": p.get("posting_number"),
                         "status": status,
@@ -146,8 +159,8 @@ async def list_unfulfilled_fbs_orders(
                         "is_express": p.get("is_express", False),
                         "products_count": len(p.get("products", [])),
                         "products": p.get("products", []),
-                        "tpl_provider": (p.get("delivery_method") or {}).get("tpl_provider"),
-                        "delivery_method_name": (p.get("delivery_method") or {}).get("name"),
+                        "tpl_provider": dm.get("tpl_provider"),
+                        "delivery_method_name": dm_name,
                     })
         else:
             return []
@@ -208,6 +221,10 @@ def get_order_summary(
         OrderPosting.order_number == order_number
     ).order_by(OrderPosting.created_at.asc()).all()
 
+    # 🟡 Загружаем маппинги (одним запросом)
+    mappings = db.query(OzonDeliveryMethodMapping).filter(OzonDeliveryMethodMapping.user_id == current_user.id).all()
+    mapping_dict = {m.delivery_method_id: m.custom_name for m in mappings}
+
     # 3. Берем все товары для всех найденных отправлений
     posting_numbers = [p.posting_number for p in postings]
     products = []
@@ -245,7 +262,7 @@ def get_order_summary(
                 "is_express": p.is_express,
                 "shipment_date": p.shipment_date,
                 "tpl_provider": p.tpl_provider,
-                "delivery_method_name": p.delivery_method_name,
+                "delivery_method_name": mapping_dict.get(p.delivery_method_id) or p.delivery_method_name,
                 "created_at": p.created_at,
                 "in_process_at": p.in_process_at,
                 "fact_delivery_date": p.fact_delivery_date,

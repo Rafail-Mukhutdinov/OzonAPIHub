@@ -8,7 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, field_validator, Field, AliasChoices, ConfigDict
 from datetime import datetime, timedelta, timezone
-from db.database import get_db, User, OzonCredential, Order, OrderPosting, OrderProduct, OrderHeader, Cost, SyncStatus, OzonAccrual, ProductCost
+from db.database import get_db, User, OzonCredential, Order, OrderPosting, OrderProduct, OrderHeader, Cost, SyncStatus, OzonAccrual, ProductCost, OzonDeliveryMethodMapping
 from utils.auth import (
     authenticate_user,
     create_access_token,
@@ -331,6 +331,7 @@ def purge_user_data(request: Request, payload: DataPurgeRequest, current_user: U
     db.query(Cost).filter(Cost.user_id == current_user.id).delete()
     db.query(OzonAccrual).filter(OzonAccrual.user_id == current_user.id).delete()
     db.query(ProductCost).filter(ProductCost.user_id == current_user.id).delete()
+    db.query(OzonDeliveryMethodMapping).filter(OzonDeliveryMethodMapping.user_id == current_user.id).delete()
     db.commit()
     log_user_event(current_user.id, "ВНИМАНИЕ: Все данные маркетплейса удалены пользователем.", "warning", admin_id=admin_id)
     return {"status": "ok"}

@@ -253,6 +253,28 @@ class OzonApiClient {
     return _toJson(resp);
   }
 
+  /// Получает список методов доставки Ozon с маппингами.
+  Future<List<dynamic>> getDeliveryMethods() async {
+    final resp = await dio.get('/delivery-methods/');
+    if (resp.data is List) return resp.data;
+    return [];
+  }
+
+  /// Сохраняет пользовательское название для метода доставки.
+  Future<Map<String, dynamic>> setDeliveryMethodMapping(int methodId, String customName) async {
+    final resp = await dio.post('/delivery-methods/map', data: {
+      'delivery_method_id': methodId,
+      'custom_name': customName,
+    });
+    return _toJson(resp);
+  }
+
+  /// Удаляет пользовательское название (возврат к оригиналу).
+  Future<Map<String, dynamic>> deleteDeliveryMethodMapping(int methodId) async {
+    final resp = await dio.delete('/delivery-methods/map/$methodId');
+    return _toJson(resp);
+  }
+
   /// Безопасное преобразование тела ответа в Map<String, dynamic>.
   /// Обрабатывает null, String (JSON), Map и любые другие типы.
   Map<String, dynamic> _toJson(Response resp) {

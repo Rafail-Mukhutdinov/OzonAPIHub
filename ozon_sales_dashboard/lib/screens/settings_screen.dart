@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:provider/provider.dart';
 import '../services/api.dart';
 import '../providers/auth_provider.dart';
+import 'rfbs_delivery_methods_screen.dart';
 
 /// SettingsScreen — экран настроек приложения.
 /// Позволяет пользователю управлять подключенными магазинами Ozon (API-ключами),
@@ -288,6 +289,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           onPressed: isImpersonating ? null : _runInitialSync, 
                           child: const Text('Старт')
                         ),
+                      ),
+                      const Divider(height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.map_outlined, color: Colors.indigo),
+                        title: const Text('Методы доставки rFBS'),
+                        subtitle: const Text('Настройте свои названия курьеров'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RfbsDeliveryMethodsScreen())),
                       ),
                       const Divider(height: 1),
                       ListTile(
