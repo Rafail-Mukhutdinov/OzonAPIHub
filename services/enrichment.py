@@ -24,6 +24,10 @@ def _to_int(val):
         return 0
 
 def recalc_order_header(db: Session, order_number: str, user_id: int):
+    # ВАЖНО: сессия с autoflush=False — без явного flush() только что добавленные
+    # товары не видны SELECT'у ниже, и totals в OrderHeader считаются по нулю
+    db.flush()
+
     products = db.query(OrderProduct).join(
         OrderPosting,
         (OrderPosting.posting_number == OrderProduct.posting_number) & (OrderPosting.user_id == OrderProduct.user_id)
