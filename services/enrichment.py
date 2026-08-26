@@ -140,6 +140,10 @@ async def enrich_posting_from_ozon(
 
     op.created_at = to_dt(data.get("created_at"))
     op.in_process_at = to_dt(data.get("in_process_at"))
+    # v3/posting/fbs/get (и v3-лист) не возвращают created_at —
+    # используем in_process_at как фоллбэк, чтобы заказ не выпадал из сортировок/фильтров по дате
+    if op.created_at is None:
+        op.created_at = op.in_process_at
     op.fact_delivery_date = to_dt(data.get("fact_delivery_date"))
 
     # Специфичные поля FBS
@@ -198,6 +202,10 @@ async def enrich_posting_from_ozon(
             image_url=image_map.get(str(sku))
         ))
     
+    # ВАЖНО: добавляем товары в сессию — без этого они собираются в список,
+    # но не сохраняются (баг: заказ появлялся без товаров, отчёт по выручке пустал)
+    if new_products: db.add_all(new_products)
+
     if order_number: recalc_order_header(db, order_number, user_id)
 
     return {"status": "ok"}
